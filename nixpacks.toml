@@ -1,0 +1,12 @@
+# Build config for the Sovereign image (nixpacks auto-detects Python from
+# requirements.txt). The container's start command is supplied at runtime by
+# the Container App (args from Procfile -> "web"), so the start cmd here only
+# matters for `docker run`/local parity.
+providers = ["python"]
+
+[variables]
+# Match the version the service is developed/tested against.
+NIXPACKS_PYTHON_VERSION = "3.13"
+
+[start]
+cmd = "uvicorn app.main:app --host 0.0.0.0 --port 8000"

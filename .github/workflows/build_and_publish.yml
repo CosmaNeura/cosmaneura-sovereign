@@ -1,0 +1,84 @@
+name: Build & Publish
+
+# Self-contained CI for the Sovereign microservice. Unlike the main app there
+# is no frontend, no database migrations, and no build-time secrets (the service
+# reads all config from env at runtime; Container App secrets are set by
+# Terraform, not here). So CI is just: test -> build image -> push -> deploy.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+  pull_request: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - name: Install deps
+        run: |
+          uv venv --python 3.13 .venv
+          uv pip install --python .venv -r requirements.txt pytest pytest-asyncio
+      # Runs offline in mock mode — no API keys required.
+      - name: Pytest
+        run: PYTHONPATH=. .venv/bin/python -m pytest tests/ -q
+
+  deploy:
+    name: 🚀 Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [test]
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    environment: production
+    permissions:
+      contents: read
+      id-token: write # required for Azure OIDC federation (no stored creds)
+    env:
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'cosmaneura-sovereign-prod' }}
+      CONTAINER_APP: ${{ vars.AZURE_CONTAINER_APP || 'cosmaneura-sovereign-prod-app' }}
+      REGISTRY: ${{ vars.CONTAINER_REGISTRY_HOST }} # e.g. cosmaneurasovereignprodregistry.azurecr.io
+      IMAGE_REPO: cosmaneura/sovereign
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install nixpacks
+        run: curl -sSL https://nixpacks.com/install.sh | bash
+
+      # OIDC login — uses the federated identity created in infra/main.tf.
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name "${REGISTRY%%.*}"
+
+      - name: Build & push image
+        run: |
+          IMAGE="$REGISTRY/$IMAGE_REPO"
+          SHA="${{ github.sha }}"
+          nixpacks build . \
+            --name "$IMAGE:$SHA" \
+            --platform linux/amd64 \
+            --label org.opencontainers.image.revision="$SHA" \
+            --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}"
+          docker tag "$IMAGE:$SHA" "$IMAGE:latest"
+          docker push "$IMAGE:$SHA"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy to Azure
+        run: |
+          IMAGE="$REGISTRY/$IMAGE_REPO:${{ github.sha }}"
+          REV="r-$(echo "${{ github.sha }}" | cut -c1-7)"
+          az containerapp update \
+            -n "$CONTAINER_APP" -g "$RESOURCE_GROUP" \
+            -i "$IMAGE" --revision-suffix "$REV"

@@ -1,0 +1,47 @@
+{
+  "_comment": "Replace/extend with the real MyCatholicDoctor feed and partner registrations. Schema is the integration contract: each provider is a referral target with a booking_url (the traffic handoff) and a partner label for attribution/metering.",
+  "providers": [
+    {
+      "id": "mcd-0001",
+      "name": "Kim Marie Reyes, M.D.",
+      "credential": "MD",
+      "specialty": "Primary Care, Women's Health & Fertility",
+      "is_catholic": true,
+      "telehealth": true,
+      "licensed_states": ["CA", "TX", "NH", "FL"],
+      "languages": ["English"],
+      "partner": "MyCatholicDoctor",
+      "booking_url": "https://mycatholicdoctor.com/provider-list/",
+      "accepts": ["insurance", "healthshare"],
+      "notes": "Integrates Catholic spirituality as appropriate; NFP-friendly."
+    },
+    {
+      "id": "mcd-0002",
+      "name": "Samuel Baney, LPC",
+      "credential": "LPC",
+      "specialty": "Psychotherapy / Mental Health",
+      "is_catholic": true,
+      "telehealth": true,
+      "licensed_states": ["OH", "PA"],
+      "languages": ["English"],
+      "partner": "MyCatholicDoctor",
+      "booking_url": "https://mycatholicdoctor.com/provider-list/",
+      "accepts": ["insurance"],
+      "notes": "Depression, anxiety, addiction; trauma-informed."
+    },
+    {
+      "id": "partner-aquinas-0001",
+      "name": "St. Gianna Family Medicine (Sample Partner)",
+      "credential": "Clinic",
+      "specialty": "Family Medicine, NaProTECHNOLOGY",
+      "is_catholic": true,
+      "telehealth": false,
+      "licensed_states": ["TX"],
+      "languages": ["English", "Spanish"],
+      "partner": "SamplePartnerNetwork",
+      "booking_url": "https://example-partner.org/book",
+      "accepts": ["insurance", "self-pay"],
+      "notes": "Example of a non-MyCatholicDoctor resource partner receiving routed traffic."
+    }
+  ]
+}

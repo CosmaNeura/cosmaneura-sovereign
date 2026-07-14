@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.env
+.env.production.backend
+# local demo secrets — never commit
+.env*.local
+.venv/
+venv/
+# terraform/opentofu
+infra/.terraform/
+infra/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+audit_log.jsonl
+.pytest_cache/
+.DS_Store
+
+# scraped partner data (regenerable via tools/scrape_mycatholicdoctor.py)
+app/clients/providers.generated.json

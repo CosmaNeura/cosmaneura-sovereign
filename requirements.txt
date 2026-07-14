@@ -1,0 +1,20 @@
+# Pinned to compatible-release ranges (~=) so patch/minor updates are allowed
+# but surprise major bumps are not pulled in unreviewed. Re-pin deliberately
+# after testing. For fully reproducible builds, generate a hash-locked
+# requirements.lock (e.g. pip-compile) in CI.
+fastapi~=0.136
+uvicorn[standard]~=0.30
+httpx~=0.28
+pydantic~=2.13
+pydantic-settings~=2.14
+# JWT/OIDC auth. The [crypto] extra pulls in `cryptography` for RS256/ES256
+# signature verification against the identity provider's JWKS.
+pyjwt[crypto]~=2.10
+# Partner-directory scraper (tools/scrape_mycatholicdoctor.py), run by the
+# scheduled data-refresh job. Bundled in the image so the job reuses it.
+beautifulsoup4~=4.12
+lxml~=5.3
+# Clinical-grade PHI de-identification (DEID_PROVIDER=azure) via Azure Health
+# Data Services — catches names/locations the regex baseline misses.
+azure-health-deidentification~=1.0
+azure-identity~=1.19

@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CosmaNeura — Faithful Healthcare Assistant</title>
+<style>
+  :root{
+    --bg:#0f1620; --panel:#16202c; --panel2:#1d2a38; --line:#27384a;
+    --ink:#eaf1f8; --muted:#93a6ba; --accent:#c9a24b; --accent2:#6fb1d6;
+    --user:#214a63; --ok:#2f6f4f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:radial-gradient(1200px 600px at 50% -10%,#1b2735,var(--bg)) fixed;color:var(--ink);height:100vh;display:flex;flex-direction:column}
+  header{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}
+  .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),#9c7a2f);
+    display:grid;place-items:center;font-weight:800;color:#1a130a}
+  header h1{font-size:16px;margin:0;font-weight:700;letter-spacing:.2px}
+  header .sub{font-size:12px;color:var(--muted)}
+  .live{margin-left:auto;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#3ec07a;box-shadow:0 0 0 3px rgba(62,192,122,.18)}
+  main{flex:1;overflow-y:auto;padding:22px 0}
+  .wrap{max-width:760px;margin:0 auto;padding:0 18px}
+  .msg{display:flex;gap:11px;margin:16px 0}
+  .msg .av{width:30px;height:30px;border-radius:8px;flex:0 0 auto;display:grid;place-items:center;font-size:13px;font-weight:700}
+  .a .av{background:linear-gradient(135deg,var(--accent),#9c7a2f);color:#1a130a}
+  .u{flex-direction:row-reverse}
+  .u .av{background:var(--user);color:#cfe6f2}
+  .bubble{padding:12px 15px;border-radius:14px;max-width:78%}
+  .a .bubble{background:var(--panel);border:1px solid var(--line);border-top-left-radius:4px}
+  .u .bubble{background:var(--user);border-top-right-radius:4px}
+  .bubble h3{font-size:15px;margin:.4em 0 .2em}
+  .bubble a{color:var(--accent2)}
+  .bubble p{margin:.4em 0}
+  .badge{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.6px;
+    color:var(--accent);border:1px solid var(--line);border-radius:999px;padding:2px 8px;margin-bottom:8px}
+  .cards{display:grid;gap:8px;margin-top:10px}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:11px 13px}
+  .card .nm{font-weight:700;font-size:14px}
+  .card .sp{color:var(--muted);font-size:12.5px;margin:2px 0 7px}
+  .tag{display:inline-block;font-size:11px;background:#13202c;border:1px solid var(--line);
+    color:#bcd; border-radius:6px;padding:1px 7px;margin:0 5px 5px 0}
+  .card a.book{display:inline-block;margin-top:4px;font-size:12.5px;font-weight:700;color:#0e1620;
+    background:var(--accent2);border-radius:8px;padding:6px 11px;text-decoration:none}
+  .card a.book:hover{background:#86c2e2}
+  .cite{font-size:11px;color:var(--muted);margin-top:9px;border-top:1px solid var(--line);padding-top:7px}
+  .typing span{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--muted);
+    margin-right:3px;animation:b 1s infinite}
+  .typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}
+  @keyframes b{0%,60%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
+  footer{border-top:1px solid var(--line);background:rgba(15,22,32,.9);padding:12px 0}
+  .chips{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:9px}
+  .chip{font-size:12px;color:var(--muted);background:var(--panel);border:1px solid var(--line);
+    border-radius:999px;padding:5px 11px;cursor:pointer}
+  .chip:hover{color:var(--ink);border-color:var(--accent2)}
+  form{display:flex;gap:9px;align-items:flex-end}
+  textarea{flex:1;resize:none;background:var(--panel);border:1px solid var(--line);color:var(--ink);
+    border-radius:12px;padding:11px 13px;font:inherit;max-height:140px;outline:none}
+  textarea:focus{border-color:var(--accent2)}
+  .send{background:var(--accent);color:#1a130a;border:none;border-radius:12px;padding:11px 16px;
+    font-weight:700;cursor:pointer}
+  .send:disabled{opacity:.5;cursor:default}
+  select{background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px;font:inherit}
+  .err{color:#ffb4a8}
+  .disc{font-size:11px;color:var(--muted);margin-top:7px;text-align:center}
+</style>
+</head>
+<body>
+  <header>
+    <div class="logo">C</div>
+    <div>
+      <h1>CosmaNeura</h1>
+      <div class="sub">Faithful healthcare assistant · doctor matching</div>
+    </div>
+    <div class="live"><span class="dot"></span> live</div>
+  </header>
+
+  <main id="main">
+    <div class="wrap" id="thread">
+      <div class="msg a">
+        <div class="av">C</div>
+        <div class="bubble">
+          <p>Peace be with you. I can help you find a faithful Catholic clinician —
+          tell me what kind of care you’re looking for and your U.S. state.</p>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="chips" id="chips"></div>
+      <form id="form">
+        <select id="persona" title="persona">
+          <option value="patient">Patient</option>
+          <option value="provider">Provider</option>
+        </select>
+        <textarea id="input" rows="1" placeholder="e.g. Find a faithful Catholic dermatologist in Texas"></textarea>
+        <button class="send" id="send" type="submit">Send</button>
+      </form>
+      <div class="disc">Demo · educational only, not medical advice. Responses generated live.</div>
+    </div>
+  </footer>
+
+<script>
+const thread = document.getElementById('thread');
+const main = document.getElementById('main');
+const input = document.getElementById('input');
+const form = document.getElementById('form');
+const send = document.getElementById('send');
+
+const examples = [
+  "Find a faithful Catholic pediatrician in California",
+  "I have a skin problem, find me a Catholic dermatologist in New Hampshire",
+  "I need a Catholic primary care doctor in Ohio who speaks Spanish",
+  "What recruiting clinical trials exist for pancreatic cancer?",
+  "I was just diagnosed with type 2 diabetes (A1C 7.2) — help me understand it",
+  "Is IVF permitted by the Catholic Church?",
+];
+const chips = document.getElementById('chips');
+examples.forEach(t => {
+  const c = document.createElement('div'); c.className='chip'; c.textContent=t;
+  c.onclick = () => { input.value = t; input.focus(); };
+  chips.appendChild(c);
+});
+
+input.addEventListener('input', () => { input.style.height='auto'; input.style.height=Math.min(input.scrollHeight,140)+'px'; });
+input.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); form.requestSubmit(); }});
+
+function esc(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// tiny markdown: headings, bold, links, bullets, paragraphs
+function md(t){
+  t = t.replace(/\s?\[\^?\d+\]/g,''); // strip [^8]/[8] citation markers
+  const lines = esc(t).split('\n'); let html=''; let inList=false;
+  for(let ln of lines){
+    ln = ln.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
+           .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+    let m;
+    if(/^###?\s+/.test(ln)){ if(inList){html+='</ul>';inList=false;} html+='<h3>'+ln.replace(/^###?\s+/,'')+'</h3>'; }
+    else if((m=ln.match(/^\s*[-*]\s+(.*)/))){ if(!inList){html+='<ul>';inList=true;} html+='<li>'+m[1]+'</li>'; }
+    else if(ln.trim()===''){ if(inList){html+='</ul>';inList=false;} }
+    else { if(inList){html+='</ul>';inList=false;} html+='<p>'+ln+'</p>'; }
+  }
+  if(inList) html+='</ul>';
+  return html;
+}
+
+function bubble(cls){
+  const m=document.createElement('div'); m.className='msg '+cls;
+  m.innerHTML = '<div class="av">'+(cls==='a'?'C':'You')+'</div><div class="bubble"></div>';
+  thread.appendChild(m); main.scrollTop=main.scrollHeight;
+  return m.querySelector('.bubble');
+}
+
+function renderProviders(b, matches){
+  if(!matches || !matches.length) return;
+  const wrap=document.createElement('div'); wrap.className='cards';
+  matches.slice(0,6).forEach(p=>{
+    const c=document.createElement('div'); c.className='card';
+    const langs=(p.languages||[]).map(l=>'<span class="tag">'+esc(l)+'</span>').join('');
+    const states=(p.licensed_states||[]).slice(0,6).join(', ');
+    const tele=p.telehealth?'<span class="tag">telehealth</span>':'<span class="tag">in-person</span>';
+    const book=p.booking_url?'<a class="book" href="'+p.booking_url+'" target="_blank" rel="noopener">Book appointment →</a>':'';
+    c.innerHTML='<div class="nm">'+esc(p.name||'')+'</div>'+
+      '<div class="sp">'+esc(p.specialty||'')+'</div>'+tele+langs+
+      (states?'<span class="tag">'+esc(states)+'</span>':'')+'<br>'+book;
+    wrap.appendChild(c);
+  });
+  b.appendChild(wrap);
+}
+
+function renderTrials(b, trials){
+  if(!trials || !trials.length) return;
+  const wrap=document.createElement('div'); wrap.className='cards';
+  trials.slice(0,6).forEach(t=>{
+    const c=document.createElement('div'); c.className='card';
+    const status=t.status?'<span class="tag">'+esc(String(t.status).replace(/_/g,' ').toLowerCase())+'</span>':'';
+    const phase=t.phase?'<span class="tag">'+esc(t.phase)+'</span>':'';
+    const nct=t.nct_id?'<span class="tag">'+esc(t.nct_id)+'</span>':'';
+    const link=t.url?'<a class="book" href="'+t.url+'" target="_blank" rel="noopener">View trial →</a>':'';
+    c.innerHTML='<div class="nm">'+esc(t.title||'')+'</div>'+
+      '<div class="sp">'+esc(t.lead_sponsor||'')+'</div>'+status+phase+nct+'<br>'+link;
+    wrap.appendChild(c);
+  });
+  b.appendChild(wrap);
+}
+
+let busy=false;
+form.addEventListener('submit', async e=>{
+  e.preventDefault();
+  const text=input.value.trim(); if(!text||busy) return;
+  busy=true; send.disabled=true;
+  bubble('u').textContent=text;
+  input.value=''; input.style.height='auto';
+  const b=bubble('a');
+  b.innerHTML='<div class="typing"><span></span><span></span><span></span></div>';
+  try{
+    const r=await fetch('/chat',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({persona:document.getElementById('persona').value,message:text,metadata:{}})});
+    if(!r.ok){
+      b.innerHTML='<p class="err">This question needs a service that isn’t enabled in this demo '+
+        '(e.g. the doctrinal review for morally-weighted topics). Try asking me to <b>find a doctor</b> — '+
+        'for example a specialty and a U.S. state.</p>';
+    } else {
+      const d=await r.json();
+      let html='';
+      if(d.intent) html+='<span class="badge">'+esc(d.intent)+'</span>';
+      html+=md(d.answer||'');
+      b.innerHTML=html;
+      renderProviders(b,(d.structured&&d.structured.matches)||[]);
+      renderTrials(b,(d.structured&&d.structured.trials)||[]);
+      const cites=(d.citations||[]).map(c=>c.source).filter(Boolean);
+      if(cites.length) { const e=document.createElement('div'); e.className='cite';
+        e.textContent='Sources: '+[...new Set(cites)].join(' · '); b.appendChild(e); }
+    }
+  }catch(err){
+    b.innerHTML='<p class="err">Couldn’t reach the assistant. Is the server running?</p>';
+  }
+  busy=false; send.disabled=false; main.scrollTop=main.scrollHeight; input.focus();
+});
+input.focus();
+</script>
+</body>
+</html>
