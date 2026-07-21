@@ -64,6 +64,11 @@
   select{background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px;font:inherit}
   .err{color:#ffb4a8}
   .disc{font-size:11px;color:var(--muted);margin-top:7px;text-align:center}
+  .a .bubble.emg{border:1px solid #d9534f;background:#341c1c}
+  .emg .h{color:#ff9d94;font-weight:700;letter-spacing:.4px;font-size:12px;
+    text-transform:uppercase;margin-bottom:6px}
+  .trust{font-size:11px;color:#8fc7a5;margin-top:8px;border-top:1px solid var(--line);
+    padding-top:7px}
 </style>
 </head>
 <body>
@@ -77,15 +82,7 @@
   </header>
 
   <main id="main">
-    <div class="wrap" id="thread">
-      <div class="msg a">
-        <div class="av">C</div>
-        <div class="bubble">
-          <p>Peace be with you. I can help you find a faithful Catholic clinician —
-          tell me what kind of care you’re looking for and your U.S. state.</p>
-        </div>
-      </div>
-    </div>
+    <div class="wrap" id="thread"></div>
   </main>
 
   <footer>
@@ -110,20 +107,37 @@ const input = document.getElementById('input');
 const form = document.getElementById('form');
 const send = document.getElementById('send');
 
-const examples = [
-  "Find a faithful Catholic pediatrician in California",
-  "I have a skin problem, find me a Catholic dermatologist in New Hampshire",
-  "I need a Catholic primary care doctor in Ohio who speaks Spanish",
-  "What recruiting clinical trials exist for pancreatic cancer?",
-  "I was just diagnosed with type 2 diabetes (A1C 7.2) — help me understand it",
-  "Is IVF permitted by the Catholic Church?",
-];
+// The AI speaks first: bootstrap greeting + guided paths from GET /welcome
+// (see INTERACTION_DESIGN.md). Falls back to a minimal greeting offline.
 const chips = document.getElementById('chips');
-examples.forEach(t => {
-  const c = document.createElement('div'); c.className='chip'; c.textContent=t;
-  c.onclick = () => { input.value = t; input.focus(); };
-  chips.appendChild(c);
-});
+const personaSel = document.getElementById('persona');
+
+function setChips(paths){
+  chips.innerHTML='';
+  paths.forEach(p => {
+    const c = document.createElement('div'); c.className='chip'; c.textContent=p.label;
+    c.onclick = () => { input.value = p.message; input.focus(); };
+    chips.appendChild(c);
+  });
+}
+
+async function loadWelcome(){
+  try{
+    const r = await fetch('/welcome?persona='+personaSel.value);
+    const w = await r.json();
+    const b = bubble('a');
+    b.innerHTML = '<p>'+esc(w.greeting)+'</p>'+
+      '<p><b>'+esc(w.emergency_note)+'</b></p>';
+    const d = document.createElement('div'); d.className='cite';
+    d.textContent = w.disclaimer; b.appendChild(d);
+    setChips(w.paths||[]);
+  }catch(e){
+    bubble('a').innerHTML = '<p>Peace be with you. Tell me what kind of care or '+
+      'information you’re looking for.</p>';
+  }
+  main.scrollTop = 0;
+}
+personaSel.addEventListener('change', loadWelcome);
 
 input.addEventListener('input', () => { input.style.height='auto'; input.style.height=Math.min(input.scrollHeight,140)+'px'; });
 input.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); form.requestSubmit(); }});
@@ -205,7 +219,10 @@ form.addEventListener('submit', async e=>{
     } else {
       const d=await r.json();
       let html='';
-      if(d.intent) html+='<span class="badge">'+esc(d.intent)+'</span>';
+      if(d.intent==='emergency'){
+        b.classList.add('emg');
+        html+='<div class="h">⚠ This may be an emergency</div>';
+      } else if(d.intent) html+='<span class="badge">'+esc(d.intent.replace(/_/g,' '))+'</span>';
       html+=md(d.answer||'');
       b.innerHTML=html;
       renderProviders(b,(d.structured&&d.structured.matches)||[]);
@@ -213,12 +230,20 @@ form.addEventListener('submit', async e=>{
       const cites=(d.citations||[]).map(c=>c.source).filter(Boolean);
       if(cites.length) { const e=document.createElement('div'); e.className='cite';
         e.textContent='Sources: '+[...new Set(cites)].join(' · '); b.appendChild(e); }
+      if(d.doctrinal_review){
+        const t=document.createElement('div'); t.className='trust';
+        t.textContent = d.doctrinal_review.conforms
+          ? '✓ Reviewed for conformity with Catholic teaching'
+          : '✓ Revised in keeping with Catholic teaching';
+        b.appendChild(t);
+      }
     }
   }catch(err){
     b.innerHTML='<p class="err">Couldn’t reach the assistant. Is the server running?</p>';
   }
   busy=false; send.disabled=false; main.scrollTop=main.scrollHeight; input.focus();
 });
+loadWelcome();
 input.focus();
 </script>
 </body>

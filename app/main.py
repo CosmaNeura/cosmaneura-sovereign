@@ -16,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.config import AuthMode, get_settings
+from app.compliance import safety
+from app.config import AuthMode, Persona, get_settings
 from app.schemas import ChatRequest, ChatResponse
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
 from app.sovereign.orchestrator import Sovereign
@@ -87,6 +88,66 @@ async def healthz() -> dict:
 async def chat(request: ChatRequest,
                principal: Optional[Principal] = Depends(get_principal)) -> ChatResponse:
     return await _sovereign.handle(request, principal=principal)
+
+
+# The AI speaks first (see INTERACTION_DESIGN.md). Deterministic, config-served
+# greeting + guided paths — no LLM call, nothing for the arbiter to review, and
+# each path maps 1:1 to an Intent so a tapped chip is a near-perfect routing
+# signal. Both surfaces (standalone page, Cosmos dashboard panel) bootstrap
+# from this one endpoint; per-tenant branding arrives with the Phase 2 layer.
+_PATIENT_PATHS = [
+    {"label": "Find a Catholic doctor",
+     "message": "Help me find a Catholic doctor who shares my values.",
+     "intent": "referral"},
+    {"label": "Understand a condition",
+     "message": "Help me understand a condition and prepare questions for my appointment.",
+     "intent": "engagement"},
+    {"label": "Explore clinical trials",
+     "message": "What clinical trials or emerging treatments exist for my condition?",
+     "intent": "concierge"},
+    {"label": "What the Church teaches",
+     "message": "What does the Church teach about a health topic I'm facing?",
+     "intent": "doctrinal"},
+]
+_PROVIDER_PATHS = [
+    {"label": "Prep my next session",
+     "message": "Help me organize my next session with this client — a few talking "
+                "points and a short outline.",
+     "intent": "visit_prep"},
+    {"label": "Ethics consult (ERDs)",
+     "message": "I have a case question about what the Ethical and Religious "
+                "Directives permit and which alternatives I may offer.",
+     "intent": "ethics_consult"},
+    {"label": "Explain a diagnosis",
+     "message": "Help me explain this patient's new diagnosis before the visit.",
+     "intent": "engagement"},
+    {"label": "Find a faithful specialist",
+     "message": "Help me find a faithful Catholic specialist for a referral.",
+     "intent": "referral"},
+]
+
+
+@app.get("/welcome")
+async def welcome(persona: Persona = Persona.PATIENT) -> dict:
+    name = _settings.partner_name
+    if persona == Persona.PROVIDER:
+        greeting = (f"Welcome — I'm the {name} clinical assistant. I can prep your "
+                    "next session, prepare an ERD ethics consult, explain a "
+                    "diagnosis for a visit, or find a faithful specialist.")
+    else:
+        greeting = (f"Welcome — I'm the {name} health assistant, here to give you "
+                    "clear, trustworthy health information guided by Catholic "
+                    "teaching. I'm not a doctor and I can't diagnose or treat "
+                    "anything — think of me as preparation for real care, not a "
+                    "replacement for it.")
+    return {
+        "partner_name": name,
+        "persona": persona.value,
+        "greeting": greeting,
+        "paths": _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS,
+        "disclaimer": safety.disclaimer_for(persona),
+        "emergency_note": "If this is an emergency, call 911 now.",
+    }
 
 
 # Built-in chat demo UI (same-origin, so it talks to /chat without CORS). Gated

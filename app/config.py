@@ -164,6 +164,10 @@ class Settings(BaseSettings):
     # for local demos (the launch script tools/run_demo_web.sh sets it).
     demo_ui_enabled: bool = False
 
+    # Display name used in the served greeting (GET /welcome). Becomes
+    # per-tenant branding in the Phase 2 tenant layer.
+    partner_name: str = "CosmaNeura"
+
     # Audit sink: "stdout" for local dev, "file" writes JSONL to audit_path.
     # In production point this at an append-only, access-controlled store.
     audit_sink: str = "stdout"

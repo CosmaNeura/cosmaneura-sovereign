@@ -368,6 +368,30 @@ def test_pubmed_client_refuses_raw_phi():
         pass
 
 
+# --- HTTP surface: welcome bootstrap ------------------------------------------
+
+def test_welcome_serves_greeting_and_guided_paths():
+    """Both UI surfaces bootstrap from /welcome — no auth, no LLM call."""
+    from fastapi.testclient import TestClient
+    from app.main import app as web_app
+
+    client = TestClient(web_app)
+    r = client.get("/welcome")
+    assert r.status_code == 200
+    w = r.json()
+    assert w["persona"] == "patient"
+    assert "Catholic" in w["greeting"]
+    assert len(w["paths"]) == 4
+    assert {p["intent"] for p in w["paths"]} == {"referral", "engagement",
+                                                 "concierge", "doctrinal"}
+    assert "911" in w["emergency_note"]
+    assert w["disclaimer"]
+
+    rp = client.get("/welcome", params={"persona": "provider"})
+    intents = {p["intent"] for p in rp.json()["paths"]}
+    assert "visit_prep" in intents and "ethics_consult" in intents
+
+
 # --- authentication (JWT/OIDC) tests ----------------------------------------
 
 def _dev_settings(**kw):
@@ -497,6 +521,7 @@ if __name__ == "__main__":
     test_visit_prep_routes_and_returns_prep()
     test_new_phi_agents_require_baa_attestation()
     test_pubmed_client_refuses_raw_phi()
+    test_welcome_serves_greeting_and_guided_paths()
     test_auth_disabled_returns_no_principal()
     test_auth_required_when_enabled()
     test_valid_token_maps_provider_role_to_persona()
