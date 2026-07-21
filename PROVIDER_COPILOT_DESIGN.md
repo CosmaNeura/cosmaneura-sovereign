@@ -95,7 +95,7 @@ orchestrator forces full arbitration regardless of the router's tier).
 NPPES as a non-BAA hop — topic-only queries, derived from de-identified text,
 with the same hard `assert_no_phi` tripwire in the client (regression-tested).
 
-## 5. Integration contract for the main app (Cosmos dashboard bot)
+## 5. Integration contract for the main app (Cosmas dashboard bot)
 
 The dashboard chatbot in app.cosmaneura.com calls the same single endpoint:
 
@@ -126,7 +126,7 @@ Sovereign accepts whatever `prior_sessions` contains, within request limits.
 coverage, forced-HIGH arbitration rule, two new demo scenarios, five new
 tests (33 total, all passing offline).
 
-**Next:** prompt tuning against real transcripts; Cosmos UI hookup (chat
+**Next:** prompt tuning against real transcripts; Cosmas UI hookup (chat
 panel + terminology setting); history-aware routing (see
 `INTERACTION_DESIGN.md` §7); slot-extracted PubMed queries; counsel review of
 psychotherapy-notes handling before live behavioral-health traffic.

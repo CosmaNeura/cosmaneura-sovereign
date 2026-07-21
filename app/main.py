@@ -93,7 +93,7 @@ async def chat(request: ChatRequest,
 # The AI speaks first (see INTERACTION_DESIGN.md). Deterministic, config-served
 # greeting + guided paths — no LLM call, nothing for the arbiter to review, and
 # each path maps 1:1 to an Intent so a tapped chip is a near-perfect routing
-# signal. Both surfaces (standalone page, Cosmos dashboard panel) bootstrap
+# signal. Both surfaces (standalone page, Cosmas dashboard panel) bootstrap
 # from this one endpoint; per-tenant branding arrives with the Phase 2 layer.
 _PATIENT_PATHS = [
     {"label": "Find a Catholic doctor",
