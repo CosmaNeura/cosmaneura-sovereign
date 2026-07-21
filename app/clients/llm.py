@@ -193,9 +193,20 @@ def _mock_completion(*, system: str, prompt: str) -> str:
                                             "telehealth", "refer", "appointment", "book "])
                     or ("doctor" in text and any(k in text for k in ["in ", "near", "want", "looking"]))
                     or ("catholic" in text and ("doctor" in text or "provider" in text)))
+        clinician_case = any(k in text for k in ["my patient", "our patient",
+                                                 "ethics consult", "ethics committee",
+                                                 "religious directives", "erds"])
+        prep = any(k in text for k in ["next session", "next visit", "session prep",
+                                       "talking points", "organize my next",
+                                       "prepare for my next", "plan my next"])
         if any(w in text for w in ["chest pain", "suicid", "overdose", "can't breathe",
                                    "cant breathe", "stroke", "kill myself"]):
             intent, sensitivity = "emergency", "none"
+        elif clinician_case and (moral or "licit" in text or "may we" in text
+                                 or "allowed" in text):
+            intent, sensitivity = "ethics_consult", "high"
+        elif prep:
+            intent, sensitivity = "visit_prep", "low"
         elif moral and any(w in text for w in ["permit", "church", "sin", "teach", "moral", "ethical"]):
             intent, sensitivity = "doctrinal", "high"
         elif referral:

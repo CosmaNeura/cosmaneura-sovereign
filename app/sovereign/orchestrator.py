@@ -7,11 +7,13 @@ This is the Leviathan of the system. Every request flows through it:
       └─ emergency check (safety)            short-circuit if acute danger
       └─ route (intent + doctrinal tier)     "distribute the task"
       └─ dispatch
-            ├─ DOCTRINAL  → Magisterium answers directly
-            ├─ REFERRAL   → Agent 1
-            ├─ CONCIERGE  → Agent 2
-            ├─ ENGAGEMENT → Agent 3
-            └─ SMALL_TALK → Sovereign answers
+            ├─ DOCTRINAL      → Magisterium answers directly
+            ├─ REFERRAL       → Agent 1
+            ├─ CONCIERGE      → Agent 2
+            ├─ ENGAGEMENT     → Agent 3
+            ├─ ETHICS_CONSULT → Agent 4 (always fully arbitrated)
+            ├─ VISIT_PREP     → Agent 5
+            └─ SMALL_TALK     → Sovereign answers
       └─ doctrinal arbitration (Magisterium) "final judge" (PHI-scrubbed input)
       └─ safety gate (disclaimer)
       └─ audit
@@ -27,7 +29,9 @@ from typing import Optional
 
 from app.agents.concierge_agent import ConciergeAgent
 from app.agents.engagement_agent import EngagementAgent
+from app.agents.ethics_agent import EthicsConsultAgent
 from app.agents.referral_agent import ReferralAgent
+from app.agents.visit_prep_agent import VisitPrepAgent
 from app.clients.llm import LLMClient
 from app.clients.magisterium import MagisteriumClient
 from app.compliance import safety
@@ -53,6 +57,8 @@ class Sovereign:
             Intent.REFERRAL: ReferralAgent(self.s, self.llm),
             Intent.CONCIERGE: ConciergeAgent(self.s, self.llm),
             Intent.ENGAGEMENT: EngagementAgent(self.s, self.llm),
+            Intent.ETHICS_CONSULT: EthicsConsultAgent(self.s, self.llm),
+            Intent.VISIT_PREP: VisitPrepAgent(self.s, self.llm),
         }
 
     async def handle(self, request: ChatRequest,
@@ -111,6 +117,10 @@ class Sovereign:
 
         # 2) Route.
         intent, sensitivity, _ = await self.router.route(request)
+        # An ethics consult is doctrine by definition: never let the tiered
+        # gate skip full arbitration on it, whatever the router said.
+        if intent == Intent.ETHICS_CONSULT:
+            sensitivity = DoctrinalSensitivity.HIGH
         self.audit.record(trace_id=trace_id, profile=profile, event="routed",
                           details={"intent": intent.value, "sensitivity": sensitivity.value})
 

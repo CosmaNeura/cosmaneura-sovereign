@@ -285,6 +285,89 @@ def test_session_id_charset_enforced():
         pass
 
 
+# --- provider copilot: ethics consult + visit prep ---------------------------
+
+def test_ethics_consult_routes_with_full_arbitration():
+    from app.config import Settings
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.handle(ChatRequest(
+        persona=Persona.PROVIDER,
+        message="My patient is asking about tubal ligation at delivery. Is that "
+                "permitted under the ERDs, and what alternatives may I discuss?")))
+    assert resp.intent == Intent.ETHICS_CONSULT
+    assert resp.doctrinal_review is not None       # the full gate actually ran
+    assert any(c.source == "PubMed" for c in resp.citations)
+    assert any(c.source == "USCCB" for c in resp.citations)
+
+
+def test_ethics_consult_forces_full_gate_even_if_router_says_none():
+    """The tiered gate must never skip arbitration on an ethics consult."""
+    from app.config import Settings
+    from app.schemas import DoctrinalSensitivity
+
+    sov = Sovereign(Settings(allow_provider_persona=True))
+
+    async def lax_route(request):
+        return Intent.ETHICS_CONSULT, DoctrinalSensitivity.NONE, "lax router"
+    sov.router.route = lax_route
+
+    seen = {}
+    original_review = sov.arbiter.review
+
+    async def spy(**kwargs):
+        seen["sensitivity"] = kwargs.get("sensitivity")
+        return await original_review(**kwargs)
+    sov.arbiter.review = spy
+
+    _run(sov.handle(ChatRequest(persona=Persona.PROVIDER,
+                                message="case question for the ethics consult")))
+    assert seen["sensitivity"] == DoctrinalSensitivity.HIGH
+
+
+def test_visit_prep_routes_and_returns_prep():
+    from app.config import Settings
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.handle(ChatRequest(
+        persona=Persona.PROVIDER,
+        message="Help me organize my next session with this client - talking "
+                "points and a short outline.",
+        metadata={"prior_sessions": "Last time the client explored family history.",
+                  "terminology": "client/therapist"})))
+    assert resp.intent == Intent.VISIT_PREP
+    assert resp.structured.get("feature") == "visit_prep"
+    assert resp.structured.get("terminology") == "client/therapist"
+
+
+def test_new_phi_agents_require_baa_attestation():
+    from app.agents.ethics_agent import EthicsConsultAgent
+    from app.agents.visit_prep_agent import VisitPrepAgent
+    from app.config import ComplianceProfile, Settings
+
+    profile = ComplianceProfile(Persona.PROVIDER)
+    for cls in (EthicsConsultAgent, VisitPrepAgent):
+        agent = cls(Settings(mock_mode=False, baa_attested=False))
+        try:
+            _run(agent.run(ChatRequest(persona=Persona.PROVIDER, message="case"),
+                           profile))
+            assert False, f"{cls.__name__} should refuse without BAA attestation"
+        except RuntimeError as e:
+            assert "BAA" in str(e)
+
+
+def test_pubmed_client_refuses_raw_phi():
+    """PubMed is a public non-BAA API; identifier-bearing queries must fail."""
+    from app.clients.pubmed import PubMedClient
+    from app.compliance.phi import PHIBoundaryViolation
+    from app.config import Settings
+
+    client = PubMedClient(Settings())
+    try:
+        _run(client.search("case report for jane@example.com"))
+        assert False, "should have refused identifiers"
+    except PHIBoundaryViolation:
+        pass
+
+
 # --- authentication (JWT/OIDC) tests ----------------------------------------
 
 def _dev_settings(**kw):
@@ -409,6 +492,11 @@ if __name__ == "__main__":
     test_emergency_overrides_provider_gate()
     test_partner_booking_url_https_only()
     test_session_id_charset_enforced()
+    test_ethics_consult_routes_with_full_arbitration()
+    test_ethics_consult_forces_full_gate_even_if_router_says_none()
+    test_visit_prep_routes_and_returns_prep()
+    test_new_phi_agents_require_baa_attestation()
+    test_pubmed_client_refuses_raw_phi()
     test_auth_disabled_returns_no_principal()
     test_auth_required_when_enabled()
     test_valid_token_maps_provider_role_to_persona()

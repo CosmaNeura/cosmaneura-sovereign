@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # --- Public data sources (free, no key) --------------------------------
     nppes_base_url: str = "https://npiregistry.cms.hhs.gov/api"
     clinicaltrials_base_url: str = "https://clinicaltrials.gov/api/v2"
+    # PubMed/PMC via NCBI E-utilities. Free; the optional API key only raises
+    # rate limits. Reaches the Catholic bioethics corpus too (Linacre Quarterly).
+    pubmed_base_url: str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    pubmed_api_key: Optional[str] = Field(default=None)
 
     # --- Partner directory (MyCatholicDoctor + resource partners) ----------
     # Until MyCatholicDoctor exposes a feed/API, the adapter reads a local

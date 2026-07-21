@@ -16,8 +16,9 @@ mechanical orchestration. White-labelled onto MyCatholicDoctor.
 
 - **Sovereign orchestrator** — emergency check → route → dispatch agent →
   scrub PHI → doctrinal arbitration → disclaimer → audit.
-- **Three agents** — (1) doctor referral, (2) frontier-medicine concierge,
-  (3) non-diagnostic health-engagement.
+- **Five agents** — (1) doctor referral, (2) frontier-medicine concierge,
+  (3) non-diagnostic health-engagement, (4) ERD-grounded clinical-ethics
+  consult, (5) clinician visit/session prep.
 - **Two personas, one codebase** — `patient` (SOC 2, **no** HIPAA, no PHI) and
   `provider` (SOC 2 **+** HIPAA, PHI permitted, BAA-covered LLM required).
 - **Tiered doctrinal gate** — pure logistics skip Magisterium; moral-weight
@@ -35,7 +36,7 @@ can see it work end-to-end before creating a single account.
 
 ```bash
 make install      # pip install -r requirements.txt
-make demo         # runs run_demo.py — 5 scenarios through the full pipeline
+make demo         # runs run_demo.py — 7 scenarios through the full pipeline
 make test         # runs the test suite
 make serve        # starts FastAPI on http://localhost:8000
 ```

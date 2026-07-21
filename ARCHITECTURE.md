@@ -57,10 +57,14 @@ flowchart TD
     R -->|referral| AG1[Agent 1 · Steward]
     R -->|concierge| AG2[Agent 2 · Scout]
     R -->|engagement| AG3[Agent 3 · Interpreter]
+    R -->|ethics consult| AG4[Agent 4 · Consultor<br/>always full arbitration]
+    R -->|visit prep| AG5[Agent 5 · Planner]
     R -->|small talk| ST[Sovereign answers]
     AG1 --> ASM[Assemble draft]
     AG2 --> ASM
     AG3 --> ASM
+    AG4 --> ASM
+    AG5 --> ASM
     ST --> ASM
     ASM --> PHI[[PHI firewall:<br/>de-identify before any non-BAA hop]]
     PHI --> ARB{Doctrinal arbitration<br/>Magisterium gate}
@@ -101,17 +105,20 @@ every path, including the provider/PHI path, using a de-identified summary.
 
 ---
 
-## 3. The three agents
+## 3. The five agents
 
 | # | Name | Job | Primary data sources | PHI exposure |
 |---|---|---|---|---|
 | **1** | **Referral / Steward** | When the user wants to see a doctor, find the best match by Catholic-or-not, geography, specialty, language; hand off a booking | **Partner Directory** (MyCatholicDoctor + partners — the only place the "is_catholic" flag + booking links live) → **NPPES NPI Registry** for broad/non-Catholic geography + specialty | None needed (coarse preferences only) |
-| **2** | **Concierge / Scout** | Talk intelligently about frontier medicine, biotech, advanced trials, and the specific companies/people relevant to the user | **ClinicalTrials.gov v2** (recruiting trials by condition, sponsor/company, phase, geo). Pluggable: web search, OpenFDA, PubMed | De-identified interest text only |
+| **2** | **Concierge / Scout** | Talk intelligently about frontier medicine, biotech, advanced trials, and the specific companies/people relevant to the user | **ClinicalTrials.gov v2** (recruiting trials by condition, sponsor/company, phase, geo). Pluggable: web search, OpenFDA | De-identified interest text only |
 | **3** | **Engagement / Interpreter** | Help patient *and* provider understand the patient's history/conditions; raise information level; frame to elevate the doctor-patient visit. **Not diagnostic** | The person's own provided history + general medical-education references | **Highest** — provider mode may hold PHI; handled by the BAA LLM **only** |
+| **4** | **Ethics Consult / Consultor** | Prepare a clinician's ethics consult: the question in ERD terms, applicable directives by number, licit alternatives, when to involve the ethics committee/bishop. **Never the final moral word** — the orchestrator forces full Magisterium arbitration on every draft | **PubMed/PMC (NCBI E-utilities)** — general literature + Linacre Quarterly (Catholic bioethics corpus); USCCB ERDs (6th ed.) as framework | Case text may hold PHI → BAA LLM only; PubMed sees a de-identified topic string |
+| **5** | **Visit Prep / Planner** | The everyday clinician copilot: recap of prior session(s), talking points, short outline for the upcoming visit. Brief by default; preparation, never prescription | Prior-session notes/transcripts supplied by the calling app (`metadata.prior_sessions`) | **Highest** — session transcripts (behavioral health included); BAA LLM **only**, nothing external |
 
 Each agent uses the reasoning LLM for (a) slot extraction from free text and
-(b) narration/ranking. Agents 1 and 2 call **non-BAA public APIs**, so they
-receive only de-identified text.
+(b) narration/ranking. Agents 1, 2 and 4 call **non-BAA public APIs**, so those
+APIs receive only de-identified text. See `PROVIDER_COPILOT_DESIGN.md` for the
+design history of Agents 4-5.
 
 ---
 
@@ -129,11 +136,11 @@ One codebase; the `persona` field selects a `ComplianceProfile`.
 | De-identification before non-BAA hops | On | On (with production-grade de-id + human review) |
 
 ### The PHI boundary (non-negotiable)
-Magisterium, ClinicalTrials.gov, NPPES, and any web search are **not** HIPAA
-business associates. **PHI must never reach them.** The Sovereign de-identifies
-every draft before the Magisterium gate, and non-BAA clients carry a hard
-`assert_no_phi` tripwire. The only component allowed to see raw PHI is the
-BAA-covered reasoning LLM (Agent 3's path).
+Magisterium, ClinicalTrials.gov, NPPES, PubMed, and any web search are **not**
+HIPAA business associates. **PHI must never reach them.** The Sovereign
+de-identifies every draft before the Magisterium gate, and non-BAA clients
+carry a hard `assert_no_phi` tripwire. The only component allowed to see raw
+PHI is the BAA-covered reasoning LLM (the path used by Agents 3, 4 and 5).
 
 > Verified facts behind this design (Anthropic, current): Anthropic signs a BAA
 > covering the **first-party Messages API** under qualifying commercial tiers

@@ -14,6 +14,8 @@ class Intent(str, Enum):
     REFERRAL = "referral"            # -> Agent 1
     CONCIERGE = "concierge"          # -> Agent 2
     ENGAGEMENT = "engagement"        # -> Agent 3
+    ETHICS_CONSULT = "ethics_consult"  # -> Agent 4 (always fully arbitrated)
+    VISIT_PREP = "visit_prep"        # -> Agent 5 (clinician session prep)
     DOCTRINAL = "doctrinal"          # answered directly by Magisterium
     SMALL_TALK = "small_talk"        # handled by the Sovereign, no agent
     EMERGENCY = "emergency"          # short-circuit to safety guidance
