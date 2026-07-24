@@ -13,6 +13,7 @@ This is the Leviathan of the system. Every request flows through it:
             ├─ ENGAGEMENT     → Agent 3
             ├─ ETHICS_CONSULT → Agent 4 (always fully arbitrated)
             ├─ VISIT_PREP     → Agent 5
+            ├─ PLAN_WORKBENCH → Agent 6 (deterministic numbers)
             └─ SMALL_TALK     → Sovereign answers
       └─ doctrinal arbitration (Magisterium) "final judge" (PHI-scrubbed input)
       └─ safety gate (disclaimer)
@@ -30,6 +31,7 @@ from typing import Optional
 from app.agents.concierge_agent import ConciergeAgent
 from app.agents.engagement_agent import EngagementAgent
 from app.agents.ethics_agent import EthicsConsultAgent
+from app.agents.plan_workbench_agent import PlanWorkbenchAgent
 from app.agents.referral_agent import ReferralAgent
 from app.agents.visit_prep_agent import VisitPrepAgent
 from app.clients.llm import LLMClient
@@ -59,6 +61,7 @@ class Sovereign:
             Intent.ENGAGEMENT: EngagementAgent(self.s, self.llm),
             Intent.ETHICS_CONSULT: EthicsConsultAgent(self.s, self.llm),
             Intent.VISIT_PREP: VisitPrepAgent(self.s, self.llm),
+            Intent.PLAN_WORKBENCH: PlanWorkbenchAgent(self.s, self.llm),
         }
 
     async def handle(self, request: ChatRequest,

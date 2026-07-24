@@ -41,6 +41,18 @@ SCENARIOS = [
                                     "before next meeting.",
                   "care_model": "internal family systems",
                   "terminology": "client/therapist"})),
+    ("Plan workbench (provider)", ChatRequest(
+        persona=Persona.PROVIDER,
+        message="Her labs are back and the standard of care isn't working — help me "
+                "troubleshoot which levers to adjust. She's motivated for a "
+                "structured diet protocol.",
+        metadata={"labs": "A1c 8.9 (was 8.2), LDL 160, TSH 2.1, ferritin 18",
+                  "case_context": "T2DM 6 yrs, metformin + SGLT2i, adherent; "
+                                  "clinician suspects iron deficiency compounding fatigue.",
+                  "patient_metrics": {"sex": "female", "age": 52,
+                                      "weight_lb": 200, "height_in": 65},
+                  "calorie_target": "1500-1600",
+                  "output_format": "note"})),
     ("Doctrinal (patient)", ChatRequest(
         persona=Persona.PATIENT,
         message="Does the Church permit IVF for a married couple struggling with infertility?",

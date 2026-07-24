@@ -83,7 +83,15 @@ same rendering rules) plus context awareness and actions.
     "prior_sessions": "<transcript/notes of the record on screen>",
     "care_model": "internal family systems",  // from the client's profile
     "terminology": "client/therapist",        // the account-level setting
-    "case_context": "<case facts if the view is a case/chart>"
+    "case_context": "<case facts if the view is a case/chart>",
+    "output_format": "chat|note|document",    // the panel's output selector
+    "patient_profile": "self-directed",       // Cosmas's engagement tag, if any
+    "intake_summary": "<pre-visit intake bot summary, if any>",
+    "labs": "<lab values/trends when the view is a lab record>",
+    "patient_metrics": {"sex": "female", "age": 52,
+                        "weight_lb": 200, "height_in": 65},
+    "calorie_target": "1500-1600",            // clinician-set, drives verified calc
+    "note_template": "<the provider's own note type, incl. audit sections>"
   }
 }
 ```
@@ -98,6 +106,10 @@ re-explaining who the client is.** That single difference is the product.
 |---|---|
 | `structured.feature == "visit_prep"` | **Insert into note** / **Save prep** buttons on the bubble |
 | `intent == "ethics_consult"` | Render ERD/PubMed citations as a reference block; **Copy consult prep** |
+| `structured.feature == "plan_workbench"` | Levers analysis with citations; **never** auto-merged into the SOAP note |
+| `structured.computed` (non-empty) | "✓ Verified calculations — computed, not generated" box (BMI/BMR/macros from code, the anti-wrong-calories guarantee) |
+| `structured.output_format == "note"` | **Copy** button — clean text for the Athena paste |
+| `structured.output_format == "document"` | **Copy** + **Download** — the Word→PDF replacement |
 | `structured.matches` | Provider cards with booking links (as Surface A) |
 | `intent == "emergency"` | Red card + the panel stays open |
 

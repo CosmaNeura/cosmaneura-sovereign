@@ -343,8 +343,10 @@ def test_new_phi_agents_require_baa_attestation():
     from app.agents.visit_prep_agent import VisitPrepAgent
     from app.config import ComplianceProfile, Settings
 
+    from app.agents.plan_workbench_agent import PlanWorkbenchAgent
+
     profile = ComplianceProfile(Persona.PROVIDER)
-    for cls in (EthicsConsultAgent, VisitPrepAgent):
+    for cls in (EthicsConsultAgent, VisitPrepAgent, PlanWorkbenchAgent):
         agent = cls(Settings(mock_mode=False, baa_attested=False))
         try:
             _run(agent.run(ChatRequest(persona=Persona.PROVIDER, message="case"),
@@ -366,6 +368,56 @@ def test_pubmed_client_refuses_raw_phi():
         assert False, "should have refused identifiers"
     except PHIBoundaryViolation:
         pass
+
+
+# --- plan workbench: deterministic numbers + routing --------------------------
+
+def test_calculators_catch_the_reported_failure():
+    """Direct user bug: asked 1500-1600 kcal, consumer AI delivered 1400s."""
+    from app.agents import calculators
+    assert calculators.within_target(1450, "1500-1600") is False
+    assert calculators.within_target(1550, "1500-1600") is True
+    m = calculators.macro_grams(1550, protein_pct=30, carb_pct=40, fat_pct=30)
+    assert m["protein_g"] == round(1550 * 0.30 / 4)
+    assert m["fat_g"] == round(1550 * 0.30 / 9)
+    assert calculators.macro_grams(1550, protein_pct=50, carb_pct=40,
+                                   fat_pct=30) is None   # split must total 100
+    assert calculators.bmi(weight_lb=200, height_in=65) == 33.3
+    # Bad input degrades to "unavailable", never to invented numbers.
+    assert calculators.compute({"sex": "x"}, calorie_target="soon") == {}
+
+
+def test_plan_workbench_routes_and_computes():
+    from app.config import Settings
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.handle(ChatRequest(
+        persona=Persona.PROVIDER,
+        message="Her labs are back and the standard of care isn't working - "
+                "help me troubleshoot which levers to adjust.",
+        metadata={"labs": "A1c 8.9",
+                  "patient_metrics": {"sex": "female", "age": 52,
+                                      "weight_lb": 200, "height_in": 65},
+                  "calorie_target": "1500-1600",
+                  "output_format": "note"})))
+    assert resp.intent == Intent.PLAN_WORKBENCH
+    assert resp.structured.get("feature") == "plan_workbench"
+    assert resp.structured.get("output_format") == "note"
+    computed = resp.structured.get("computed") or {}
+    assert computed.get("bmi") == 33.3                      # code, not model
+    assert computed["calorie_target"]["min"] == 1500
+    assert computed["macros_at_target_midpoint"]["calories"] == 1550
+    assert any(c.source == "PubMed" for c in resp.citations)
+
+
+def test_output_format_falls_back_to_chat():
+    from app.config import Settings
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.handle(ChatRequest(
+        persona=Persona.PROVIDER,
+        message="Help me organize my next session with this client - talking points.",
+        metadata={"output_format": "hologram"})))
+    assert resp.intent == Intent.VISIT_PREP
+    assert resp.structured.get("output_format") == "chat"
 
 
 # --- HTTP surface: welcome bootstrap ------------------------------------------
@@ -521,6 +573,9 @@ if __name__ == "__main__":
     test_visit_prep_routes_and_returns_prep()
     test_new_phi_agents_require_baa_attestation()
     test_pubmed_client_refuses_raw_phi()
+    test_calculators_catch_the_reported_failure()
+    test_plan_workbench_routes_and_computes()
+    test_output_format_falls_back_to_chat()
     test_welcome_serves_greeting_and_guided_paths()
     test_auth_disabled_returns_no_principal()
     test_auth_required_when_enabled()

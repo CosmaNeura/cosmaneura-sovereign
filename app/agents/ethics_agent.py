@@ -86,11 +86,13 @@ class EthicsConsultAgent(BaseAgent):
                                if e["pmid"] not in {c["pmid"] for c in catholic}]
 
         case_context = request.metadata.get("case_context") or ""
+        fmt, fmt_rules = self.resolve_output_format(request)
         content = await self.llm.complete(
             system=_SYSTEM,
             prompt=(f"Clinician's question: {request.message}\n"
                     f"Case context: {case_context}\n"
-                    f"<published_literature>\n{evidence}\n</published_literature>\n\n"
+                    f"<published_literature>\n{evidence}\n</published_literature>\n"
+                    f"\nOutput format requirement: {fmt_rules}\n"
                     "Produce the structured consult prep."),
             max_tokens=1200,
         )
@@ -108,5 +110,5 @@ class EthicsConsultAgent(BaseAgent):
             content=content,
             citations=citations,
             data={"framework": "USCCB_ERDs_6th_edition",
-                  "evidence": evidence},
+                  "evidence": evidence, "output_format": fmt},
         )

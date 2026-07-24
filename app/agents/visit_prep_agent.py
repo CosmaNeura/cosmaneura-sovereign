@@ -68,6 +68,13 @@ class VisitPrepAgent(BaseAgent):
         care_model = request.metadata.get("care_model") or "unspecified"
         terminology = request.metadata.get("terminology") or "patient/clinician"
         detail = request.metadata.get("detail") or "brief"
+        # Optional enrichments supplied by the dashboard: the engagement-style
+        # personality tag Cosmas already computes (e.g. "self-directed" -> how
+        # much follow-up structure to suggest), and the pre-visit intake
+        # summary from the intake bot.
+        patient_profile = request.metadata.get("patient_profile") or ""
+        intake_summary = request.metadata.get("intake_summary") or ""
+        fmt, fmt_rules = self.resolve_output_format(request)
 
         content = await self.llm.complete(
             system=_SYSTEM,
@@ -75,8 +82,14 @@ class VisitPrepAgent(BaseAgent):
                     f"Care model: {care_model}\n"
                     f"Terminology pair: {terminology}\n"
                     f"Detail level: {detail}\n"
-                    f"<prior_sessions>\n{prior}\n</prior_sessions>\n\n"
-                    "Produce the prep sheet."),
+                    + (f"Patient engagement profile: {patient_profile} "
+                       "(use only to tune tone and follow-up suggestions)\n"
+                       if patient_profile else "")
+                    + (f"<intake_summary>\n{intake_summary}\n</intake_summary>\n"
+                       if intake_summary else "")
+                    + f"<prior_sessions>\n{prior}\n</prior_sessions>\n"
+                    + f"\nOutput format requirement: {fmt_rules}\n"
+                      "Produce the prep sheet."),
             max_tokens=700,
         )
 
@@ -85,5 +98,5 @@ class VisitPrepAgent(BaseAgent):
             content=content,
             citations=[],
             data={"feature": "visit_prep", "care_model": care_model,
-                  "terminology": terminology},
+                  "terminology": terminology, "output_format": fmt},
         )

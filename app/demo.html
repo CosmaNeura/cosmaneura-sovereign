@@ -69,6 +69,14 @@
     text-transform:uppercase;margin-bottom:6px}
   .trust{font-size:11px;color:#8fc7a5;margin-top:8px;border-top:1px solid var(--line);
     padding-top:7px}
+  .calc{margin-top:10px;background:#14231c;border:1px solid #2d4a3a;border-radius:10px;
+    padding:9px 12px;font-size:12.5px}
+  .calc .t{color:#8fc7a5;font-size:10px;text-transform:uppercase;letter-spacing:.6px;
+    margin-bottom:5px}
+  .acts{margin-top:9px;display:flex;gap:7px}
+  .act{font-size:12px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--ink);border-radius:8px;padding:5px 10px;cursor:pointer}
+  .act:hover{border-color:var(--accent2)}
 </style>
 </head>
 <body>
@@ -92,6 +100,11 @@
         <select id="persona" title="persona">
           <option value="patient">Patient</option>
           <option value="provider">Provider</option>
+        </select>
+        <select id="fmt" title="output format" style="display:none">
+          <option value="chat">Chat</option>
+          <option value="note">Note text</option>
+          <option value="document">Document</option>
         </select>
         <textarea id="input" rows="1" placeholder="e.g. Find a faithful Catholic dermatologist in Texas"></textarea>
         <button class="send" id="send" type="submit">Send</button>
@@ -122,6 +135,10 @@ function setChips(paths){
 }
 
 async function loadWelcome(){
+  // Output selector is a provider affordance (note-ready text for the EHR
+  // paste, documents for patient handouts); patients just chat.
+  document.getElementById('fmt').style.display =
+    personaSel.value==='provider' ? '' : 'none';
   try{
     const r = await fetch('/welcome?persona='+personaSel.value);
     const w = await r.json();
@@ -210,8 +227,11 @@ form.addEventListener('submit', async e=>{
   const b=bubble('a');
   b.innerHTML='<div class="typing"><span></span><span></span><span></span></div>';
   try{
+    const meta={};
+    if(personaSel.value==='provider')
+      meta.output_format=document.getElementById('fmt').value;
     const r=await fetch('/chat',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({persona:document.getElementById('persona').value,message:text,metadata:{}})});
+      body:JSON.stringify({persona:personaSel.value,message:text,metadata:meta})});
     if(!r.ok){
       b.innerHTML='<p class="err">This question needs a service that isn’t enabled in this demo '+
         '(e.g. the doctrinal review for morally-weighted topics). Try asking me to <b>find a doctor</b> — '+
@@ -236,6 +256,35 @@ form.addEventListener('submit', async e=>{
           ? '✓ Reviewed for conformity with Catholic teaching'
           : '✓ Revised in keeping with Catholic teaching';
         b.appendChild(t);
+      }
+      // Verified calculations: numbers computed in code, not by the model.
+      const comp=d.structured&&d.structured.computed;
+      if(comp&&Object.keys(comp).length){
+        const c=document.createElement('div'); c.className='calc';
+        c.innerHTML='<div class="t">✓ Verified calculations (computed, not generated)</div>';
+        Object.entries(comp).forEach(([k,v])=>{
+          const row=document.createElement('div');
+          row.textContent=k.replace(/_/g,' ')+': '+
+            (typeof v==='object'?JSON.stringify(v):v);
+          c.appendChild(row);
+        });
+        b.appendChild(c);
+      }
+      const ofmt=d.structured&&d.structured.output_format;
+      if(ofmt==='note'||ofmt==='document'){
+        const bar=document.createElement('div'); bar.className='acts';
+        const cp=document.createElement('button'); cp.className='act';
+        cp.textContent='Copy'; cp.onclick=()=>navigator.clipboard.writeText(d.answer||'');
+        bar.appendChild(cp);
+        if(ofmt==='document'){
+          const dl=document.createElement('button'); dl.className='act';
+          dl.textContent='Download .md';
+          dl.onclick=()=>{const a=document.createElement('a');
+            a.href=URL.createObjectURL(new Blob([d.answer||''],{type:'text/markdown'}));
+            a.download='cosmaneura-'+(d.intent||'output')+'.md'; a.click();};
+          bar.appendChild(dl);
+        }
+        b.appendChild(bar);
       }
     }
   }catch(err){

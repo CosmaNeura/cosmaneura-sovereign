@@ -199,6 +199,10 @@ def _mock_completion(*, system: str, prompt: str) -> str:
         prep = any(k in text for k in ["next session", "next visit", "session prep",
                                        "talking points", "organize my next",
                                        "prepare for my next", "plan my next"])
+        workbench = any(k in text for k in ["labs", "lab results", "troubleshoot",
+                                            "which levers", "care plan",
+                                            "diet protocol", "meal plan",
+                                            "standard of care", "nutrient"])
         if any(w in text for w in ["chest pain", "suicid", "overdose", "can't breathe",
                                    "cant breathe", "stroke", "kill myself"]):
             intent, sensitivity = "emergency", "none"
@@ -207,6 +211,8 @@ def _mock_completion(*, system: str, prompt: str) -> str:
             intent, sensitivity = "ethics_consult", "high"
         elif prep:
             intent, sensitivity = "visit_prep", "low"
+        elif workbench:
+            intent, sensitivity = "plan_workbench", "low"
         elif moral and any(w in text for w in ["permit", "church", "sin", "teach", "moral", "ethical"]):
             intent, sensitivity = "doctrinal", "high"
         elif referral:

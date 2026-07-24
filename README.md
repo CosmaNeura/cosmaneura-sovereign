@@ -1,7 +1,7 @@
 # CosmaNeura Sovereign
 
 A single source of healthcare information **guided by Catholic teaching**, built
-as a **Hobbesian Sovereign** that distributes each request to one of five
+as a **Hobbesian Sovereign** that distributes each request to one of six
 specialist AI agents and arbitrates the final answer. **Magisterium AI** is the
 doctrinal authority and final judge; a BAA-eligible reasoning LLM does the
 mechanical orchestration. White-labelled onto MyCatholicDoctor.
@@ -16,9 +16,10 @@ mechanical orchestration. White-labelled onto MyCatholicDoctor.
 
 - **Sovereign orchestrator** — emergency check → route → dispatch agent →
   scrub PHI → doctrinal arbitration → disclaimer → audit.
-- **Five agents** — (1) doctor referral, (2) frontier-medicine concierge,
+- **Six agents** — (1) doctor referral, (2) frontier-medicine concierge,
   (3) non-diagnostic health-engagement, (4) ERD-grounded clinical-ethics
-  consult, (5) clinician visit/session prep.
+  consult, (5) clinician visit/session prep, (6) care-plan workbench with
+  deterministic (code-computed) clinical calculations.
 - **Two personas, one codebase** — `patient` (SOC 2, **no** HIPAA, no PHI) and
   `provider` (SOC 2 **+** HIPAA, PHI permitted, BAA-covered LLM required).
 - **Tiered doctrinal gate** — pure logistics skip Magisterium; moral-weight
@@ -36,7 +37,7 @@ can see it work end-to-end before creating a single account.
 
 ```bash
 make install      # pip install -r requirements.txt
-make demo         # runs run_demo.py — 7 scenarios through the full pipeline
+make demo         # runs run_demo.py — 8 scenarios through the full pipeline
 make test         # runs the test suite
 make serve        # starts FastAPI on http://localhost:8000
 ```
@@ -63,7 +64,7 @@ curl -s localhost:8000/chat -H 'content-type: application/json' -d '{
 
 The demo exercises the pipeline end-to-end: a patient referral, a concierge
 question, a provider engagement request **with PHI** (scrubbed before the
-doctrinal gate), an ERD ethics consult, a clinician visit prep, a doctrinal
+doctrinal gate), an ERD ethics consult, a clinician visit prep, a plan-workbench deep-dive, a doctrinal
 question (answered directly by Magisterium), and an emergency message
 (short-circuits to 911/988).
 
@@ -114,7 +115,8 @@ app/
   config.py               Settings, Persona enum, ComplianceProfile
   schemas.py              Request/response + intent/sensitivity models
   sovereign/              router · arbiter · orchestrator
-  agents/                 referral · concierge · engagement · ethics · visit_prep
+  agents/                 referral · concierge · engagement · ethics · visit_prep ·
+                          plan_workbench · calculators
   clients/                llm · magisterium · nppes · clinicaltrials · pubmed · partner_directory
   compliance/             phi · audit · safety
 tests/test_pipeline.py
