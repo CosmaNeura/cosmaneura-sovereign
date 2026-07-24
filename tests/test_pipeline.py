@@ -422,6 +422,34 @@ def test_output_format_falls_back_to_chat():
     assert resp.structured.get("output_format") == "chat"
 
 
+# --- Azure endpoint dialects ---------------------------------------------------
+
+def test_azure_endpoint_forms_supported():
+    """Classic (….openai.azure.com) and Foundry v1 endpoints both work."""
+    from app.clients.llm import _azure_chat_request
+
+    # Foundry v1 form — exactly what the portal's sample code hands out.
+    url, hdrs, extra = _azure_chat_request(
+        "https://sovereign-reasoning-resource.services.ai.azure.com/openai/v1",
+        "gpt-5.6-sol", "2025-03-01-preview", "k")
+    assert url.endswith("/openai/v1/chat/completions")
+    assert extra == {"model": "gpt-5.6-sol"}
+    assert hdrs["authorization"] == "Bearer k"
+
+    # Bare Foundry root gets /openai/v1 appended.
+    url3, _, _ = _azure_chat_request(
+        "https://x.services.ai.azure.com", "d", "v", "k")
+    assert url3.endswith("/openai/v1/chat/completions")
+
+    # Classic form unchanged: deployment in path, api-version, api-key header.
+    url2, hdrs2, extra2 = _azure_chat_request(
+        "https://myres.openai.azure.com", "sovereign-reasoning",
+        "2025-03-01-preview", "k")
+    assert "/openai/deployments/sovereign-reasoning/chat/completions" in url2
+    assert "api-version=2025-03-01-preview" in url2
+    assert hdrs2["api-key"] == "k" and extra2 == {}
+
+
 # --- journey digest: multi-session compression off the hot path ---------------
 
 def test_digest_merges_sessions_with_gates_intact():
@@ -627,6 +655,7 @@ if __name__ == "__main__":
     test_calculators_catch_the_reported_failure()
     test_plan_workbench_routes_and_computes()
     test_output_format_falls_back_to_chat()
+    test_azure_endpoint_forms_supported()
     test_digest_merges_sessions_with_gates_intact()
     test_digest_requires_baa_attestation()
     test_panel_component_served()

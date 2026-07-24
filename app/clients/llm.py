@@ -128,18 +128,25 @@ class LLMClient:
                 "AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are required "
                 "when llm_provider=azure_openai and mock_mode is off."
             )
-        endpoint = self.s.azure_openai_endpoint.rstrip("/")
-        url = (f"{endpoint}/openai/deployments/{deployment}/chat/completions"
-               f"?api-version={self.s.azure_openai_api_version}")
-        headers = {"api-key": self.s.azure_openai_api_key, "content-type": "application/json"}
+        url, headers, body_extra = _azure_chat_request(
+            self.s.azure_openai_endpoint, deployment,
+            self.s.azure_openai_api_version, self.s.azure_openai_api_key,
+        )
+        headers["content-type"] = "application/json"
         body = {
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": max_tokens,
             "temperature": temperature,
+            **body_extra,
         }
+        # GPT-5-generation models on the v1 surface take max_completion_tokens;
+        # the classic deployments path keeps the legacy max_tokens name.
+        if body_extra:
+            body["max_completion_tokens"] = max_tokens
+        else:
+            body["max_tokens"] = max_tokens
         try:
             async with httpx.AsyncClient(timeout=self.s.request_timeout_seconds) as client:
                 resp = await client.post(url, headers=headers, json=body)
@@ -167,6 +174,31 @@ class LLMClient:
             return json.loads(raw)
         except json.JSONDecodeError:
             return {}
+
+
+def _azure_chat_request(endpoint: str, deployment: str, api_version: str,
+                        api_key: str) -> tuple[str, dict, dict]:
+    """
+    Build (url, headers, body_extras) for an Azure OpenAI chat call.
+
+    Azure currently ships two endpoint generations, and Foundry hands out
+    whichever its resource type uses — so we speak both:
+      * CLASSIC (….openai.azure.com): deployment name in the PATH, api-version
+        query parameter, `api-key` header.
+      * V1 / Foundry (….services.ai.azure.com, path /openai/v1): OpenAI-
+        compatible — deployment name in the BODY as `model`, Bearer auth,
+        no api-version. A bare Foundry root gets /openai/v1 appended.
+    """
+    e = endpoint.rstrip("/")
+    if ".openai.azure.com" in e:
+        url = (f"{e}/openai/deployments/{deployment}/chat/completions"
+               f"?api-version={api_version}")
+        return url, {"api-key": api_key}, {}
+    if not e.endswith("/openai/v1"):
+        e = f"{e}/openai/v1"
+    return (f"{e}/chat/completions",
+            {"authorization": f"Bearer {api_key}"},
+            {"model": deployment})
 
 
 # ---------------------------------------------------------------------------
