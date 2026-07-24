@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from app.clients.llm import LLMClient
+from app.compliance.baa import require_baa_covered_llm
 from app.config import ComplianceProfile, Settings, get_settings
 from app.schemas import AgentResult, ChatRequest
 
@@ -39,20 +40,8 @@ class BaseAgent(ABC):
         return fmt, self._FORMAT_RULES[fmt]
 
     def require_baa_covered_llm(self, profile: ComplianceProfile) -> None:
-        """
-        Tripwire for PHI-bearing agents: in a real provider deployment, refuse
-        to process PHI unless the inference path is attested as BAA-covered.
-        Merely pointing at a BAA-capable provider is not enough — BAA_ATTESTED
-        must be set only after the agreement (with ZDR, or the hyperscaler
-        equivalent) is actually executed.
-        """
-        if profile.require_baa_covered_llm and self.s.mock_mode is False \
-                and (self.s.llm_provider not in ("anthropic", "azure_openai")
-                     or not self.s.baa_attested):
-            raise RuntimeError(
-                "Provider build requires an attested BAA-covered LLM path "
-                "(set BAA_ATTESTED=true only after the BAA + ZDR are executed)."
-            )
+        """PHI tripwire — see app/compliance/baa.py (shared with /digest)."""
+        require_baa_covered_llm(self.s, profile)
 
     @abstractmethod
     async def run(self, request: ChatRequest, profile: ComplianceProfile) -> AgentResult:

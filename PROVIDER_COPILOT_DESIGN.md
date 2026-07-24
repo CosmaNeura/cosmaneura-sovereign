@@ -172,9 +172,14 @@ Authorization: Bearer <clinician JWT>     → provider persona (verified)
 
 The response's `intent` tells the UI which lane answered; `structured` and
 `citations` carry the machine-readable payload (ERD/PubMed references for
-consults, prep metadata for visit prep). Patient-journey stringing (multiple
-sessions rather than the latest) is a data question for the calling app — the
-Sovereign accepts whatever `prior_sessions` contains, within request limits.
+consults, prep metadata for visit prep).
+
+**Patient-journey stringing is solved off the hot path:** the host calls
+`POST /digest` once per session when the note lands, maintaining a compact
+rolling journey digest per client (stored host-side; the Sovereign stays
+stateless). Chat requests then send `metadata.journey_digest` plus the latest
+note — constant-size context regardless of journey length. See
+`UI_UX_DESIGN.md` §3.
 
 ## 6. Scaffolded here vs. next
 

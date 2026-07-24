@@ -422,6 +422,55 @@ def test_output_format_falls_back_to_chat():
     assert resp.structured.get("output_format") == "chat"
 
 
+# --- journey digest: multi-session compression off the hot path ---------------
+
+def test_digest_merges_sessions_with_gates_intact():
+    from app.config import Settings
+    from app.schemas import DigestRequest
+
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.digest(DigestRequest(
+        persona=Persona.PROVIDER,
+        sessions=["Session 1: explored family history.",
+                  "Session 2: committed to journaling."],
+        existing_digest="Prior digest text.",
+        terminology="client/therapist")))
+    assert resp.digest and resp.trace_id
+
+    # Same provider gate as /chat: unverified provider without the dev
+    # switch is refused before any PHI-bearing session text is processed.
+    locked = Sovereign()  # allow_provider_persona defaults False
+    try:
+        _run(locked.digest(DigestRequest(persona=Persona.PROVIDER,
+                                         sessions=["s"])))
+        assert False, "should have refused unverified provider digest"
+    except PermissionError:
+        pass
+
+
+def test_digest_requires_baa_attestation():
+    from app.config import Settings
+    from app.schemas import DigestRequest
+
+    sov = Sovereign(Settings(mock_mode=False, baa_attested=False,
+                             allow_provider_persona=True))
+    try:
+        _run(sov.digest(DigestRequest(persona=Persona.PROVIDER, sessions=["s"])))
+        assert False, "should have refused without BAA attestation"
+    except RuntimeError as e:
+        assert "BAA" in str(e)
+
+
+def test_panel_component_served():
+    from fastapi.testclient import TestClient
+    from app.main import app as web_app
+
+    r = TestClient(web_app).get("/panel.js")
+    assert r.status_code == 200
+    assert "CosmaNeuraPanel" in r.text
+    assert "javascript" in r.headers["content-type"]
+
+
 # --- HTTP surface: welcome bootstrap ------------------------------------------
 
 def test_welcome_serves_greeting_and_guided_paths():
@@ -578,6 +627,9 @@ if __name__ == "__main__":
     test_calculators_catch_the_reported_failure()
     test_plan_workbench_routes_and_computes()
     test_output_format_falls_back_to_chat()
+    test_digest_merges_sessions_with_gates_intact()
+    test_digest_requires_baa_attestation()
+    test_panel_component_served()
     test_welcome_serves_greeting_and_guided_paths()
     test_auth_disabled_returns_no_principal()
     test_auth_required_when_enabled()

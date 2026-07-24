@@ -76,3 +76,25 @@ class ChatResponse(BaseModel):
     structured: dict[str, Any] = Field(default_factory=dict)
     safety_notice: Optional[str] = None
     trace_id: Optional[str] = None
+
+
+class DigestRequest(BaseModel):
+    """
+    Journey-digest maintenance (POST /digest): merge one or more session
+    notes/transcripts into a compact rolling per-patient digest. Called by the
+    host app once per session at WRITE time (when the note lands), not on the
+    chat hot path — so multi-visit context arrives at /chat as one small
+    field (metadata.journey_digest) instead of N transcripts.
+
+    PHI: sessions may carry PHI; this runs on the BAA path only. The overall
+    request is additionally bounded by the HTTP body cap in main.py.
+    """
+    persona: Persona
+    sessions: list[str] = Field(min_length=1, max_length=12)
+    existing_digest: str = Field(default="", max_length=8_000)
+    terminology: str = Field(default="patient/clinician", max_length=40)
+
+
+class DigestResponse(BaseModel):
+    digest: str
+    trace_id: str

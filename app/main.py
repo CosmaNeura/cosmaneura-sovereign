@@ -13,12 +13,12 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.compliance import safety
 from app.config import AuthMode, Persona, get_settings
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import ChatRequest, ChatResponse, DigestRequest, DigestResponse
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
 from app.sovereign.orchestrator import Sovereign
 
@@ -148,6 +148,32 @@ async def welcome(persona: Persona = Persona.PATIENT) -> dict:
         "disclaimer": safety.disclaimer_for(persona),
         "emergency_note": "If this is an emergency, call 911 now.",
     }
+
+
+# Journey digest: the host app (Cosmas dashboard / website) calls this once
+# per session at note-write time; the returned digest is stored per patient
+# and later sent to /chat as one compact metadata.journey_digest field. This
+# is how multi-visit context scales without shipping N transcripts per chat
+# message. Same auth + persona gates as /chat; BAA tripwire inside.
+@app.post("/digest", response_model=DigestResponse)
+async def digest(request: DigestRequest,
+                 principal=Depends(get_principal)) -> DigestResponse:
+    try:
+        return await _sovereign.digest(request, principal=principal)
+    except PermissionError:
+        raise HTTPException(status_code=403,
+                            detail="This deployment is not configured to "
+                                   "accept provider (PHI) requests.")
+
+
+# Drop-in dashboard panel component (reference implementation). Static JS,
+# no secrets — the mounting host supplies auth + context via callbacks.
+_PANEL_JS = (Path(__file__).parent / "panel.js").read_text()
+
+
+@app.get("/panel.js")
+async def panel_js() -> Response:
+    return Response(content=_PANEL_JS, media_type="application/javascript")
 
 
 # Built-in chat demo UI (same-origin, so it talks to /chat without CORS). Gated

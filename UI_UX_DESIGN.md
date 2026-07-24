@@ -72,6 +72,51 @@ The iframe is for sites you don't own; Cosmas never needs it.
 button, expanding to the same chat UI as Surface A (same component styling,
 same rendering rules) plus context awareness and actions.
 
+**Reference implementation (built):** `app/panel.js`, served by the Sovereign
+at `GET /panel.js`. Self-contained vanilla JS — no framework, no dependencies,
+prefixed styles. The host mounts it with two required callbacks; everything
+else is optional:
+
+```html
+<script src="https://sovereign.example.com/panel.js"></script>
+<script>
+  CosmaNeuraPanel.mount({
+    sovereignUrl: "https://sovereign.example.com",
+    getAuthToken: async () => currentUserJwt,   // the auth bridge
+    getContext:   async () => ({                // whatever record is on screen
+      clientId, journey_digest, prior_sessions: latestNote,
+      terminology, care_model /* + labs, metrics, templates per view */ }),
+    onInsert: (text) => note.insert(text),      // optional action hooks
+    onSave:   (text) => visits.savePrep(text),
+    loadHistory, saveHistory,                   // optional thread persistence
+  });
+</script>
+```
+
+The component implements the full action contract below (badges, emergency
+card, trust line, verified-calculations box, Copy/Download, Insert/Save
+hooks), budgets context payloads to stay inside the Sovereign's body cap
+(newest-first truncation), and keys thread continuity to `clientId`. The
+panel **never scrapes the page** — the host owns what context flows, which is
+both the privacy posture and the reason it can't go stale when the dashboard
+UI changes.
+
+### The multi-session context problem (and its answer)
+
+A panel can only send what the host gives it, and "my last 2-3 visits" as raw
+transcripts would blow request budgets. Two-part answer, both built:
+
+1. **Notes are already compressed sessions.** Cosmas generates a note per
+   visit — so "last 3 visits" context is 3 *notes* (a few KB), not 3
+   transcripts. The panel's `prior_sessions` accepts either.
+2. **The journey digest (`POST /digest`).** For long journeys, the host calls
+   `/digest` **once per session at note-write time** — off the chat hot path —
+   merging the new session into a compact rolling digest (≤300 words: themes,
+   trajectory, commitments, open threads) stored per client. Chat requests
+   then carry one small `metadata.journey_digest` field, and context cost
+   stays constant whether the client has 3 sessions or 300. Same auth,
+   persona gate, BAA tripwire, and audit chain as `/chat`.
+
 **Context contract** — Cosmas attaches this to every `/chat` call, silently:
 
 ```json
