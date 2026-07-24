@@ -49,6 +49,23 @@ async def main() -> int:
         print("MOCK_MODE is still true — set MOCK_MODE=false in .env and rerun.")
         return 1
 
+    # Catch the most common endpoint mix-up before making any network call:
+    # the Foundry *project* endpoint (…/api/projects/…) is for Microsoft's
+    # agent SDK, not the Azure OpenAI protocol this service speaks.
+    ep = s.azure_openai_endpoint or ""
+    if s.llm_provider == "azure_openai":
+        if "/api/projects/" in ep:
+            print("[FAIL] AZURE_OPENAI_ENDPOINT is the Foundry *project* endpoint "
+                  "(it contains /api/projects/).")
+            print("       Use the Azure OpenAI endpoint instead: in Foundry open "
+                  "Models + endpoints → click a deployment → copy the Target URI —")
+            print("       the part before /openai/ is the endpoint, e.g. "
+                  "https://<resource>.openai.azure.com")
+            return 1
+        if not ep.startswith("https://"):
+            print("[FAIL] AZURE_OPENAI_ENDPOINT is empty or not an https:// URL.")
+            return 1
+
     llm = LLMClient(s)
     failures = 0
 
