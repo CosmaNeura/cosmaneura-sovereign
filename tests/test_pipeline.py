@@ -398,10 +398,12 @@ def test_plan_workbench_routes_and_computes():
                   "patient_metrics": {"sex": "female", "age": 52,
                                       "weight_lb": 200, "height_in": 65},
                   "calorie_target": "1500-1600",
+                  "terminology": "client/therapist",
                   "output_format": "note"})))
     assert resp.intent == Intent.PLAN_WORKBENCH
     assert resp.structured.get("feature") == "plan_workbench"
     assert resp.structured.get("output_format") == "note"
+    assert resp.structured.get("terminology") == "client/therapist"
     computed = resp.structured.get("computed") or {}
     assert computed.get("bmi") == 33.3                      # code, not model
     assert computed["calorie_target"]["min"] == 1500
