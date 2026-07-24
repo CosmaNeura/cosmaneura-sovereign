@@ -37,6 +37,10 @@ def _hint(err: str) -> str:
         return "Hint: AZURE_OPENAI_ENDPOINT looks wrong or unreachable. Copy it from the deployment page."
     if "quota" in e or "429" in e:
         return "Hint: rate/quota limit. Check the deployment's quota (TPM) in Foundry."
+    if "unsupported" in e or "temperature" in e or "max_tokens" in e:
+        return ("Hint: this model rejected a request parameter. GPT-5-generation "
+                "models change parameter rules between versions — send this exact "
+                "message to the developer; it's a one-line fix in app/clients/llm.py.")
     return "Hint: read the message above; if unclear, send it to the developer verbatim (it is PHI-safe)."
 
 

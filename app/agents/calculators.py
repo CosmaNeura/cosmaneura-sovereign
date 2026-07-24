@@ -123,7 +123,7 @@ def compute(metrics: dict | None, calorie_target: Any = None,
     if rng:
         out["calorie_target"] = {"min": rng[0], "max": rng[1],
                                  "source": "clinician-set"}
-        split = re.findall(r"\d{1,2}", str(macro_split or ""))
+        split = re.findall(r"\d{1,3}", str(macro_split or ""))
         pcts = ([int(x) for x in split[:3]] if len(split) >= 3 else [30, 40, 30])
         mid = (rng[0] + rng[1]) // 2
         m = macro_grams(mid, protein_pct=pcts[0], carb_pct=pcts[1],

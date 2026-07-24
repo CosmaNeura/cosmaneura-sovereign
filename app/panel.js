@@ -89,9 +89,12 @@
   // when the host passes arrays, keep newest-first until the budget is spent.
   var CONTEXT_CHAR_BUDGET = 60000;
 
+  // Escapes quotes too — escaped text can land inside HTML attributes, where
+  // an unescaped quote is an XSS breakout.
   function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>]/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c];
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;",
+               '"': "&quot;", "'": "&#39;" }[c];
     });
   }
 

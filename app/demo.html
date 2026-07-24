@@ -159,7 +159,10 @@ personaSel.addEventListener('change', loadWelcome);
 input.addEventListener('input', () => { input.style.height='auto'; input.style.height=Math.min(input.scrollHeight,140)+'px'; });
 input.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); form.requestSubmit(); }});
 
-function esc(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// Escapes quotes too: escaped text lands inside href="…" attributes (booking
+// links, markdown links), where an unescaped quote is an XSS breakout.
+function esc(s){ return String(s??'').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 // tiny markdown: headings, bold, links, bullets, paragraphs
 function md(t){
   t = t.replace(/\s?\[\^?\d+\]/g,''); // strip [^8]/[8] citation markers
@@ -192,7 +195,7 @@ function renderProviders(b, matches){
     const langs=(p.languages||[]).map(l=>'<span class="tag">'+esc(l)+'</span>').join('');
     const states=(p.licensed_states||[]).slice(0,6).join(', ');
     const tele=p.telehealth?'<span class="tag">telehealth</span>':'<span class="tag">in-person</span>';
-    const book=p.booking_url?'<a class="book" href="'+p.booking_url+'" target="_blank" rel="noopener">Book appointment →</a>':'';
+    const book=p.booking_url?'<a class="book" href="'+esc(p.booking_url)+'" target="_blank" rel="noopener">Book appointment →</a>':'';
     c.innerHTML='<div class="nm">'+esc(p.name||'')+'</div>'+
       '<div class="sp">'+esc(p.specialty||'')+'</div>'+tele+langs+
       (states?'<span class="tag">'+esc(states)+'</span>':'')+'<br>'+book;
@@ -209,7 +212,7 @@ function renderTrials(b, trials){
     const status=t.status?'<span class="tag">'+esc(String(t.status).replace(/_/g,' ').toLowerCase())+'</span>':'';
     const phase=t.phase?'<span class="tag">'+esc(t.phase)+'</span>':'';
     const nct=t.nct_id?'<span class="tag">'+esc(t.nct_id)+'</span>':'';
-    const link=t.url?'<a class="book" href="'+t.url+'" target="_blank" rel="noopener">View trial →</a>':'';
+    const link=t.url?'<a class="book" href="'+esc(t.url)+'" target="_blank" rel="noopener">View trial →</a>':'';
     c.innerHTML='<div class="nm">'+esc(t.title||'')+'</div>'+
       '<div class="sp">'+esc(t.lead_sponsor||'')+'</div>'+status+phase+nct+'<br>'+link;
     wrap.appendChild(c);
