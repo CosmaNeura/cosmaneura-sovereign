@@ -109,6 +109,7 @@ class PlanWorkbenchAgent(BaseAgent):
 
         labs = request.metadata.get("labs") or ""
         case_context = request.metadata.get("case_context") or ""
+        journey = request.metadata.get("journey_digest") or ""
         note_template = request.metadata.get("note_template") or ""
         # Same account-level setting the visit-prep lane honors — a
         # behavioral-health clinician's workbench says "client", not "patient".
@@ -123,7 +124,9 @@ class PlanWorkbenchAgent(BaseAgent):
             prompt=(f"Clinician's question / assessment: {request.message}\n"
                     f"Terminology pair: {terminology}\n"
                     f"Case history and clinical context: {case_context}\n"
-                    f"<labs>\n{labs}\n</labs>\n"
+                    + (f"<journey_digest>\n{journey}\n</journey_digest>\n"
+                       if journey else "")
+                    + f"<labs>\n{labs}\n</labs>\n"
                     f"<computed_values>  (authoritative — computed in code, "
                     f"not by AI)\n{computed_block}\n</computed_values>\n"
                     f"<published_literature>\n{evidence}\n</published_literature>\n"

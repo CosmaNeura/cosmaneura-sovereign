@@ -61,7 +61,15 @@ class Router:
         self.magisterium = magisterium or MagisteriumClient(self.s)
 
     async def route(self, request: ChatRequest) -> tuple[Intent, DoctrinalSensitivity, str]:
-        context = f"User: {request.message}\nMetadata: {request.metadata}"
+        # Recent turns matter: "tell me more about that" misclassifies in
+        # isolation. Include a bounded window of history in the routing
+        # context (LITERAL mode de-identifies the whole context before it
+        # reaches Magisterium, history included).
+        lines = [f"[history {m.role}]: {m.content[:300]}"
+                 for m in request.history[-6:]]
+        lines.append(f"User: {request.message}")
+        lines.append(f"Metadata: {request.metadata}")
+        context = "\n".join(lines)
 
         if self.s.sovereign_mode == SovereignMode.LITERAL:
             # LITERAL sovereign: Magisterium is consulted on *every* request as

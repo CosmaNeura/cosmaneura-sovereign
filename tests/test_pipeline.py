@@ -422,6 +422,56 @@ def test_output_format_falls_back_to_chat():
     assert resp.structured.get("output_format") == "chat"
 
 
+# --- context plumbing: history-aware routing + journey digest -----------------
+
+def test_router_includes_history_in_classification():
+    """Follow-ups like "tell me more" need prior turns in the routing context."""
+    from app.schemas import ChatMessage
+    from app.sovereign.router import Router
+
+    router = Router()
+    seen = {}
+    original = router.llm.classify_json
+
+    async def spy(**kwargs):
+        seen["prompt"] = kwargs.get("prompt", "")
+        return await original(**kwargs)
+
+    router.llm.classify_json = spy
+    _run(router.route(ChatRequest(
+        persona=Persona.PATIENT,
+        message="tell me more about the second one",
+        history=[ChatMessage(role="user", content="find me a catholic cardiologist in Ohio"),
+                 ChatMessage(role="assistant", content="Here are three matches...")])))
+    assert "[history user]: find me a catholic cardiologist" in seen["prompt"]
+    assert "tell me more about the second one" in seen["prompt"]
+
+
+def test_agents_consume_journey_digest():
+    """The digest the panel sends must actually reach the agents' prompts."""
+    from app.agents.plan_workbench_agent import PlanWorkbenchAgent
+    from app.agents.visit_prep_agent import VisitPrepAgent
+    from app.config import ComplianceProfile, Settings
+
+    profile = ComplianceProfile(Persona.PROVIDER)
+    marker = "JOURNEY-DIGEST-MARKER-XYZ"
+    for cls in (VisitPrepAgent, PlanWorkbenchAgent):
+        agent = cls(Settings(allow_provider_persona=True))
+        prompts: list[str] = []
+        original = agent.llm.complete
+
+        async def spy(**kwargs):
+            prompts.append(kwargs.get("prompt", ""))
+            return await original(**kwargs)
+
+        agent.llm.complete = spy
+        _run(agent.run(ChatRequest(
+            persona=Persona.PROVIDER, message="prep for the next visit",
+            metadata={"journey_digest": marker}), profile))
+        assert any(marker in p for p in prompts), \
+            f"{cls.__name__} dropped the journey digest"
+
+
 # --- Azure endpoint dialects ---------------------------------------------------
 
 def test_azure_endpoint_forms_supported():
@@ -655,6 +705,8 @@ if __name__ == "__main__":
     test_calculators_catch_the_reported_failure()
     test_plan_workbench_routes_and_computes()
     test_output_format_falls_back_to_chat()
+    test_router_includes_history_in_classification()
+    test_agents_consume_journey_digest()
     test_azure_endpoint_forms_supported()
     test_digest_merges_sessions_with_gates_intact()
     test_digest_requires_baa_attestation()

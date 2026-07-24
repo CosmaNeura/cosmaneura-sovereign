@@ -275,3 +275,63 @@ Emergencies still short-circuit before auth.
 
 Your dev handles model-ID confirmation, the hardening checklist, and pointing
 the (already-built) JWT auth at your identity provider (§10).
+
+---
+
+## 12. Sprint status & go-live runbook (July 24, 2026)
+
+Everything below reflects the `claude/repo-review-8e9d5x` branch (PR #1).
+Written so the incoming developer can go from clone to first live output in
+under an hour.
+
+### What is DONE (built, tested offline — 43 tests passing)
+
+| Piece | Where |
+|---|---|
+| Six agents incl. ethics consult (forced-HIGH arbitration), visit prep, plan workbench (deterministic calculators) | `app/agents/` |
+| PubMed client (Linacre filter, PHI tripwire) | `app/clients/pubmed.py` |
+| 3-way output selector (chat/note/document) across provider lanes | `BaseAgent.resolve_output_format` |
+| `GET /welcome` bootstrap, `POST /digest` journey compression, `GET /panel.js` drop-in dashboard component | `app/main.py`, `app/panel.js` |
+| History-aware routing; agents consume `metadata.journey_digest` | `app/sovereign/router.py`, agents |
+| Azure client speaks BOTH endpoint dialects (classic + Foundry v1, incl. `max_completion_tokens`) | `app/clients/llm.py` |
+| Live smoke test with plain-language failure hints | `tools/smoke_live.py` |
+| Design docs: `INTERACTION_DESIGN.md`, `PROVIDER_COPILOT_DESIGN.md`, `UI_UX_DESIGN.md`; data governance in `README.md` | repo root |
+
+### Azure facts (created by the owner, July 24, 2026)
+
+- Resource: `sovereign-reasoning-resource` (Foundry, v1 endpoint dialect)
+- Endpoint: `https://sovereign-reasoning-resource.services.ai.azure.com/openai/v1`
+- Deployments: `gpt-5.6-sol` (REASONING_MODEL) · `gpt-5.4-mini` (FAST_MODEL)
+- Key: 1Password item `sovereign-reasoning-resource` (rotated July 24 after an
+  exposure — never transmit keys outside 1Password)
+- Budget alert: verify a monthly budget (~$10k) with 50%/90% email alerts exists
+
+### Go-live runbook (first real output, synthetic data)
+
+1. `git fetch && git checkout claude/repo-review-8e9d5x && make install`
+2. `cp .env.example .env` — endpoint + deployment names are already correct;
+   fill `AZURE_OPENAI_API_KEY` (1Password) and `MAGISTERIUM_API_KEY` (vault);
+   set `MOCK_MODE=false`.
+3. `PYTHONPATH=. python tools/smoke_live.py` → expect three PASSes. Each
+   failure mode prints its own remediation hint.
+4. `PYTHONPATH=. python run_demo.py` with real models — read all 8 scenarios,
+   eyeball routing choices and doctrinal verdicts. SYNTHETIC DATA ONLY.
+5. Deploy staging via `infra/` (Terraform targets Azure Container Apps; env
+   contract in `infra/variables.tf` already matches the new config).
+
+### Blocked on (not code)
+
+| Item | Blocks | Owner |
+|---|---|---|
+| Microsoft DPA/BAA written confirmation | `BAA_ATTESTED=true` → any real PHI | John (support ticket filed) |
+| Credits-cover-AOAI + quota tier answer | cost planning; 5.6 quota headroom | John (same ticket) |
+| Clerk OIDC production values | `AUTH_MODE=oidc` → provider persona in prod | Developer + John |
+| Cosmas dashboard mount (panel.js + `getAuthToken`/`getContext` + `/digest` at note-write) | Surface B | Developer (Cosmas repo; contract in `UI_UX_DESIGN.md` §3) |
+| SSE streaming on `/chat` | perceived latency polish | Developer (post-launch) |
+
+### First post-launch engineering items (in order)
+
+1. Auth bridge (Cosmas session → provider JWT) — security-critical, small.
+2. Panel mount in Cosmas with minimal context (latest note + terminology).
+3. Prompt tuning against real material (redacted long note, labs, templates).
+4. SSE streaming; per-field size bounds on `prior_sessions`/`labs`/`sessions`.

@@ -74,6 +74,9 @@ class VisitPrepAgent(BaseAgent):
         # summary from the intake bot.
         patient_profile = request.metadata.get("patient_profile") or ""
         intake_summary = request.metadata.get("intake_summary") or ""
+        # Rolling longitudinal context from POST /digest — constant-size
+        # multi-visit memory maintained by the host app per client.
+        journey = request.metadata.get("journey_digest") or ""
         fmt, fmt_rules = self.resolve_output_format(request)
 
         content = await self.llm.complete(
@@ -85,6 +88,8 @@ class VisitPrepAgent(BaseAgent):
                     + (f"Patient engagement profile: {patient_profile} "
                        "(use only to tune tone and follow-up suggestions)\n"
                        if patient_profile else "")
+                    + (f"<journey_digest>\n{journey}\n</journey_digest>\n"
+                       if journey else "")
                     + (f"<intake_summary>\n{intake_summary}\n</intake_summary>\n"
                        if intake_summary else "")
                     + f"<prior_sessions>\n{prior}\n</prior_sessions>\n"
