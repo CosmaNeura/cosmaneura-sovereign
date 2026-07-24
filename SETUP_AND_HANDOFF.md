@@ -297,20 +297,33 @@ under an hour.
 | Live smoke test with plain-language failure hints | `tools/smoke_live.py` |
 | Design docs: `INTERACTION_DESIGN.md`, `PROVIDER_COPILOT_DESIGN.md`, `UI_UX_DESIGN.md`; data governance in `README.md` | repo root |
 
-### Azure facts (created by the owner, July 24, 2026)
+### Azure facts + consolidation checklist (owner decision, July 24, 2026)
 
-- Resource: `sovereign-reasoning-resource` (Foundry, v1 endpoint dialect).
-  NOTE: the org also has a `CosmasCode` Foundry resource (the main Cosmas
-  app). The Sovereign deliberately runs on its OWN resource — decision
-  recorded July 24 — for cost attribution, key isolation, and quota
-  separation. Verify the resource sits in the credits-bearing subscription;
-  consolidation onto CosmasCode later would be a redeploy + one-line
-  endpoint change.
-- Endpoint: `https://sovereign-reasoning-resource.services.ai.azure.com/openai/v1`
-- Deployments: `gpt-5.6-sol` (REASONING_MODEL) · `gpt-5.4-mini` (FAST_MODEL)
-- Key: 1Password item `sovereign-reasoning-resource` (rotated July 24 after an
-  exposure — never transmit keys outside 1Password)
-- Budget alert: verify a monthly budget (~$10k) with 50%/90% email alerts exists
+**Decision: consolidate on the `CosmasCode` Foundry resource.** During setup a
+stray resource (`sovereign-reasoning-resource`) was auto-created and currently
+holds the only copies of the two model deployments. Developer performs the
+consolidation — 15 minutes:
+
+1. In ai.azure.com, under the **CosmasCode** resource/project, deploy two
+   models with these EXACT deployment names (they're already wired in config):
+   `gpt-5.6-sol` (the newest reasoning-tier GPT) and `gpt-5.4-mini`.
+   If Foundry rejects those names, accept its defaults and update
+   REASONING_MODEL / FAST_MODEL in the env to match verbatim.
+2. portal.azure.com → **CosmasCode** → Keys and Endpoint → **Regenerate
+   Key 1** (a key was exposed in chat during setup and it is not certain
+   which resource it belonged to — rotate to be sure) → store the new key in
+   1Password item **`CosmasCode`**.
+3. Delete the stray `sovereign-reasoning-resource` (and its
+   "Sovereign-Reasoning" project). This removes duplicate spend paths and
+   retires any lingering exposed credential on that resource for good.
+4. Verify CosmasCode sits in the credits-bearing subscription and a monthly
+   budget (~$10k, 50%/90% email alerts) exists on that subscription.
+
+- Endpoint (wired in config): `https://cosmascode.services.ai.azure.com/openai/v1`
+- Deployments (wired in config): `gpt-5.6-sol` · `gpt-5.4-mini`
+- Key: 1Password item `CosmasCode` — never transmitted outside 1Password
+- `tools/smoke_live.py` validates all of the above; a 404 there means a
+  deployment-name mismatch and says so in plain language
 
 ### Go-live runbook (first real output, synthetic data)
 
