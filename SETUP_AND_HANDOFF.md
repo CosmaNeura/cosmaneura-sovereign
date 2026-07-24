@@ -299,7 +299,13 @@ under an hour.
 
 ### Azure facts (created by the owner, July 24, 2026)
 
-- Resource: `sovereign-reasoning-resource` (Foundry, v1 endpoint dialect)
+- Resource: `sovereign-reasoning-resource` (Foundry, v1 endpoint dialect).
+  NOTE: the org also has a `CosmasCode` Foundry resource (the main Cosmas
+  app). The Sovereign deliberately runs on its OWN resource — decision
+  recorded July 24 — for cost attribution, key isolation, and quota
+  separation. Verify the resource sits in the credits-bearing subscription;
+  consolidation onto CosmasCode later would be a redeploy + one-line
+  endpoint change.
 - Endpoint: `https://sovereign-reasoning-resource.services.ai.azure.com/openai/v1`
 - Deployments: `gpt-5.6-sol` (REASONING_MODEL) · `gpt-5.4-mini` (FAST_MODEL)
 - Key: 1Password item `sovereign-reasoning-resource` (rotated July 24 after an
