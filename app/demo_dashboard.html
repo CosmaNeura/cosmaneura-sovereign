@@ -270,6 +270,9 @@ function renderList(){
     const r = byId(el.dataset.id);
     if (!r || r.inert) return;         // inert rows are visual filler only
     currentId = r.id; render();
+    // The record changed: the panel must swap conversations with it, never
+    // leave the previous patient's thread under this patient's chart.
+    panel.setRecord(r.id);
   });
 }
 
@@ -322,7 +325,7 @@ document.getElementById("ctxtoggle").onclick = function(){
   this.textContent = (on ? "▾ hide" : "▸ show") + " context sent to assistant";
 };
 
-CosmaNeuraPanel.mount({
+const panel = CosmaNeuraPanel.mount({
   sovereignUrl: "",                     // same origin in this harness
   persona: "provider",
   // Demo runs with AUTH_MODE=disabled, so there is no token. In production

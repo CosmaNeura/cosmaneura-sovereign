@@ -211,6 +211,29 @@
       return b;
     }
 
+    // Record-scoped threads. The host MUST call panel.setRecord(id) when the
+    // open record changes: the wire payload already keys history by clientId,
+    // but leaving the previous patient's bubbles on screen under a new
+    // patient's chart is wrong-patient display, which is unacceptable in a
+    // clinical UI. ask() also calls this defensively, so a host that forgets
+    // still cannot show one patient's conversation against another's record.
+    async function loadThreadFor(id) {
+      state.clientId = id;
+      state.history = opts.loadHistory ? (await opts.loadHistory(id)) || [] : [];
+      thread.innerHTML = "";
+      if (state.history.length) {
+        // Restored turns render as text; citations and actions belong to the
+        // live response and are not replayed.
+        state.history.forEach(function (m) {
+          var b = bubble(m.role === "user" ? "u" : "a");
+          if (m.role === "user") b.textContent = m.content || "";
+          else b.innerHTML = md(m.content || "");
+        });
+      } else if (state.open) {
+        await loadWelcome();
+      }
+    }
+
     async function loadWelcome() {
       try {
         var r = await fetch(url + "/welcome?persona=" + persona);
@@ -284,17 +307,20 @@
       var text = input.value.trim();
       if (!text || state.busy) return;
       state.busy = true; send.disabled = true;
+      input.value = ""; input.style.height = "auto";
+
+      var ctx = {};
+      try {
+        ctx = opts.getContext ? (await opts.getContext()) || {} : {};
+      } catch (e) { ctx = {}; }
+      // Resolve the record BEFORE painting this turn, so a stale thread is
+      // rebuilt rather than appended to.
+      if (ctx.clientId && ctx.clientId !== state.clientId) await loadThreadFor(ctx.clientId);
+
       bubble("u").textContent = text;
-      input.value = "";
       var b = bubble("a");
       b.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
       try {
-        var ctx = opts.getContext ? (await opts.getContext()) || {} : {};
-        // Thread continuity is keyed by the record on screen.
-        if (ctx.clientId && ctx.clientId !== state.clientId) {
-          state.clientId = ctx.clientId;
-          state.history = opts.loadHistory ? (await opts.loadHistory(ctx.clientId)) || [] : [];
-        }
         var meta = { output_format: fmt.value };
         ["journey_digest", "care_model", "terminology", "case_context", "labs",
          "patient_metrics", "calorie_target", "macro_split", "note_template",
@@ -363,8 +389,15 @@
       input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 110) + "px";
     });
 
-    return { open: function () { setOpen(true); },
-             close: function () { setOpen(false); }, root: root };
+    return {
+      open: function () { setOpen(true); },
+      close: function () { setOpen(false); },
+      // Call whenever the open record changes — clears the thread, reloads
+      // that record's history, and re-renders it. Prevents one patient's
+      // conversation from being displayed against another's chart.
+      setRecord: function (id) { return loadThreadFor(id); },
+      root: root,
+    };
   }
 
   window.CosmaNeuraPanel = { mount: mount };

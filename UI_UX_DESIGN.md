@@ -90,6 +90,12 @@ else is optional:
     onSave:   (text) => visits.savePrep(text),
     loadHistory, saveHistory,                   // optional thread persistence
   });
+
+  // REQUIRED whenever the open record changes: swaps the visible conversation
+  // with the record. Without it the previous patient's thread stays on screen
+  // under the new patient's chart — wrong-patient display. The panel also
+  // rebuilds defensively if it sees a new clientId at send time.
+  onRecordChange(id => panel.setRecord(id));
 </script>
 ```
 
