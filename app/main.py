@@ -180,7 +180,16 @@ async def panel_js() -> Response:
 # off by default; the launch script tools/run_demo_web.sh enables it locally.
 if _settings.demo_ui_enabled:
     _DEMO_HTML = (Path(__file__).parent / "demo.html").read_text()
+    # Harness that mounts panel.js inside a stand-in for the Cosmas
+    # notetaking dashboard — the Surface B experience, same-origin so it
+    # needs no CORS setup locally (production hosts are cross-origin and
+    # must be added to CORS_ALLOW_ORIGINS).
+    _DASHBOARD_HTML = (Path(__file__).parent / "demo_dashboard.html").read_text()
 
     @app.get("/demo", response_class=HTMLResponse)
     async def demo() -> str:
         return _DEMO_HTML
+
+    @app.get("/demo/dashboard", response_class=HTMLResponse)
+    async def demo_dashboard() -> str:
+        return _DASHBOARD_HTML

@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cosmas — Notes (Sovereign panel demo)</title>
+<!--
+  DEMO HARNESS — a visual stand-in for the Cosmas notetaking dashboard
+  (app.cosmaneura.com/notes), used to exercise the drop-in Sovereign panel
+  (app/panel.js) exactly as the real dashboard will: the host owns auth and
+  context, the panel owns the chat.
+
+  Layout, palette and controls mirror the real product so the integration can
+  be judged in context. All records are SYNTHETIC. Served only when
+  DEMO_UI_ENABLED=true. In production the host is a different origin, so its
+  domain must be added to CORS_ALLOW_ORIGINS; here it is same-origin.
+-->
+<style>
+  :root{
+    --navy:#152744; --navy-2:#0f1e36; --navy-hi:#1e3559; --line-d:rgba(255,255,255,.08);
+    --ink-d:#e9eff7; --mut-d:#8ba0bd;
+    --page:#f7f9fb; --card:#fff; --line:#e3e8ee; --ink:#0f172a; --mut:#64748b;
+    --green:#16a34a; --green-bg:#dcfce7; --gold:#d6a848;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);background:var(--page);overflow:hidden}
+  /* Dev/demo strip — the real app shows a Clerk dev bar in this slot. */
+  .devbar{background:#fff;border-bottom:1px solid var(--line);padding:7px 16px;
+    font-size:12.5px;color:var(--mut);display:flex;align-items:center;gap:14px;white-space:nowrap}
+  .devbar b{color:#b45309}
+  .devbar .sel{border:1px solid var(--line);border-radius:7px;padding:3px 10px;color:#334155}
+  .devbar .lnk{color:var(--mut);cursor:pointer}
+  .devbar .lnk:hover{color:var(--ink)}
+  .devbar .right{margin-left:auto;display:flex;gap:16px;align-items:center;font-weight:600;color:#334155}
+  .ctxstrip{display:none;background:#f1f5f9;border-bottom:1px solid var(--line);
+    padding:8px 16px;font-size:12px;color:#334155;max-height:120px;overflow:auto}
+  .ctxstrip.on{display:block}
+  .ctxstrip b{color:#0f172a}
+
+  .shell{display:flex;height:calc(100% - 38px)}
+  /* icon rail */
+  .rail{width:56px;flex:0 0 56px;background:var(--navy-2);display:flex;flex-direction:column;
+    align-items:center;padding:12px 0;gap:6px}
+  .logo{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--gold),#a97f2c);
+    display:grid;place-items:center;color:#1a1206;font-weight:800;font-size:15px;margin-bottom:10px}
+  .ic{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;color:#7e93b0;cursor:pointer}
+  .ic.on{background:var(--navy-hi);color:#dbe7f5}
+  .ic:hover{color:#dbe7f5}
+  .avatar{margin-top:auto;width:28px;height:28px;border-radius:50%;background:#6d5bd0}
+  /* notes list */
+  .list{width:312px;flex:0 0 312px;background:var(--navy);color:var(--ink-d);
+    display:flex;flex-direction:column;border-right:1px solid var(--line-d)}
+  .list .hd{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
+  .list .hd h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.2px}
+  .list .hd .wk{margin-left:auto;font-size:12.5px;color:var(--mut-d)}
+  .tog{width:34px;height:19px;border-radius:999px;background:#33507c;position:relative}
+  .tog::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff}
+  .search{margin:0 16px 12px;background:var(--navy-hi);border:1px solid var(--line-d);border-radius:9px;
+    padding:9px 12px;color:var(--mut-d);font-size:13.5px}
+  .items{overflow-y:auto;flex:1}
+  .item{padding:12px 16px;border-top:1px solid var(--line-d);cursor:pointer}
+  .item:hover{background:#1a2f52}
+  .item.on{background:var(--navy-hi)}
+  .item .r1{display:flex;align-items:baseline;gap:8px}
+  .item .nm{font-weight:700;font-size:14.5px}
+  .item .dt{margin-left:auto;font-size:12.5px;color:var(--mut-d)}
+  .item .r2{display:flex;align-items:center;gap:8px;margin-top:3px}
+  .item .ty{font-size:12.5px;color:var(--mut-d)}
+  .pill-d{margin-left:auto;font-size:12px;color:#4ade80}
+  .pill-d::before{content:"● ";font-size:9px;vertical-align:1px}
+  /* main */
+  .main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--page)}
+  .topbar{display:flex;align-items:center;gap:14px;padding:13px 22px;background:#fff;
+    border-bottom:1px solid var(--line)}
+  .topbar .col{color:#94a3b8}
+  .topbar h2{font-size:19px;margin:0;font-weight:700}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:9px;padding:8px 14px;
+    font:inherit;font-size:13.5px;font-weight:600;color:#334155;cursor:pointer;display:inline-flex;
+    align-items:center;gap:7px}
+  .btn:hover{border-color:#cbd5e1;background:#f8fafc}
+  .topbar .btn{margin-left:auto}
+  .scroll{flex:1;overflow-y:auto;padding:20px 22px 60px}
+  .note{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:26px 30px;
+    max-width:980px}
+  .note h3{font-size:26px;margin:0 0 10px;font-weight:800;letter-spacing:-.4px;display:flex;
+    align-items:center;gap:12px;flex-wrap:wrap}
+  .pill{display:inline-flex;align-items:center;gap:6px;background:var(--green-bg);color:var(--green);
+    font-size:12.5px;font-weight:600;border-radius:999px;padding:3px 11px}
+  .pill::before{content:"●";font-size:8px}
+  .apptdate{color:var(--mut);font-size:14px;margin:10px 0 22px}
+  .sect{display:flex;align-items:center;gap:14px;margin:0 0 14px}
+  .sect h4{font-size:21px;margin:0;font-weight:700;letter-spacing:-.2px}
+  .sect .car{color:#94a3b8;font-size:13px}
+  .note h5{font-size:16.5px;margin:20px 0 4px;font-weight:700}
+  .note p{margin:.35em 0;font-size:15.5px;color:#1e293b}
+  .inserted{background:#f0fdf4;border-left:3px solid var(--green);padding:10px 14px;
+    border-radius:0 8px 8px 0;margin-top:14px;white-space:pre-wrap;font-size:14.5px}
+  .inserted .tag{display:block;font-size:11.5px;color:var(--green);font-weight:700;margin-bottom:4px}
+  details{margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
+  summary{cursor:pointer;color:var(--mut);font-size:13.5px}
+  .tx{margin-top:10px;background:#f8fafc;border:1px solid var(--line);border-radius:9px;
+    padding:12px 14px;font-size:13.5px;color:#475569;white-space:pre-wrap}
+  .retn{font-size:12.5px;color:#b45309;margin-top:8px}
+  .bug{position:fixed;right:20px;bottom:20px;background:#fff;border:1px solid var(--line);
+    border-radius:999px;padding:11px 18px;font-size:14px;font-weight:600;color:#0f172a;
+    box-shadow:0 6px 18px rgba(15,23,42,.12);display:flex;align-items:center;gap:9px;z-index:5}
+</style>
+</head>
+<body>
+
+<div class="devbar">
+  <span><b>DEMO HARNESS</b> — visual stand-in for app.cosmaneura.com/notes ·
+    records are <b>synthetic</b> · Sovereign in <b>MOCK_MODE</b> (assistant text is a stub)</span>
+  <span class="lnk" id="ctxtoggle">▸ show context sent to assistant</span>
+  <span class="right"><span class="sel">Select user ⌄</span><span>Switch User</span><span>Logout</span></span>
+</div>
+<div class="ctxstrip" id="ctxstrip"></div>
+
+<div class="shell">
+  <div class="rail">
+    <div class="logo">C</div>
+    <div class="ic" title="Inbox">✉</div>
+    <div class="ic on" title="Notes">▤</div>
+    <div class="ic" title="Calendar">▦</div>
+    <div class="ic" title="Settings">⚙</div>
+    <div class="avatar"></div>
+  </div>
+
+  <div class="list">
+    <div class="hd">
+      <h1>Notes</h1>
+      <span class="wk">This Week</span><span class="tog"></span>
+    </div>
+    <div class="search">Type to search...</div>
+    <div class="items" id="items"></div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="col">◫</span>
+      <h2 id="topName">—</h2>
+      <button class="btn">⬆ Upload Recording</button>
+    </div>
+    <div class="scroll">
+      <div class="note">
+        <h3><span id="ptName">—</span> <span class="pill" id="ptStatus">Completed</span></h3>
+        <span class="pill" id="ptProfile">Self-Directed</span>
+        <div class="apptdate" id="ptDate">Appointment Date: —</div>
+
+        <div class="sect">
+          <span class="car">⌃</span>
+          <h4 id="ptVisit">—</h4>
+          <button class="btn">⧉ Copy to Clipboard</button>
+        </div>
+
+        <div id="body"></div>
+
+        <details>
+          <summary>Full transcript</summary>
+          <div class="tx" id="tx"></div>
+          <div class="retn">⚠ Transcripts are deleted from the dashboard 7 days after the visit.</div>
+        </details>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="bug">🕬 Report a Bug</div>
+
+<script src="/panel.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// Synthetic records. In the real dashboard these come from the Cosmas DB.
+// Two clinical contexts on purpose — a behavioral-health client (client/
+// therapist terminology, IFS care model) and a functional-medicine patient
+// (labs + metrics + calorie target) — so one panel demonstrates both lanes.
+// ---------------------------------------------------------------------------
+const RECORDS = [
+  {
+    id: "rdelgado", name: "R. Delgado", date: "7/22/26", type: "Behavioral Health",
+    visit: "Behavioral Health Follow-Up", profile: "Self-Directed",
+    terminology: "client/therapist", care_model: "internal family systems",
+    journey_digest:
+      "Themes: family-of-origin conflict, avoidance at work. Trajectory: engagement " +
+      "improving over 6 sessions. Commitments: daily journaling. Open threads: family " +
+      "event in August as a graded exposure opportunity.",
+    info: "Name: R. Delgado | Visit Date: 07/22/26 | Visit Type: Telehealth | " +
+          "Clinician: Demo User, LCSW — Behavioral Health",
+    sections: [
+      ["Subjective", "Chief Concern: Anticipatory dread ahead of a work review.\n\n" +
+        "Client reports a calmer week with sleep improved to roughly seven hours. Describes " +
+        "recurring resentment toward his father and connects it, unprompted, to avoidance of " +
+        "the upcoming review. Completed five of seven journaling days and noticed the pattern " +
+        "himself on day four."],
+      ["Objective", "Engaged throughout, full range of affect, no acute risk indicators. " +
+        "Homework adherence 5/7 days."],
+      ["Assessment", "Continued progress on parts work. Protector activation around authority " +
+        "figures remains the central theme; insight is increasing between sessions."],
+      ["Plan", "Continue weekly sessions. Extend journaling with a prompt focused on the " +
+        "review. Begin a graded exposure plan for the August family event."],
+      ["Education Provided", "Reviewed the parts framework and the rationale for between-session " +
+        "journaling."]
+    ],
+    transcript:
+      "[00:04] Therapist: How did the week land for you?\n" +
+      "[00:09] Client: Better. I actually slept. Still dreading the review though…\n" +
+      "[00:21] Therapist: Let's stay with the dread — whose voice does it sound like?\n" +
+      "[00:26] Client: My father's. Every time.\n" +
+      "[synthetic excerpt — truncated for the demo]"
+  },
+  {
+    id: "mtorres", name: "M. Torres", date: "7/23/26", type: "General Appointment",
+    visit: "Functional Medicine — Lab Review", profile: "Wants-Guidance",
+    terminology: "patient/clinician", care_model: "integrative / functional medicine nutrition",
+    journey_digest:
+      "Themes: T2DM 6 years on metformin + SGLT2i, persistent fatigue, weight gain. " +
+      "Trajectory: A1c rising despite adherence. Commitments: 2-week food journal. " +
+      "Open threads: possible iron deficiency; statin-related fatigue to rule out.",
+    info: "Name: M. Torres | Age: 52 | Gender: Female | Visit Date: 07/23/26 | " +
+          "Visit Type: Telehealth | Clinician: Demo User, CNS — Nutrition",
+    labs: "A1c 8.9 (was 8.2, and 7.6 three years ago); LDL 160; TSH 2.1; ferritin 18; vitamin D 22",
+    patient_metrics: { sex: "female", age: 52, weight_lb: 200, height_in: 65 },
+    calorie_target: "1500-1600",
+    sections: [
+      ["Subjective", "Chief Concern: Fatigue and lack of progress despite adherence.\n\n" +
+        "Reports fatigue most afternoons and new cold intolerance. Taking all medications as " +
+        "prescribed and frustrated that 'nothing is working.' Interested in a structured dietary " +
+        "approach rather than another medication change."],
+      ["Objective", "Three-year lab trend reviewed with the patient. Nail beds without lunulae " +
+        "bilaterally. Weight up 6 lb since last visit."],
+      ["Assessment", "Glycemic control worsening despite adherence. Fatigue pattern is not " +
+        "explained by glycemia alone; iron status and drug–nutrient depletion warrant evaluation."],
+      ["Plan", "Structured dietary protocol with a defined calorie and macro target. Recheck iron " +
+        "studies including ferritin and transferrin saturation. Patient to discuss statin-related " +
+        "fatigue with the prescribing clinician."],
+      ["Education Provided", "Reviewed added-sugar labeling, daily fiber targets, and meal " +
+        "sequencing to blunt post-prandial glucose response."]
+    ],
+    transcript:
+      "[00:03] Clinician: Let's walk the last three years of labs together.\n" +
+      "[00:12] Patient: My other doctor said they were 'basically fine.'\n" +
+      "[00:33] Clinician: Your A1c is trending up and your ferritin is low-normal…\n" +
+      "[synthetic excerpt — truncated for the demo]"
+  },
+  // Inert rows, present so the list reads like the real product.
+  { id: "x1", name: "M. Torres", date: "6/24/26", type: "General Appointment", inert: true },
+  { id: "x2", name: "R. Delgado", date: "6/17/26", type: "Behavioral Health", inert: true },
+  { id: "x3", name: "A. Whitfield", date: "6/11/26", type: "General Appointment", inert: true },
+  { id: "x4", name: "J. Okafor", date: "6/03/26", type: "General Appointment", inert: true }
+];
+
+let currentId = "rdelgado";
+const threads = {};                    // stands in for Cosmas thread persistence
+const byId = id => RECORDS.find(r => r.id === id);
+
+function esc(s){ return String(s??"").replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function renderList(){
+  document.getElementById("items").innerHTML = RECORDS.map(r =>
+    '<div class="item' + (r.id === currentId ? " on" : "") + '" data-id="' + esc(r.id) + '">' +
+      '<div class="r1"><span class="nm">' + esc(r.name) + '</span>' +
+        '<span class="dt">' + esc(r.date) + '</span></div>' +
+      '<div class="r2"><span class="ty">' + esc(r.type) + '</span>' +
+        '<span class="pill-d">Completed</span></div>' +
+    '</div>').join("");
+  document.querySelectorAll(".item").forEach(el => el.onclick = () => {
+    const r = byId(el.dataset.id);
+    if (!r || r.inert) return;         // inert rows are visual filler only
+    currentId = r.id; render();
+  });
+}
+
+function renderNote(){
+  const r = byId(currentId);
+  document.getElementById("topName").textContent = r.name;
+  document.getElementById("ptName").textContent = r.name;
+  document.getElementById("ptProfile").textContent = r.profile;
+  document.getElementById("ptDate").textContent = "Appointment Date: " + r.date;
+  document.getElementById("ptVisit").textContent = r.visit;
+  document.getElementById("body").innerHTML =
+    '<h5>Patient Information</h5><p>' + esc(r.info) + '</p>' +
+    r.sections.map(([h, t]) => "<h5>" + esc(h) + "</h5>" +
+      t.split("\n\n").map(par => "<p>" + esc(par) + "</p>").join("")).join("");
+  document.getElementById("tx").textContent = r.transcript;
+}
+
+// The context contract (UI_UX_DESIGN.md §3): the host decides what flows —
+// the panel never scrapes the page.
+function buildContext(){
+  const r = byId(currentId);
+  const noteText = r.sections.map(([h, t]) => h + ": " + t).join("\n");
+  const ctx = {
+    clientId: r.id,
+    terminology: r.terminology,
+    care_model: r.care_model,
+    patient_profile: r.profile,
+    journey_digest: r.journey_digest,
+    prior_sessions: noteText          // the note IS the compressed session
+  };
+  if (r.labs) ctx.labs = r.labs;
+  if (r.patient_metrics) ctx.patient_metrics = r.patient_metrics;
+  if (r.calorie_target) ctx.calorie_target = r.calorie_target;
+  return ctx;
+}
+
+function renderCtxStrip(){
+  const ctx = buildContext();
+  document.getElementById("ctxstrip").innerHTML = Object.keys(ctx).map(k => {
+    const v = ctx[k];
+    const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+    return "<b>" + esc(k) + "</b>: " + esc(s.slice(0, 110) + (s.length > 110 ? "…" : ""));
+  }).join(" &nbsp;·&nbsp; ");
+}
+
+function render(){ renderList(); renderNote(); renderCtxStrip(); }
+
+document.getElementById("ctxtoggle").onclick = function(){
+  const on = document.getElementById("ctxstrip").classList.toggle("on");
+  this.textContent = (on ? "▾ hide" : "▸ show") + " context sent to assistant";
+};
+
+CosmaNeuraPanel.mount({
+  sovereignUrl: "",                     // same origin in this harness
+  persona: "provider",
+  // Demo runs with AUTH_MODE=disabled, so there is no token. In production
+  // this returns the clinician's verified Clerk JWT and the Sovereign derives
+  // the provider persona from it.
+  getAuthToken: async () => null,
+  getContext: async () => buildContext(),
+  // Raised so the launcher clears the existing "Report a Bug" pill.
+  fabBottom: "84px",
+  onInsert: (text) => {
+    const box = document.createElement("div");
+    box.className = "inserted";
+    const tag = document.createElement("span");
+    tag.className = "tag"; tag.textContent = "Inserted from assistant";
+    box.appendChild(tag);
+    box.appendChild(document.createTextNode(text));
+    document.getElementById("body").appendChild(box);
+  },
+  onSave: () => alert("Saved to this visit (demo)."),
+  loadHistory: async (id) => threads[id] || [],
+  saveHistory: async (id, h) => { threads[id] = h; }
+});
+
+render();
+</script>
+</body>
+</html>

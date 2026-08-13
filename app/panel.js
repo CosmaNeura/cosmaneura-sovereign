@@ -24,6 +24,9 @@
  *     onSave:   (text, resp) => visits.savePrep(text),
  *     loadHistory: async (clientId) => [...],            // optional persistence
  *     saveHistory: async (clientId, history) => {},
+ *     shiftContent: true,   // default: reflow the host page instead of covering it
+ *     fabBottom: "18px",    // launcher offset — raise it above an existing
+ *     fabRight: "18px",     //   floating control (e.g. a "Report a Bug" pill)
  *   });
  */
 (function () {
@@ -111,6 +114,39 @@
     return html;
   }
 
+  // The verified-calculations box is the trust centerpiece for clinicians, so
+  // it must read like clinical values, not like a JSON dump. Known keys get
+  // formatted; anything new falls back to a readable key: value line.
+  function num(n) {
+    return typeof n === "number" ? n.toLocaleString("en-US") : String(n);
+  }
+
+  function formatComputed(comp) {
+    var out = [];
+    if (comp.bmi != null) out.push("BMI: " + comp.bmi);
+    if (comp.bmr_kcal_day != null)
+      out.push("Resting energy (BMR): " + num(comp.bmr_kcal_day) + " kcal/day");
+    var t = comp.calorie_target;
+    if (t && t.min != null)
+      out.push("Calorie target: " + num(t.min) +
+               (t.max != null && t.max !== t.min ? "–" + num(t.max) : "") +
+               " kcal/day" + (t.source ? " (" + t.source + ")" : ""));
+    var m = comp.macros_at_target_midpoint;
+    if (m && m.calories != null)
+      out.push("Macros at " + num(m.calories) + " kcal: " + num(m.protein_g) +
+               " g protein · " + num(m.carbs_g) + " g carbs · " + num(m.fat_g) +
+               " g fat" + (m.split ? " (" + m.split + " split)" : ""));
+    Object.keys(comp).forEach(function (k) {
+      if (["bmi", "bmr_kcal_day", "calorie_target",
+           "macros_at_target_midpoint"].indexOf(k) === -1) {
+        var v = comp[k];
+        out.push(k.replace(/_/g, " ") + ": " +
+                 (typeof v === "object" ? JSON.stringify(v) : v));
+      }
+    });
+    return out;
+  }
+
   function budgetSessions(prior) {
     if (prior == null) return "";
     var parts = Array.isArray(prior) ? prior.slice() : [String(prior)];
@@ -157,6 +193,11 @@
       '    <button class="cnp-send">Send</button></div>' +
       '  <div class="cnp-disc">Educational information — not medical advice.</div></div></div>';
     (opts.target || document.body).appendChild(root);
+
+    // Hosts often already own the bottom-right corner (support widgets, bug
+    // reporters). Let them place the launcher instead of colliding with it.
+    if (opts.fabBottom) root.querySelector(".cnp-fab").style.bottom = opts.fabBottom;
+    if (opts.fabRight) root.querySelector(".cnp-fab").style.right = opts.fabRight;
 
     var fab = root.querySelector(".cnp-fab"), rail = root.querySelector(".cnp-rail"),
         thread = root.querySelector(".cnp-thread"), chips = root.querySelector(".cnp-chips"),
@@ -211,10 +252,9 @@
       if (comp && Object.keys(comp).length) {
         var c2 = document.createElement("div"); c2.className = "cnp-calc";
         c2.innerHTML = '<div class="cnp-calc-t">✓ Verified calculations (computed, not generated)</div>';
-        Object.keys(comp).forEach(function (k) {
+        formatComputed(comp).forEach(function (line) {
           var row = document.createElement("div");
-          var v = comp[k];
-          row.textContent = k.replace(/_/g, " ") + ": " + (typeof v === "object" ? JSON.stringify(v) : v);
+          row.textContent = line;
           c2.appendChild(row);
         });
         b.appendChild(c2);
@@ -293,13 +333,28 @@
       thread.scrollTop = thread.scrollHeight; input.focus();
     }
 
-    fab.onclick = function () {
-      state.open = !state.open;
-      rail.classList.toggle("cnp-open", state.open);
-      if (state.open && !thread.children.length) loadWelcome();
-      if (state.open) input.focus();
-    };
-    root.querySelector(".cnp-x").onclick = function () { state.open = false; rail.classList.remove("cnp-open"); };
+    // Reflow the host instead of covering it: a clinician reading a note while
+    // the assistant is open must still see the note (that is the whole point of
+    // "insert into note"). Restores the host's own inline value on close, and
+    // skips the shift on narrow screens where the rail is nearly full-width.
+    var savedPad = null;
+    function setOpen(open) {
+      state.open = open;
+      rail.classList.toggle("cnp-open", open);
+      var canShift = opts.shiftContent !== false && window.innerWidth >= 900;
+      if (open && canShift) {
+        if (savedPad === null) savedPad = document.body.style.paddingRight || "";
+        document.body.style.paddingRight = rail.offsetWidth + "px";
+      } else if (savedPad !== null) {
+        document.body.style.paddingRight = savedPad;
+        savedPad = null;
+      }
+      if (open && !thread.children.length) loadWelcome();
+      if (open) input.focus();
+    }
+
+    fab.onclick = function () { setOpen(!state.open); };
+    root.querySelector(".cnp-x").onclick = function () { setOpen(false); };
     send.onclick = ask;
     input.addEventListener("keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
@@ -308,7 +363,8 @@
       input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 110) + "px";
     });
 
-    return { open: fab.onclick, root: root };
+    return { open: function () { setOpen(true); },
+             close: function () { setOpen(false); }, root: root };
   }
 
   window.CosmaNeuraPanel = { mount: mount };

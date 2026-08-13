@@ -163,6 +163,25 @@ input.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.p
 // links, markdown links), where an unescaped quote is an XSS breakout.
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+const nfmt = n => typeof n==='number' ? n.toLocaleString('en-US') : String(n);
+// Mirrors formatComputed() in panel.js: verified numbers must read as clinical
+// values, not as a JSON dump — that box is the trust surface.
+function formatComputed(comp){
+  const out=[]; const known=['bmi','bmr_kcal_day','calorie_target','macros_at_target_midpoint'];
+  if(comp.bmi!=null) out.push('BMI: '+comp.bmi);
+  if(comp.bmr_kcal_day!=null) out.push('Resting energy (BMR): '+nfmt(comp.bmr_kcal_day)+' kcal/day');
+  const t=comp.calorie_target;
+  if(t&&t.min!=null) out.push('Calorie target: '+nfmt(t.min)+
+    (t.max!=null&&t.max!==t.min?'–'+nfmt(t.max):'')+' kcal/day'+(t.source?' ('+t.source+')':''));
+  const m=comp.macros_at_target_midpoint;
+  if(m&&m.calories!=null) out.push('Macros at '+nfmt(m.calories)+' kcal: '+nfmt(m.protein_g)+
+    ' g protein · '+nfmt(m.carbs_g)+' g carbs · '+nfmt(m.fat_g)+' g fat'+(m.split?' ('+m.split+' split)':''));
+  Object.keys(comp).filter(k=>!known.includes(k)).forEach(k=>{
+    const v=comp[k];
+    out.push(k.replace(/_/g,' ')+': '+(typeof v==='object'?JSON.stringify(v):v));
+  });
+  return out;
+}
 // tiny markdown: headings, bold, links, bullets, paragraphs
 function md(t){
   t = t.replace(/\s?\[\^?\d+\]/g,''); // strip [^8]/[8] citation markers
@@ -265,10 +284,9 @@ form.addEventListener('submit', async e=>{
       if(comp&&Object.keys(comp).length){
         const c=document.createElement('div'); c.className='calc';
         c.innerHTML='<div class="t">✓ Verified calculations (computed, not generated)</div>';
-        Object.entries(comp).forEach(([k,v])=>{
-          const row=document.createElement('div');
-          row.textContent=k.replace(/_/g,' ')+': '+
-            (typeof v==='object'?JSON.stringify(v):v);
+        // Same formatting rules as panel.js — clinical values, never raw JSON.
+        formatComputed(comp).forEach(line=>{
+          const row=document.createElement('div'); row.textContent=line;
           c.appendChild(row);
         });
         b.appendChild(c);

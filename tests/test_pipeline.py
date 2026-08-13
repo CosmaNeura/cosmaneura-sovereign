@@ -1,5 +1,6 @@
 """Pipeline tests that run in mock mode (no credentials needed)."""
 import asyncio
+import os
 
 from app.compliance.phi import deidentify, assert_no_phi, PHIBoundaryViolation
 from app.config import Persona
@@ -549,6 +550,31 @@ def test_panel_component_served():
     assert "javascript" in r.headers["content-type"]
 
 
+def test_dashboard_harness_gated_by_demo_flag():
+    """The embedded-panel harness ships only when the demo UI is enabled."""
+    import importlib
+    from fastapi.testclient import TestClient
+
+    import app.main
+
+    # Default settings: demo UI off -> harness must not be routable.
+    assert TestClient(app.main.app).get("/demo/dashboard").status_code == 404
+
+    import app.config
+    app.config.get_settings.cache_clear()
+    try:
+        os.environ["DEMO_UI_ENABLED"] = "true"
+        reloaded = importlib.reload(app.main)
+        r = TestClient(reloaded.app).get("/demo/dashboard")
+        assert r.status_code == 200
+        assert "CosmaNeuraPanel.mount" in r.text
+        assert "synthetic" in r.text.lower()      # honest demo labelling
+    finally:
+        os.environ.pop("DEMO_UI_ENABLED", None)
+        app.config.get_settings.cache_clear()
+        importlib.reload(app.main)
+
+
 # --- HTTP surface: welcome bootstrap ------------------------------------------
 
 def test_welcome_serves_greeting_and_guided_paths():
@@ -711,6 +737,7 @@ if __name__ == "__main__":
     test_digest_merges_sessions_with_gates_intact()
     test_digest_requires_baa_attestation()
     test_panel_component_served()
+    test_dashboard_harness_gated_by_demo_flag()
     test_welcome_serves_greeting_and_guided_paths()
     test_auth_disabled_returns_no_principal()
     test_auth_required_when_enabled()
