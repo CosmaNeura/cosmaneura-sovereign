@@ -124,6 +124,10 @@ _PROVIDER_PATHS = [
     {"label": "Find a faithful specialist",
      "message": "Help me find a faithful Catholic specialist for a referral.",
      "intent": "referral"},
+    # Rendered only when the EMR lab feature is enabled (see /welcome below).
+    {"label": "Review labs (EMR)",
+     "message": "Anything concerning in her labs? Show me the A1C trend.",
+     "intent": "lab_review"},
 ]
 
 
@@ -140,11 +144,16 @@ async def welcome(persona: Persona = Persona.PATIENT) -> dict:
                     "teaching. I'm not a doctor and I can't diagnose or treat "
                     "anything — think of me as preparation for real care, not a "
                     "replacement for it.")
+    paths = _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS
+    # The lab chip only shows where the EMR feature is actually on — a chip
+    # that leads to "not enabled on this deployment" is UI noise.
+    if not _settings.feature_athena_labs:
+        paths = [p for p in paths if p["intent"] != "lab_review"]
     return {
         "partner_name": name,
         "persona": persona.value,
         "greeting": greeting,
-        "paths": _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS,
+        "paths": paths,
         "disclaimer": safety.disclaimer_for(persona),
         "emergency_note": "If this is an emergency, call 911 now.",
     }

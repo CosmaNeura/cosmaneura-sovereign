@@ -119,8 +119,8 @@ surface — so the whole lane is exercisable with zero credentials.
 
 | Item | Owner |
 |---|---|
-| Live sandbox smoke test (`ATHENA_CLIENT_ID/SECRET` from Key Vault, `MOCK_MODE=false`) | Developer |
-| Surface labs in the panel — the `structured.trend` payload is chart-ready | Developer (Cosmas repo) |
+| ~~Live sandbox smoke test~~ → **tooling done**: `tools/smoke_labs.py` (needs only the two athena creds in `.env`; forces mock off / feature on itself; five PASS/FAIL stages with hints). Run on a machine with normal egress — sandboxed CI proxies block athenahealth | John or Developer (run it) |
+| ~~Surface labs in the panel~~ → **done**: `panel.js` renders `structured.trend` as a validated trend chart (ref band, emphasized endpoint, hover tooltips); the lab chip appears in `/welcome` only when `FEATURE_ATHENA_LABS=true`; browser-verified in the dashboard harness | — |
 | Rewrite the vendored client on httpx and retire the thread dispatch | Developer, post-pilot |
 | Shared token cache if the service scales past one worker (tokens are per-process, ~60 min) | Developer, post-pilot |
 | Production go-live: practice BAA, "Cosmaneura Lab Insights" enabled in athenaOne, real practice id, `BAA_ATTESTED=true` | John + counsel |

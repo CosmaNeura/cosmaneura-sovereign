@@ -65,6 +65,14 @@
     ".cnp-calc{margin-top:8px;background:#14231c;border:1px solid #2d4a3a;border-radius:9px;",
     "padding:7px 10px;font-size:11.5px}",
     ".cnp-calc-t{color:var(--ok);font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}",
+    ".cnp-chart{margin-top:8px;background:#111a26;border:1px solid var(--panel-line,#27384a);",
+    "border-radius:9px;padding:9px 10px 6px}",
+    ".cnp-chart-t{color:#93a6ba;font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;",
+    "margin:0 0 4px 2px}",
+    ".cnp-chart svg{display:block;width:100%;height:auto}",
+    ".cnp-tip{position:fixed;z-index:100000;background:#0c1420;border:1px solid #34506e;",
+    "border-radius:8px;padding:6px 9px;font-size:11px;color:#e9eff7;pointer-events:none;",
+    "box-shadow:0 4px 14px rgba(0,0,0,.5);display:none;max-width:220px}",
     ".cnp-acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}",
     ".cnp-act{font-size:11.5px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);",
     "border-radius:7px;padding:4px 9px;cursor:pointer}.cnp-act:hover{border-color:var(--accent2)}",
@@ -145,6 +153,114 @@
       }
     });
     return out;
+  }
+
+  // ---- analyte trend chart -------------------------------------------------
+  // Single series over time: 2px line, dot markers with a 2px surface ring,
+  // emphasized endpoint with a direct value label, clinical reference range as
+  // a subtle band, per-point hover tooltips. No legend — the title names the
+  // one series. Line color #3b9ce6 validated against the dark surface.
+  var LINE = "#3b9ce6", SURFACE = "#16202c";
+
+  function fdate(iso) {
+    var d = new Date(iso);
+    if (isNaN(d)) return String(iso || "").slice(0, 10);
+    return (d.getMonth() + 1) + "/" + d.getDate() + "/" + String(d.getFullYear()).slice(2);
+  }
+
+  function parseRange(txt) {
+    var m = /(-?\d+(?:\.\d+)?)\s*[-–]\s*(-?\d+(?:\.\d+)?)/.exec(String(txt || ""));
+    return m ? [parseFloat(m[1]), parseFloat(m[2])] : null;
+  }
+
+  function trendChart(trend) {
+    var pts = (trend.points || []).map(function (p) {
+      var v = parseFloat(p.value), t = Date.parse(p.observed_at || "");
+      return isNaN(v) ? null : { v: v, t: t, p: p };
+    }).filter(Boolean);
+    if (pts.length < 2) return null;
+    var timed = pts.every(function (d) { return !isNaN(d.t); });
+
+    var W = 320, H = 96, mL = 8, mR = 44, mT = 10, mB = 18;
+    var iw = W - mL - mR, ih = H - mT - mB;
+    var last = pts[pts.length - 1];
+    var rng = parseRange(last.p.reference_range);
+    var vals = pts.map(function (d) { return d.v; });
+    var lo = Math.min.apply(null, vals.concat(rng ? [rng[0]] : []));
+    var hi = Math.max.apply(null, vals.concat(rng ? [rng[1]] : []));
+    var pad = (hi - lo) * 0.15 || 1; lo -= pad; hi += pad;
+    var x = function (i, d) {
+      if (timed) {
+        var t0 = pts[0].t, t1 = last.t;
+        return mL + (t1 === t0 ? iw / 2 : (d.t - t0) / (t1 - t0) * iw);
+      }
+      return mL + (pts.length === 1 ? iw / 2 : i / (pts.length - 1) * iw);
+    };
+    var y = function (v) { return mT + (hi - v) / (hi - lo) * ih; };
+
+    var ns = "http://www.w3.org/2000/svg";
+    var box = document.createElement("div"); box.className = "cnp-chart";
+    var title = document.createElement("div"); title.className = "cnp-chart-t";
+    title.textContent = (last.p.analyte_name || trend.analyte_query || "Trend") +
+      (last.p.unit ? " (" + last.p.unit + ")" : "") +
+      (rng ? " · ref " + last.p.reference_range : "");
+    box.appendChild(title);
+    var svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", title.textContent + ", " + pts.length + " points");
+
+    function el(tag, attrs) {
+      var e = document.createElementNS(ns, tag);
+      Object.keys(attrs).forEach(function (k) { e.setAttribute(k, attrs[k]); });
+      svg.appendChild(e); return e;
+    }
+    if (rng) {
+      el("rect", { x: mL, width: iw, y: y(rng[1]),
+        height: Math.max(2, y(rng[0]) - y(rng[1])),
+        fill: "rgba(143,199,165,.10)", stroke: "rgba(143,199,165,.22)",
+        "stroke-width": .5, rx: 2 });
+    }
+    el("path", {
+      d: pts.map(function (d, i) {
+        return (i ? "L" : "M") + x(i, d).toFixed(1) + " " + y(d.v).toFixed(1);
+      }).join(" "),
+      fill: "none", stroke: LINE, "stroke-width": 2,
+      "stroke-linecap": "round", "stroke-linejoin": "round" });
+    pts.forEach(function (d, i) {
+      var isLast = i === pts.length - 1;
+      el("circle", { cx: x(i, d), cy: y(d.v), r: isLast ? 4.5 : 3,
+        fill: LINE, stroke: SURFACE, "stroke-width": 2 });
+    });
+    // Direct label on the emphasized endpoint — text tokens, not series color.
+    el("text", { x: Math.min(x(pts.length - 1, last) + 8, W - 2), y: y(last.v) + 3.5,
+      fill: "#e9eff7", "font-size": 11, "font-weight": 700 }).textContent =
+      last.v + (last.p.unit ? " " + last.p.unit : "");
+    var ax = el("text", { x: mL, y: H - 4, fill: "#93a6ba", "font-size": 9 });
+    ax.textContent = fdate(pts[0].p.observed_at);
+    var ax2 = el("text", { x: mL + iw, y: H - 4, fill: "#93a6ba",
+      "font-size": 9, "text-anchor": "end" });
+    ax2.textContent = fdate(last.p.observed_at);
+
+    // Hover layer: oversized hit targets, one shared tooltip.
+    var tip = document.createElement("div"); tip.className = "cnp-tip";
+    document.body.appendChild(tip);
+    pts.forEach(function (d, i) {
+      var hit = el("circle", { cx: x(i, d), cy: y(d.v), r: 11,
+        fill: "transparent", cursor: "pointer" });
+      hit.addEventListener("mousemove", function (ev) {
+        tip.textContent = fdate(d.p.observed_at) + " · " + d.v +
+          (d.p.unit ? " " + d.p.unit : "") +
+          (d.p.abnormal_flag ? " (" + d.p.abnormal_flag + ")" : "") +
+          (d.p.reference_range ? " · ref " + d.p.reference_range : "");
+        tip.style.display = "block";
+        tip.style.left = Math.min(ev.clientX + 12, window.innerWidth - 230) + "px";
+        tip.style.top = (ev.clientY + 12) + "px";
+      });
+      hit.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+    });
+    box.appendChild(svg);
+    return box;
   }
 
   function budgetSessions(prior) {
@@ -282,6 +398,11 @@
         });
         b.appendChild(c2);
       }
+      var trend = d.structured && d.structured.trend;
+      if (trend && trend.points && trend.points.length >= 2) {
+        var chart = trendChart(trend);
+        if (chart) b.appendChild(chart);
+      }
       var bar = document.createElement("div"); bar.className = "cnp-acts";
       var ofmt = d.structured && d.structured.output_format;
       function act(label, fn) {
@@ -324,7 +445,8 @@
         var meta = { output_format: fmt.value };
         ["journey_digest", "care_model", "terminology", "case_context", "labs",
          "patient_metrics", "calorie_target", "macro_split", "note_template",
-         "patient_profile", "intake_summary"].forEach(function (k) {
+         "patient_profile", "intake_summary",
+         "patient_ref", "patient_name", "analyte"].forEach(function (k) {
           if (ctx[k] != null && ctx[k] !== "") meta[k] = ctx[k];
         });
         var prior = budgetSessions(ctx.prior_sessions);

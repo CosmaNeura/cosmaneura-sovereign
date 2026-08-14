@@ -223,6 +223,7 @@ const RECORDS = [
     labs: "A1c 8.9 (was 8.2, and 7.6 three years ago); LDL 160; TSH 2.1; ferritin 18; vitamin D 22",
     patient_metrics: { sex: "female", age: 52, weight_lb: 200, height_in: 65 },
     calorie_target: "1500-1600",
+    patient_ref: "a-195900.E-60178",   // EMR record id — enables the lab_review lane
     sections: [
       ["Subjective", "Chief Concern: Fatigue and lack of progress despite adherence.\n\n" +
         "Reports fatigue most afternoons and new cold intolerance. Taking all medications as " +
@@ -304,6 +305,7 @@ function buildContext(){
     prior_sessions: noteText          // the note IS the compressed session
   };
   if (r.labs) ctx.labs = r.labs;
+  if (r.patient_ref) ctx.patient_ref = r.patient_ref;
   if (r.patient_metrics) ctx.patient_metrics = r.patient_metrics;
   if (r.calorie_target) ctx.calorie_target = r.calorie_target;
   return ctx;
