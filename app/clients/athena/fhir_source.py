@@ -45,8 +45,11 @@ class AthenaFhirLabSource(LabSource):
 
     def _search_all(self, resource: str, params: dict) -> list[dict]:
         """Run a FHIR search and follow 'next' bundle links (cursor paging)."""
+        from urllib.parse import urlparse
+
         entries: list[dict] = []
         bundle = self._get(resource, params)
+        expected_host = urlparse(self.s.fhir_base).hostname
         while True:
             entries += [e["resource"] for e in bundle.get("entry", []) if "resource" in e]
             next_url = next(
@@ -55,6 +58,11 @@ class AthenaFhirLabSource(LabSource):
             )
             if not next_url:
                 return entries
+            # Vendoring delta: the 'next' link is server-supplied data. Follow
+            # it only back to the same FHIR host, so a poisoned bundle cannot
+            # redirect the client (with its bearer token) elsewhere.
+            if urlparse(next_url).hostname != expected_host:
+                raise RuntimeError("FHIR paging link pointed off-host; refusing")
             resp = requests.get(
                 next_url,
                 headers={**self.tokens.auth_headers(), "Accept": "application/fhir+json"},

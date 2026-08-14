@@ -47,15 +47,6 @@ class LabsNotAuthorized(RuntimeError):
 # Deterministic stubs so the whole lane runs with zero credentials, matching
 # the shape (and the documented sandbox quirks) of real athenahealth data:
 # some analytes carry no LOINC, and report status is often "unknown".
-_MOCK_REPORTS = [
-    LabReport(
-        report_id="mock-r1", name="Comprehensive metabolic panel",
-        status="final", collected_at="2026-01-14T00:00:00Z",
-        values=[],
-    ),
-]
-
-
 def _mock_payload() -> list[LabReport]:
     from app.clients.athena import LabValue
     r1 = LabReport(report_id="mock-r1", name="Hemoglobin A1c", status="final",

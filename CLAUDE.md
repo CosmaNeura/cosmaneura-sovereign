@@ -46,7 +46,8 @@ tools/               mint_dev_token.py · scrape_mycatholicdoctor.py · run_demo
 infra/               Terraform (Azure) + scripts/
 run_demo.py          Demo end-to-end de 8 escenarios
 ```
-Docs: `README.md`, `ARCHITECTURE.md`, `SETUP_AND_HANDOFF.md`, `DEMO.md`, `DEPLOY_AZURE.md`.
+Docs: `README.md`, `ARCHITECTURE.md`, `SETUP_AND_HANDOFF.md`, `DEMO.md`, `DEPLOY_AZURE.md`,
+`ATHENA_LABS.md` (+ diseño: `INTERACTION_DESIGN.md`, `PROVIDER_COPILOT_DESIGN.md`, `UI_UX_DESIGN.md`).
 
 ## Comandos (Makefile)
 
