@@ -1,8 +1,17 @@
 # athenahealth Lab Results — Integration Notes
 
-Status: **integrated and tested offline** (56 tests passing). The bundle's
-demo script runs end-to-end through the full Sovereign pipeline in mock mode.
-A live sandbox run still needs credentials — see "What's left" below.
+Status: **integrated, tested offline (56 tests), and LIVE-VERIFIED against
+the athenahealth Preview sandbox** — the owner ran `tools/smoke_labs.py` on
+2026-08-14 with real Developer Console credentials: OAuth token issued,
+Donna Sandboxtest resolved (`a-195900.E-60178`), 76 lab reports / 129
+discrete values retrieved (entered-in-error filtered), abnormal summary
+returned 14 analytes (low platelets, high fasting glucose, high BUN and
+creatinine, low eGFR), A1C 7.2 %. All five stages passed on the first run.
+
+Sandbox data note: Donna carries only ONE A1C observation, so the panel's
+trend chart (which requires >= 2 numeric points) will not draw for A1C on
+live sandbox data — the agent states single-point trends in prose instead,
+by design. Multi-observation analytes (e.g. creatinine, glucose) chart.
 
 Source: the `chatbot-bundle` delivered 2026-08-14, sandbox-verified against
 athenahealth Preview (practice 195900, patient Donna Sandboxtest).
@@ -119,7 +128,7 @@ surface — so the whole lane is exercisable with zero credentials.
 
 | Item | Owner |
 |---|---|
-| ~~Live sandbox smoke test~~ → **tooling done**: `tools/smoke_labs.py` (needs only the two athena creds in `.env`; forces mock off / feature on itself; five PASS/FAIL stages with hints). Run on a machine with normal egress — sandboxed CI proxies block athenahealth | John or Developer (run it) |
+| ~~Live sandbox smoke test~~ → **DONE — live-verified by the owner, 2026-08-14** (five PASSes on first run; see Status above) | — |
 | ~~Surface labs in the panel~~ → **done**: `panel.js` renders `structured.trend` as a validated trend chart (ref band, emphasized endpoint, hover tooltips); the lab chip appears in `/welcome` only when `FEATURE_ATHENA_LABS=true`; browser-verified in the dashboard harness | — |
 | Rewrite the vendored client on httpx and retire the thread dispatch | Developer, post-pilot |
 | Shared token cache if the service scales past one worker (tokens are per-process, ~60 min) | Developer, post-pilot |
