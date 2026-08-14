@@ -144,6 +144,21 @@ class Settings(BaseSettings):
     pubmed_base_url: str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
     pubmed_api_key: Optional[str] = Field(default=None)
 
+    # --- EMR lab results (athenahealth) ------------------------------------
+    # Whole capability off by default: this ships as a sandbox demo feature and
+    # must be excludable from a production build until the pilot practice goes
+    # live (BAA signed + the app enabled in athenaOne Certified API Access).
+    feature_athena_labs: bool = False
+    athena_client_id: Optional[str] = Field(default=None)
+    athena_client_secret: Optional[str] = Field(default=None)
+    athena_env: str = "preview"            # preview | production
+    athena_practice_id: str = "195900"     # athenahealth shared sandbox practice
+    athena_department_id: str = "1"
+    # Patient lookup by NAME lets a model reach any patient in the practice,
+    # which would bypass the host app's own authorization. Sandbox only unless
+    # a deployment deliberately opts in.
+    labs_allow_patient_search: bool = False
+
     # --- Partner directory (MyCatholicDoctor + resource partners) ----------
     # Until MyCatholicDoctor exposes a feed/API, the adapter reads a local
     # JSON fixture (see app/clients/partner_directory.py).

@@ -1,0 +1,130 @@
+# athenahealth Lab Results — Integration Notes
+
+Status: **integrated and tested offline** (56 tests passing). The bundle's
+demo script runs end-to-end through the full Sovereign pipeline in mock mode.
+A live sandbox run still needs credentials — see "What's left" below.
+
+Source: the `chatbot-bundle` delivered 2026-08-14, sandbox-verified against
+athenahealth Preview (practice 195900, patient Donna Sandboxtest).
+
+---
+
+## 1. The one thing done differently from the brief — and why
+
+The brief's task 2 says to merge `openai_schemas.TOOLS` into "the tools array
+the chatbot already sends" and fold the bundle's `SYSTEM_PROMPT` into the
+platform prompt. That assumes the chatbot is a single OpenAI function-calling
+loop. **This service isn't one.** Every request runs:
+
+```
+emergency check → persona/auth gate → route → agent → PHI de-identification
+→ Magisterium doctrinal arbitration → disclaimer → hash-chained audit → egress
+```
+
+Bolting a second chat loop with its own system prompt inside that would route
+lab answers around the doctrinal gate, the PHI boundary and the audit chain —
+the three guarantees the Sovereign exists to provide, and the ones the
+compliance posture is sold on.
+
+So the capability is wired in as **a routed lane**, exactly like the other
+six agents:
+
+| Bundle piece | Where it lives now |
+|---|---|
+| `athena_labs/` (FHIR client) | `app/clients/athena/` — vendored, near-verbatim |
+| The four tools | `app/clients/labs.py` — async façade, flag + authz + PHI-safe errors |
+| `example_chat_loop.SYSTEM_PROMPT` rules | `app/agents/labs_agent.py` `_SYSTEM` (never invent values; units/ranges/flags always; defer treatment decisions) |
+| `openai_schemas.TOOLS` / `execute_tool` | **not used** — the router selects the lane; no function-calling loop |
+| `tests/test_tools.py` | `tests/test_labs.py`, re-pointed at the vendored client |
+
+The tool *capabilities* are unchanged: `find_patient`, `get_lab_results`
+(`lab_results`), `get_analyte_trend` (`analyte_trend`),
+`summarize_abnormal_labs` (`abnormal_summary`).
+
+## 2. Deltas from the delivered code
+
+- **Async boundary.** The vendored client is synchronous `requests`; this
+  service is async on a single web process. Every EMR call is dispatched with
+  `asyncio.to_thread` so an EMR round-trip cannot block the event loop.
+  (Rewriting the client on httpx is the cleaner long-term fix; deliberately
+  deferred to keep the delivered client intact.)
+- **PHI in error paths.** `auth.py` and `fhir_source.py` embedded
+  `resp.text[:500]` in exceptions. FHIR error bodies can carry patient data,
+  and "PHI leakage through error paths" is a defect this repo already fixed
+  once — the bodies are dropped.
+- **One config system.** `config.py`'s import-time `load_dotenv()` is removed;
+  athena settings come from the app's pydantic settings like every other
+  secret, so credentials can't diverge from the Key Vault–backed path.
+- **Dependencies:** added `requests~=2.32` only. `python-dotenv` is redundant
+  (pydantic-settings reads `.env`), and `openai` is unnecessary since this
+  service calls Azure OpenAI over httpx.
+- **Not vendored:** `proprietary_source.py` (no contract, and the brief bars
+  it from production — omitted so it cannot be called by accident), plus the
+  demo/seed/chat-loop reference scripts.
+
+## 3. Authorization — the gap worth naming
+
+The brief asks for a provider↔patient authorization check before tool calls.
+**The Sovereign cannot perform that check**: it has no patient roster. Only
+the host app knows which patients a clinician may open. Left unaddressed,
+`find_patient` is an authorization bypass in production — the model can name
+any patient in the practice and the tool fetches their labs.
+
+Implemented instead:
+
+1. **The host supplies the patient.** `metadata.patient_ref` comes from the
+   record the clinician already has open — the host authorized it by
+   displaying it. This is the normal path.
+2. **Name search is sandbox-only.** Outside `ATHENA_ENV=preview` it is
+   refused unless a deployment explicitly sets
+   `LABS_ALLOW_PATIENT_SEARCH=true`. Regression-tested.
+3. **Access is audited without identifiers.** The agent returns
+   `access.patient_ref_sha256_16` (a hash) plus how the patient was resolved,
+   so the hash-chained audit shows who reached which record without writing a
+   patient identifier into the log. *Open question for counsel: a HIPAA
+   accounting of disclosures may require the real identifier in a protected
+   store — that is a deliberate decision, not an oversight.*
+
+## 4. Configuration
+
+```bash
+FEATURE_ATHENA_LABS=true          # whole capability, off by default
+ATHENA_CLIENT_ID=…                # from Key Vault / 1Password, never committed
+ATHENA_CLIENT_SECRET=…
+ATHENA_ENV=preview                # preview | production
+ATHENA_PRACTICE_ID=195900
+ATHENA_DEPARTMENT_ID=1
+LABS_ALLOW_PATIENT_SEARCH=false   # keep false outside the sandbox
+```
+
+With `MOCK_MODE=true` (the default) the lane returns deterministic stub labs
+that reproduce the documented sandbox quirks — a missing LOINC, a
+`status: unknown` report, and an `entered-in-error` report that must never
+surface — so the whole lane is exercisable with zero credentials.
+
+## 5. Verified
+
+- `tests/test_labs.py` (12 tests): the bundle's tool assertions preserved
+  through integration (voided-report filtering, abnormal-only filter, trend by
+  LOINC *and* by name substring, latest-value grouping), plus flag-off,
+  credential-less, production-search-refused, BAA-attestation, routing, and
+  audit-hash gates.
+- The brief's demo script, through the full pipeline:
+  "Pull up Donna Sandboxtest" → `lab_review` (resolved by search, sandbox);
+  "Anything concerning in her labs?" → A1C 8.2 % high, ferritin 18 ng/mL low
+  (normal sodium correctly excluded); "Show me her A1C trend" → 7.6 → 8.2,
+  oldest first. Doctrinal gate and audit chain ran on every turn.
+
+## 6. What's left
+
+| Item | Owner |
+|---|---|
+| Live sandbox smoke test (`ATHENA_CLIENT_ID/SECRET` from Key Vault, `MOCK_MODE=false`) | Developer |
+| Surface labs in the panel — the `structured.trend` payload is chart-ready | Developer (Cosmas repo) |
+| Rewrite the vendored client on httpx and retire the thread dispatch | Developer, post-pilot |
+| Shared token cache if the service scales past one worker (tokens are per-process, ~60 min) | Developer, post-pilot |
+| Production go-live: practice BAA, "Cosmaneura Lab Insights" enabled in athenaOne, real practice id, `BAA_ATTESTED=true` | John + counsel |
+| Accounting-of-disclosures decision (hash vs. identifier in the audit store) | Counsel |
+
+Rate limits observed in Preview: 15 req/s, 50k/day. Tokens last ~60 minutes
+and are cached in-process.

@@ -231,10 +231,17 @@ def _mock_completion(*, system: str, prompt: str) -> str:
         prep = any(k in text for k in ["next session", "next visit", "session prep",
                                        "talking points", "organize my next",
                                        "prepare for my next", "plan my next"])
-        workbench = any(k in text for k in ["labs", "lab results", "troubleshoot",
-                                            "which levers", "care plan",
-                                            "diet protocol", "meal plan",
-                                            "standard of care", "nutrient"])
+        workbench = any(k in text for k in ["troubleshoot", "which levers",
+                                            "care plan", "diet protocol",
+                                            "meal plan", "standard of care",
+                                            "nutrient"])
+        # Retrieval of a specific patient's results, as opposed to reasoning
+        # about a plan: "anything concerning in her labs", "A1c trend".
+        lab_review = (any(k in text for k in ["lab result", "labs", "a1c", "trend",
+                                              "out of range", "abnormal", "lab work",
+                                              "pull up", "lab value"])
+                      and not any(k in text for k in ["which levers", "diet protocol",
+                                                      "meal plan"]))
         if any(w in text for w in ["chest pain", "suicid", "overdose", "can't breathe",
                                    "cant breathe", "stroke", "kill myself"]):
             intent, sensitivity = "emergency", "none"
@@ -245,6 +252,8 @@ def _mock_completion(*, system: str, prompt: str) -> str:
             intent, sensitivity = "visit_prep", "low"
         elif workbench:
             intent, sensitivity = "plan_workbench", "low"
+        elif lab_review:
+            intent, sensitivity = "lab_review", "low"
         elif moral and any(w in text for w in ["permit", "church", "sin", "teach", "moral", "ethical"]):
             intent, sensitivity = "doctrinal", "high"
         elif referral:

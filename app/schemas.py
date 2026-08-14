@@ -17,6 +17,7 @@ class Intent(str, Enum):
     ETHICS_CONSULT = "ethics_consult"  # -> Agent 4 (always fully arbitrated)
     VISIT_PREP = "visit_prep"        # -> Agent 5 (clinician session prep)
     PLAN_WORKBENCH = "plan_workbench"  # -> Agent 6 (post-visit plan deep-dive)
+    LAB_REVIEW = "lab_review"        # -> Agent 7 (EMR lab results)
     DOCTRINAL = "doctrinal"          # answered directly by Magisterium
     SMALL_TALK = "small_talk"        # handled by the Sovereign, no agent
     EMERGENCY = "emergency"          # short-circuit to safety guidance
