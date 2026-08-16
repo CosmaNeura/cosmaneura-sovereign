@@ -1,5 +1,9 @@
 # CLAUDE.md — cosmaneura-sovereign
 
+> Architecture decisions for this system live in the `cosmaneura-architecture` repo, in `ARCHITECTURE.md`. Read it before making structural changes. If a change conflicts with it, stop and resolve the conflict rather than proceeding.
+
+⚠️ El `ARCHITECTURE.md` **de este repo** es una nota de diseño interna y está **superseded** por el del repo de governance. Ante conflicto, gana governance. Ver también `AUDIT.md` ahí: este servicio se construyó contra una spec anterior (multi-agente + persona) y aún no implementa la frontera de §4/§8 (mount context, capability gating vía la plataforma, sin estado propio).
+
 ## Qué es
 
 Una API de información de salud **guiada por la enseñanza católica**, con arquitectura de
