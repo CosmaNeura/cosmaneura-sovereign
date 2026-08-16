@@ -3,13 +3,45 @@ import asyncio
 import os
 
 from app.compliance.phi import deidentify, assert_no_phi, PHIBoundaryViolation
-from app.config import Persona
+from app.config import Persona, Settings
 from app.schemas import ChatRequest, Intent
+from app.security.auth import Principal
 from app.sovereign.orchestrator import Sovereign
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+_PROVIDER_CAPABILITIES = [
+    "education:answer",
+    "values:answer",
+    "referrals:search",
+    "engagement:respond",
+    "ethics:consult",
+    "visit-prep:run",
+    "plan-workbench:run",
+    "ehr:labs:read",
+    "journey-digest:write",
+]
+
+
+def _provider_settings(**overrides):
+    values = {
+        "mount_surface": "provider_assistant",
+        "mount_auth_tier": "provider",
+        "mount_capabilities": _PROVIDER_CAPABILITIES,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def _provider_principal():
+    return Principal(
+        subject="provider-test-actor",
+        persona=Persona.PROVIDER,
+        roles=["provider"],
+    )
 
 
 def test_phi_scrubbing_catches_direct_identifiers():
@@ -110,22 +142,23 @@ def test_concierge_consults_doctrinal_mcp_only_when_enabled():
 # --- security regression tests ---------------------------------------------
 
 def test_provider_persona_rejected_unless_enabled():
-    """Body-supplied persona=provider must not unlock the PHI path by default."""
-    sov = Sovereign()  # default: allow_provider_persona = False
+    """Body-supplied persona=provider cannot change the public mount."""
+    sov = Sovereign()
     resp = _run(sov.handle(ChatRequest(
         persona=Persona.PROVIDER,
         message="patient summary",
         metadata={"health_history": "sensitive"})))
-    assert resp.safety_notice == "provider_persona_disabled"
+    assert resp.persona == Persona.PATIENT
+    assert resp.safety_notice != "provider_persona_disabled"
 
 
 def test_provider_persona_allowed_when_enabled():
-    from app.config import Settings
+    """The legacy provider switch also cannot elevate a public request."""
     sov = Sovereign(Settings(allow_provider_persona=True))
     resp = _run(sov.handle(ChatRequest(
         persona=Persona.PROVIDER,
         message="help me understand this patient's chart")))
-    assert resp.safety_notice != "provider_persona_disabled"
+    assert resp.persona == Persona.PATIENT
 
 
 def test_request_field_length_limits_enforced():
@@ -289,12 +322,12 @@ def test_session_id_charset_enforced():
 # --- provider copilot: ethics consult + visit prep ---------------------------
 
 def test_ethics_consult_routes_with_full_arbitration():
-    from app.config import Settings
-    sov = Sovereign(Settings(allow_provider_persona=True))
+    sov = Sovereign(_provider_settings())
     resp = _run(sov.handle(ChatRequest(
         persona=Persona.PROVIDER,
         message="My patient is asking about tubal ligation at delivery. Is that "
-                "permitted under the ERDs, and what alternatives may I discuss?")))
+                "permitted under the ERDs, and what alternatives may I discuss?"),
+        principal=_provider_principal()))
     assert resp.intent == Intent.ETHICS_CONSULT
     assert resp.doctrinal_review is not None       # the full gate actually ran
     assert any(c.source == "PubMed" for c in resp.citations)
@@ -303,10 +336,9 @@ def test_ethics_consult_routes_with_full_arbitration():
 
 def test_ethics_consult_forces_full_gate_even_if_router_says_none():
     """The tiered gate must never skip arbitration on an ethics consult."""
-    from app.config import Settings
     from app.schemas import DoctrinalSensitivity
 
-    sov = Sovereign(Settings(allow_provider_persona=True))
+    sov = Sovereign(_provider_settings())
 
     async def lax_route(request):
         return Intent.ETHICS_CONSULT, DoctrinalSensitivity.NONE, "lax router"
@@ -320,20 +352,23 @@ def test_ethics_consult_forces_full_gate_even_if_router_says_none():
         return await original_review(**kwargs)
     sov.arbiter.review = spy
 
-    _run(sov.handle(ChatRequest(persona=Persona.PROVIDER,
-                                message="case question for the ethics consult")))
+    _run(sov.handle(
+        ChatRequest(persona=Persona.PROVIDER,
+                    message="case question for the ethics consult"),
+        principal=_provider_principal(),
+    ))
     assert seen["sensitivity"] == DoctrinalSensitivity.HIGH
 
 
 def test_visit_prep_routes_and_returns_prep():
-    from app.config import Settings
-    sov = Sovereign(Settings(allow_provider_persona=True))
+    sov = Sovereign(_provider_settings())
     resp = _run(sov.handle(ChatRequest(
         persona=Persona.PROVIDER,
         message="Help me organize my next session with this client - talking "
                 "points and a short outline.",
         metadata={"prior_sessions": "Last time the client explored family history.",
-                  "terminology": "client/therapist"})))
+                  "terminology": "client/therapist"}),
+        principal=_provider_principal()))
     assert resp.intent == Intent.VISIT_PREP
     assert resp.structured.get("feature") == "visit_prep"
     assert resp.structured.get("terminology") == "client/therapist"
@@ -389,8 +424,7 @@ def test_calculators_catch_the_reported_failure():
 
 
 def test_plan_workbench_routes_and_computes():
-    from app.config import Settings
-    sov = Sovereign(Settings(allow_provider_persona=True))
+    sov = Sovereign(_provider_settings())
     resp = _run(sov.handle(ChatRequest(
         persona=Persona.PROVIDER,
         message="Her labs are back and the standard of care isn't working - "
@@ -400,7 +434,8 @@ def test_plan_workbench_routes_and_computes():
                                       "weight_lb": 200, "height_in": 65},
                   "calorie_target": "1500-1600",
                   "terminology": "client/therapist",
-                  "output_format": "note"})))
+                  "output_format": "note"}),
+        principal=_provider_principal()))
     assert resp.intent == Intent.PLAN_WORKBENCH
     assert resp.structured.get("feature") == "plan_workbench"
     assert resp.structured.get("output_format") == "note"
@@ -413,12 +448,12 @@ def test_plan_workbench_routes_and_computes():
 
 
 def test_output_format_falls_back_to_chat():
-    from app.config import Settings
-    sov = Sovereign(Settings(allow_provider_persona=True))
+    sov = Sovereign(_provider_settings())
     resp = _run(sov.handle(ChatRequest(
         persona=Persona.PROVIDER,
         message="Help me organize my next session with this client - talking points.",
-        metadata={"output_format": "hologram"})))
+        metadata={"output_format": "hologram"}),
+        principal=_provider_principal()))
     assert resp.intent == Intent.VISIT_PREP
     assert resp.structured.get("output_format") == "chat"
 
@@ -504,21 +539,19 @@ def test_azure_endpoint_forms_supported():
 # --- journey digest: multi-session compression off the hot path ---------------
 
 def test_digest_merges_sessions_with_gates_intact():
-    from app.config import Settings
     from app.schemas import DigestRequest
 
-    sov = Sovereign(Settings(allow_provider_persona=True))
+    sov = Sovereign(_provider_settings())
     resp = _run(sov.digest(DigestRequest(
         persona=Persona.PROVIDER,
         sessions=["Session 1: explored family history.",
                   "Session 2: committed to journaling."],
         existing_digest="Prior digest text.",
-        terminology="client/therapist")))
+        terminology="client/therapist"), principal=_provider_principal()))
     assert resp.digest and resp.trace_id
 
-    # Same provider gate as /chat: unverified provider without the dev
-    # switch is refused before any PHI-bearing session text is processed.
-    locked = Sovereign()  # allow_provider_persona defaults False
+    # The public mount is refused before any PHI-bearing session text is used.
+    locked = Sovereign()
     try:
         _run(locked.digest(DigestRequest(persona=Persona.PROVIDER,
                                          sessions=["s"])))
@@ -528,13 +561,14 @@ def test_digest_merges_sessions_with_gates_intact():
 
 
 def test_digest_requires_baa_attestation():
-    from app.config import Settings
     from app.schemas import DigestRequest
 
-    sov = Sovereign(Settings(mock_mode=False, baa_attested=False,
-                             allow_provider_persona=True))
+    sov = Sovereign(_provider_settings(mock_mode=False, baa_attested=False))
     try:
-        _run(sov.digest(DigestRequest(persona=Persona.PROVIDER, sessions=["s"])))
+        _run(sov.digest(
+            DigestRequest(persona=Persona.PROVIDER, sessions=["s"]),
+            principal=_provider_principal(),
+        ))
         assert False, "should have refused without BAA attestation"
     except RuntimeError as e:
         assert "BAA" in str(e)
@@ -675,29 +709,26 @@ def test_oidc_mode_rejects_symmetric_algorithm_config():
 
 
 def test_verified_persona_overrides_body_claim():
-    """A patient token cannot unlock the PHI path by claiming provider in body."""
-    from app.security.auth import Principal
-    sov = Sovereign()  # allow_provider_persona False, but principal is authoritative
+    """Neither a patient token nor body claim can change the public mount."""
+    sov = Sovereign()
     patient_principal = Principal(subject="u1", persona=Persona.PATIENT, roles=["member"])
     resp = _run(sov.handle(
         ChatRequest(persona=Persona.PROVIDER, message="find me a clinic",
                     metadata={"health_history": "should be ignored"}),
         principal=patient_principal))
-    # Treated as patient: not the provider-rejection path, and persona is patient.
     assert resp.persona == Persona.PATIENT
     assert resp.safety_notice != "provider_persona_disabled"
 
 
 def test_verified_provider_allowed_without_dev_switch():
-    """A verified provider identity does not need allow_provider_persona."""
-    from app.security.auth import Principal
-    sov = Sovereign()  # allow_provider_persona defaults False
+    """A provider identity binds actor but cannot elevate a public mount."""
+    sov = Sovereign()
     provider_principal = Principal(subject="dr1", persona=Persona.PROVIDER,
                                    roles=["provider"])
     resp = _run(sov.handle(
         ChatRequest(persona=Persona.PATIENT, message="help me read this chart"),
         principal=provider_principal))
-    assert resp.persona == Persona.PROVIDER
+    assert resp.persona == Persona.PATIENT
     assert resp.safety_notice != "provider_persona_disabled"
 
 

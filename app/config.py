@@ -54,8 +54,8 @@ class AuthMode(str, Enum):
     """
     How callers are authenticated and how persona is determined.
 
-    DISABLED:  no token required; persona comes from the request body (still
-               gated by allow_provider_persona). Local dev / patient-only.
+    DISABLED:  no actor token required. Safe only for an anonymous public
+               pinned mount; request persona never grants authority.
     DEV_HS256: shared-secret tokens for local testing without an IdP. Not prod.
     OIDC:      production. Verify RS256/ES256 against the IdP's JWKS, plus
                issuer/audience/expiry. Persona derived from a verified claim.
@@ -188,13 +188,25 @@ class Settings(BaseSettings):
     audit_sink: str = "stdout"
     audit_path: str = "./audit_log.jsonl"
 
-    # --- Security gate -----------------------------------------------------
-    # The provider persona unlocks the PHI-accepting path. Because persona
-    # currently arrives in the request body (see SETUP_AND_HANDOFF.md: bind it
-    # to an authenticated identity in production), this flag is a deployment-
-    # level kill switch: a patient-only deployment leaves it false, and any
-    # request claiming persona=provider is rejected before it can submit PHI.
+    # Legacy deployment flag retained for compatibility with existing launch
+    # configuration. It no longer grants provider authority; mount context is
+    # the sole authorization axis.
     allow_provider_persona: bool = False
+
+    # --- Deployment-scoped mount authority --------------------------------
+    # ADR 0014 permits one fixed mount per deployment until the platform mount
+    # resolver is live. These values are server configuration; no request body
+    # field can override them. PR 2 will replace the individual fields with
+    # named deployment profiles and stricter startup validation.
+    mount_surface: str = "public"
+    mount_auth_tier: str = "anonymous"
+    mount_capabilities: list[str] = Field(default_factory=lambda: [
+        "education:answer",
+        "values:answer",
+        "referrals:search",
+        "intake:invite",
+    ])
+    mount_tenant_id: Optional[str] = None
 
     # Explicit legal attestation that the configured LLM inference path is
     # covered by an executed BAA with Zero Data Retention (or an equivalent
