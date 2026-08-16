@@ -64,6 +64,19 @@
   select{background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px;font:inherit}
   .err{color:#ffb4a8}
   .disc{font-size:11px;color:var(--muted);margin-top:7px;text-align:center}
+  .a .bubble.emg{border:1px solid #d9534f;background:#341c1c}
+  .emg .h{color:#ff9d94;font-weight:700;letter-spacing:.4px;font-size:12px;
+    text-transform:uppercase;margin-bottom:6px}
+  .trust{font-size:11px;color:#8fc7a5;margin-top:8px;border-top:1px solid var(--line);
+    padding-top:7px}
+  .calc{margin-top:10px;background:#14231c;border:1px solid #2d4a3a;border-radius:10px;
+    padding:9px 12px;font-size:12.5px}
+  .calc .t{color:#8fc7a5;font-size:10px;text-transform:uppercase;letter-spacing:.6px;
+    margin-bottom:5px}
+  .acts{margin-top:9px;display:flex;gap:7px}
+  .act{font-size:12px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--ink);border-radius:8px;padding:5px 10px;cursor:pointer}
+  .act:hover{border-color:var(--accent2)}
 </style>
 </head>
 <body>
@@ -77,15 +90,7 @@
   </header>
 
   <main id="main">
-    <div class="wrap" id="thread">
-      <div class="msg a">
-        <div class="av">C</div>
-        <div class="bubble">
-          <p>Peace be with you. I can help you find a faithful Catholic clinician —
-          tell me what kind of care you’re looking for and your U.S. state.</p>
-        </div>
-      </div>
-    </div>
+    <div class="wrap" id="thread"></div>
   </main>
 
   <footer>
@@ -95,6 +100,11 @@
         <select id="persona" title="persona">
           <option value="patient">Patient</option>
           <option value="provider">Provider</option>
+        </select>
+        <select id="fmt" title="output format" style="display:none">
+          <option value="chat">Chat</option>
+          <option value="note">Note text</option>
+          <option value="document">Document</option>
         </select>
         <textarea id="input" rows="1" placeholder="e.g. Find a faithful Catholic dermatologist in Texas"></textarea>
         <button class="send" id="send" type="submit">Send</button>
@@ -110,25 +120,68 @@ const input = document.getElementById('input');
 const form = document.getElementById('form');
 const send = document.getElementById('send');
 
-const examples = [
-  "Find a faithful Catholic pediatrician in California",
-  "I have a skin problem, find me a Catholic dermatologist in New Hampshire",
-  "I need a Catholic primary care doctor in Ohio who speaks Spanish",
-  "What recruiting clinical trials exist for pancreatic cancer?",
-  "I was just diagnosed with type 2 diabetes (A1C 7.2) — help me understand it",
-  "Is IVF permitted by the Catholic Church?",
-];
+// The AI speaks first: bootstrap greeting + guided paths from GET /welcome
+// (see INTERACTION_DESIGN.md). Falls back to a minimal greeting offline.
 const chips = document.getElementById('chips');
-examples.forEach(t => {
-  const c = document.createElement('div'); c.className='chip'; c.textContent=t;
-  c.onclick = () => { input.value = t; input.focus(); };
-  chips.appendChild(c);
-});
+const personaSel = document.getElementById('persona');
+
+function setChips(paths){
+  chips.innerHTML='';
+  paths.forEach(p => {
+    const c = document.createElement('div'); c.className='chip'; c.textContent=p.label;
+    c.onclick = () => { input.value = p.message; input.focus(); };
+    chips.appendChild(c);
+  });
+}
+
+async function loadWelcome(){
+  // Output selector is a provider affordance (note-ready text for the EHR
+  // paste, documents for patient handouts); patients just chat.
+  document.getElementById('fmt').style.display =
+    personaSel.value==='provider' ? '' : 'none';
+  try{
+    const r = await fetch('/welcome?persona='+personaSel.value);
+    const w = await r.json();
+    const b = bubble('a');
+    b.innerHTML = '<p>'+esc(w.greeting)+'</p>'+
+      '<p><b>'+esc(w.emergency_note)+'</b></p>';
+    const d = document.createElement('div'); d.className='cite';
+    d.textContent = w.disclaimer; b.appendChild(d);
+    setChips(w.paths||[]);
+  }catch(e){
+    bubble('a').innerHTML = '<p>Peace be with you. Tell me what kind of care or '+
+      'information you’re looking for.</p>';
+  }
+  main.scrollTop = 0;
+}
+personaSel.addEventListener('change', loadWelcome);
 
 input.addEventListener('input', () => { input.style.height='auto'; input.style.height=Math.min(input.scrollHeight,140)+'px'; });
 input.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); form.requestSubmit(); }});
 
-function esc(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// Escapes quotes too: escaped text lands inside href="…" attributes (booking
+// links, markdown links), where an unescaped quote is an XSS breakout.
+function esc(s){ return String(s??'').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+const nfmt = n => typeof n==='number' ? n.toLocaleString('en-US') : String(n);
+// Mirrors formatComputed() in panel.js: verified numbers must read as clinical
+// values, not as a JSON dump — that box is the trust surface.
+function formatComputed(comp){
+  const out=[]; const known=['bmi','bmr_kcal_day','calorie_target','macros_at_target_midpoint'];
+  if(comp.bmi!=null) out.push('BMI: '+comp.bmi);
+  if(comp.bmr_kcal_day!=null) out.push('Resting energy (BMR): '+nfmt(comp.bmr_kcal_day)+' kcal/day');
+  const t=comp.calorie_target;
+  if(t&&t.min!=null) out.push('Calorie target: '+nfmt(t.min)+
+    (t.max!=null&&t.max!==t.min?'–'+nfmt(t.max):'')+' kcal/day'+(t.source?' ('+t.source+')':''));
+  const m=comp.macros_at_target_midpoint;
+  if(m&&m.calories!=null) out.push('Macros at '+nfmt(m.calories)+' kcal: '+nfmt(m.protein_g)+
+    ' g protein · '+nfmt(m.carbs_g)+' g carbs · '+nfmt(m.fat_g)+' g fat'+(m.split?' ('+m.split+' split)':''));
+  Object.keys(comp).filter(k=>!known.includes(k)).forEach(k=>{
+    const v=comp[k];
+    out.push(k.replace(/_/g,' ')+': '+(typeof v==='object'?JSON.stringify(v):v));
+  });
+  return out;
+}
 // tiny markdown: headings, bold, links, bullets, paragraphs
 function md(t){
   t = t.replace(/\s?\[\^?\d+\]/g,''); // strip [^8]/[8] citation markers
@@ -161,7 +214,7 @@ function renderProviders(b, matches){
     const langs=(p.languages||[]).map(l=>'<span class="tag">'+esc(l)+'</span>').join('');
     const states=(p.licensed_states||[]).slice(0,6).join(', ');
     const tele=p.telehealth?'<span class="tag">telehealth</span>':'<span class="tag">in-person</span>';
-    const book=p.booking_url?'<a class="book" href="'+p.booking_url+'" target="_blank" rel="noopener">Book appointment →</a>':'';
+    const book=p.booking_url?'<a class="book" href="'+esc(p.booking_url)+'" target="_blank" rel="noopener">Book appointment →</a>':'';
     c.innerHTML='<div class="nm">'+esc(p.name||'')+'</div>'+
       '<div class="sp">'+esc(p.specialty||'')+'</div>'+tele+langs+
       (states?'<span class="tag">'+esc(states)+'</span>':'')+'<br>'+book;
@@ -178,7 +231,7 @@ function renderTrials(b, trials){
     const status=t.status?'<span class="tag">'+esc(String(t.status).replace(/_/g,' ').toLowerCase())+'</span>':'';
     const phase=t.phase?'<span class="tag">'+esc(t.phase)+'</span>':'';
     const nct=t.nct_id?'<span class="tag">'+esc(t.nct_id)+'</span>':'';
-    const link=t.url?'<a class="book" href="'+t.url+'" target="_blank" rel="noopener">View trial →</a>':'';
+    const link=t.url?'<a class="book" href="'+esc(t.url)+'" target="_blank" rel="noopener">View trial →</a>':'';
     c.innerHTML='<div class="nm">'+esc(t.title||'')+'</div>'+
       '<div class="sp">'+esc(t.lead_sponsor||'')+'</div>'+status+phase+nct+'<br>'+link;
     wrap.appendChild(c);
@@ -196,8 +249,11 @@ form.addEventListener('submit', async e=>{
   const b=bubble('a');
   b.innerHTML='<div class="typing"><span></span><span></span><span></span></div>';
   try{
+    const meta={};
+    if(personaSel.value==='provider')
+      meta.output_format=document.getElementById('fmt').value;
     const r=await fetch('/chat',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({persona:document.getElementById('persona').value,message:text,metadata:{}})});
+      body:JSON.stringify({persona:personaSel.value,message:text,metadata:meta})});
     if(!r.ok){
       b.innerHTML='<p class="err">This question needs a service that isn’t enabled in this demo '+
         '(e.g. the doctrinal review for morally-weighted topics). Try asking me to <b>find a doctor</b> — '+
@@ -205,7 +261,10 @@ form.addEventListener('submit', async e=>{
     } else {
       const d=await r.json();
       let html='';
-      if(d.intent) html+='<span class="badge">'+esc(d.intent)+'</span>';
+      if(d.intent==='emergency'){
+        b.classList.add('emg');
+        html+='<div class="h">⚠ This may be an emergency</div>';
+      } else if(d.intent) html+='<span class="badge">'+esc(d.intent.replace(/_/g,' '))+'</span>';
       html+=md(d.answer||'');
       b.innerHTML=html;
       renderProviders(b,(d.structured&&d.structured.matches)||[]);
@@ -213,12 +272,48 @@ form.addEventListener('submit', async e=>{
       const cites=(d.citations||[]).map(c=>c.source).filter(Boolean);
       if(cites.length) { const e=document.createElement('div'); e.className='cite';
         e.textContent='Sources: '+[...new Set(cites)].join(' · '); b.appendChild(e); }
+      if(d.doctrinal_review){
+        const t=document.createElement('div'); t.className='trust';
+        t.textContent = d.doctrinal_review.conforms
+          ? '✓ Reviewed for conformity with Catholic teaching'
+          : '✓ Revised in keeping with Catholic teaching';
+        b.appendChild(t);
+      }
+      // Verified calculations: numbers computed in code, not by the model.
+      const comp=d.structured&&d.structured.computed;
+      if(comp&&Object.keys(comp).length){
+        const c=document.createElement('div'); c.className='calc';
+        c.innerHTML='<div class="t">✓ Verified calculations (computed, not generated)</div>';
+        // Same formatting rules as panel.js — clinical values, never raw JSON.
+        formatComputed(comp).forEach(line=>{
+          const row=document.createElement('div'); row.textContent=line;
+          c.appendChild(row);
+        });
+        b.appendChild(c);
+      }
+      const ofmt=d.structured&&d.structured.output_format;
+      if(ofmt==='note'||ofmt==='document'){
+        const bar=document.createElement('div'); bar.className='acts';
+        const cp=document.createElement('button'); cp.className='act';
+        cp.textContent='Copy'; cp.onclick=()=>navigator.clipboard.writeText(d.answer||'');
+        bar.appendChild(cp);
+        if(ofmt==='document'){
+          const dl=document.createElement('button'); dl.className='act';
+          dl.textContent='Download .md';
+          dl.onclick=()=>{const a=document.createElement('a');
+            a.href=URL.createObjectURL(new Blob([d.answer||''],{type:'text/markdown'}));
+            a.download='cosmaneura-'+(d.intent||'output')+'.md'; a.click();};
+          bar.appendChild(dl);
+        }
+        b.appendChild(bar);
+      }
     }
   }catch(err){
     b.innerHTML='<p class="err">Couldn’t reach the assistant. Is the server running?</p>';
   }
   busy=false; send.disabled=false; main.scrollTop=main.scrollHeight; input.focus();
 });
+loadWelcome();
 input.focus();
 </script>
 </body>

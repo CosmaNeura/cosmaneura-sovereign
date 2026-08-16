@@ -48,17 +48,7 @@ class EngagementAgent(BaseAgent):
         # carry PHI, while Magisterium's MCP server is non-BAA and the MCP
         # connector is not ZDR-eligible. Doctrinal review for this path happens
         # only at the orchestrator's arbitration gate, on a de-identified summary.
-        if profile.require_baa_covered_llm and self.s.mock_mode is False \
-                and (self.s.llm_provider not in ("anthropic", "azure_openai")
-                     or not self.s.baa_attested):
-            # Tripwire: in a real provider deployment, refuse to process PHI
-            # unless the inference path is attested as BAA-covered. Merely
-            # pointing at Anthropic is not enough -- BAA_ATTESTED must be set
-            # after the agreement (with ZDR) is actually executed.
-            raise RuntimeError(
-                "Provider build requires an attested BAA-covered LLM path "
-                "(set BAA_ATTESTED=true only after the BAA + ZDR are executed)."
-            )
+        self.require_baa_covered_llm(profile)
 
         history = request.metadata.get("health_history") or ""
         audience = "clinician preparing for a visit" if profile.persona == Persona.PROVIDER \

@@ -21,8 +21,17 @@ _SYSTEM = (
     "Classify the user request for a Catholic healthcare assistant. "
     "Choose exactly one intent and one doctrinal_sensitivity.\n"
     "intent options: referral (wants to see/find a doctor), concierge (frontier "
-    "medicine, trials, biotech, companies), engagement (understand their own "
-    "history/conditions), doctrinal (a question about Catholic teaching itself), "
+    "medicine, trials, biotech, companies), lab_review (a clinician asks about "
+    "a specific patient's lab RESULTS from the EMR — what is abnormal, a value, "
+    "or how an analyte has trended), engagement (understand their own "
+    "history/conditions), ethics_consult (a clinician asks whether or how a "
+    "specific case, procedure, or care plan squares with Catholic teaching / the "
+    "Ethical and Religious Directives), visit_prep (a clinician asks for help "
+    "preparing, planning, or organizing an upcoming patient session or visit "
+    "from prior notes), plan_workbench (a clinician wants to troubleshoot or "
+    "refine a care plan from labs/history — investigative analysis separate "
+    "from the SOAP note, possibly including diet or lifestyle protocols), "
+    "doctrinal (a question about Catholic teaching itself), "
     "small_talk, emergency (acute medical danger).\n"
     "doctrinal_sensitivity: high (touches faith, morals, or medical ethics such as "
     "contraception, abortion, IVF, sterilization, euthanasia, end-of-life), "
@@ -54,7 +63,15 @@ class Router:
         self.magisterium = magisterium or MagisteriumClient(self.s)
 
     async def route(self, request: ChatRequest) -> tuple[Intent, DoctrinalSensitivity, str]:
-        context = f"User: {request.message}\nMetadata: {request.metadata}"
+        # Recent turns matter: "tell me more about that" misclassifies in
+        # isolation. Include a bounded window of history in the routing
+        # context (LITERAL mode de-identifies the whole context before it
+        # reaches Magisterium, history included).
+        lines = [f"[history {m.role}]: {m.content[:300]}"
+                 for m in request.history[-6:]]
+        lines.append(f"User: {request.message}")
+        lines.append(f"Metadata: {request.metadata}")
+        context = "\n".join(lines)
 
         if self.s.sovereign_mode == SovereignMode.LITERAL:
             # LITERAL sovereign: Magisterium is consulted on *every* request as

@@ -1,7 +1,7 @@
 # CosmaNeura Sovereign
 
 A single source of healthcare information **guided by Catholic teaching**, built
-as a **Hobbesian Sovereign** that distributes each request to one of three
+as a **Hobbesian Sovereign** that distributes each request to one of seven
 specialist AI agents and arbitrates the final answer. **Magisterium AI** is the
 doctrinal authority and final judge; a BAA-eligible reasoning LLM does the
 mechanical orchestration. White-labelled onto MyCatholicDoctor.
@@ -16,8 +16,11 @@ mechanical orchestration. White-labelled onto MyCatholicDoctor.
 
 - **Sovereign orchestrator** — emergency check → route → dispatch agent →
   scrub PHI → doctrinal arbitration → disclaimer → audit.
-- **Three agents** — (1) doctor referral, (2) frontier-medicine concierge,
-  (3) non-diagnostic health-engagement.
+- **Seven agents** — (1) doctor referral, (2) frontier-medicine concierge,
+  (3) non-diagnostic health-engagement, (4) ERD-grounded clinical-ethics
+  consult, (5) clinician visit/session prep, (6) care-plan workbench with
+  deterministic (code-computed) clinical calculations, (7) EMR lab review
+  (athenahealth FHIR; feature-flagged, see `ATHENA_LABS.md`).
 - **Two personas, one codebase** — `patient` (SOC 2, **no** HIPAA, no PHI) and
   `provider` (SOC 2 **+** HIPAA, PHI permitted, BAA-covered LLM required).
 - **Tiered doctrinal gate** — pure logistics skip Magisterium; moral-weight
@@ -35,7 +38,7 @@ can see it work end-to-end before creating a single account.
 
 ```bash
 make install      # pip install -r requirements.txt
-make demo         # runs run_demo.py — 5 scenarios through the full pipeline
+make demo         # runs run_demo.py — 8 scenarios through the full pipeline
 make test         # runs the test suite
 make serve        # starts FastAPI on http://localhost:8000
 ```
@@ -60,9 +63,10 @@ curl -s localhost:8000/chat -H 'content-type: application/json' -d '{
 }' | python -m json.tool
 ```
 
-The demo exercises all five paths: a patient referral, a concierge question, a
-provider engagement request **with PHI** (scrubbed before the doctrinal gate), a
-doctrinal question (answered directly by Magisterium), and an emergency message
+The demo exercises the pipeline end-to-end: a patient referral, a concierge
+question, a provider engagement request **with PHI** (scrubbed before the
+doctrinal gate), an ERD ethics consult, a clinician visit prep, a plan-workbench deep-dive, a doctrinal
+question (answered directly by Magisterium), and an emergency message
 (short-circuits to 911/988).
 
 ## Authentication
@@ -112,12 +116,52 @@ app/
   config.py               Settings, Persona enum, ComplianceProfile
   schemas.py              Request/response + intent/sensitivity models
   sovereign/              router · arbiter · orchestrator
-  agents/                 referral · concierge · engagement
-  clients/                llm · magisterium · nppes · clinicaltrials · partner_directory
+  agents/                 referral · concierge · engagement · ethics · visit_prep ·
+                          plan_workbench · calculators · labs
+  clients/                llm · magisterium · nppes · clinicaltrials · pubmed ·
+                          labs + athena/ · partner_directory
   compliance/             phi · audit · safety
 tests/test_pipeline.py
 run_demo.py
 ```
+
+## Your Data: How CosmaNeura Handles It
+
+**Who can see your notes and transcripts?**
+You, and the CosmaNeura team members who maintain the system — no one else.
+Your organization's own IT administration may be granted access as part of its
+oversight of your account. We never sell your data, share it with advertisers,
+or give any third party access to it.
+
+**What happens to your data when the AI works on it?**
+Every visit is processed inside a HIPAA-compliant boundary: encrypted in
+storage, encrypted in transit. AI analysis of identifiable patient information
+happens **only** on AI services covered by a signed Business Associate
+Agreement (BAA). Before anything is sent to any service outside that boundary —
+including the Catholic doctrinal review layer (Magisterium AI) and public
+medical databases like PubMed — patient identifiers are automatically stripped.
+The system enforces this in code: a request carrying identifiers toward an
+uncovered service fails rather than sends. The doctrinal layer never sees
+patient information, by architecture, not by policy.
+
+**Is your data used to train AI models?**
+**No.** Neither your notes nor your patients' information is used to train any
+AI model — ours or anyone else's. Our BAA-covered AI providers are
+contractually barred from retaining or training on this data. The system
+improves through configuration we build, not by learning from your records.
+
+**How long do we keep it?**
+Full visit transcripts are automatically deleted from your dashboard **7 days**
+after the visit. Generated notes remain available in your dashboard for **up to
+12 months**, or until you delete them. Our audit log — kept for compliance —
+stores cryptographic fingerprints of content, never the content itself, so even
+our own compliance records contain no patient information.
+
+**Who decides what enters the medical record?**
+You do. Nothing this system produces is written to your EHR automatically. You
+review, you edit, you push the button. The AI prepares; the clinician decides.
+
+*Questions? john@cosmaneura.com*
 
 ## Important
 

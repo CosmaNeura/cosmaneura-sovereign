@@ -7,7 +7,7 @@
 ## Qué es
 
 Una API de información de salud **guiada por la enseñanza católica**, con arquitectura de
-"Soberano Hobbesiano": cada request se enruta a uno de tres agentes de IA especialistas y
+"Soberano Hobbesiano": cada request se enruta a uno de siete agentes de IA especialistas y
 luego se arbitra por conformidad doctrinal. **Magisterium AI** es la autoridad doctrinal /
 juez final; un LLM de razonamiento elegible para BAA (Anthropic Claude por defecto) hace la
 orquestación mecánica y el ruteo. White-label sobre MyCatholicDoctor.
@@ -39,22 +39,25 @@ app/
   config.py          Settings (env), enums Persona/SovereignMode/AuthMode, ComplianceProfile
   schemas.py         Modelos request/response + Intent, DoctrinalSensitivity
   sovereign/         router.py · arbiter.py · orchestrator.py (el "Soberano")
-  agents/            base.py · referral_agent · concierge_agent · engagement_agent
-  clients/           llm · magisterium · nppes · clinicaltrials · partner_directory
+  agents/            base.py · referral_agent · concierge_agent · engagement_agent ·
+                     ethics_agent · visit_prep_agent · plan_workbench_agent · labs_agent
+  clients/           llm · magisterium · nppes · clinicaltrials · pubmed · labs (athena/) ·
+                     partner_directory
   compliance/        phi.py (de-id + tripwire de PHI) · audit.py · safety.py · netsec.py
   security/          auth.py (TokenVerifier, Principal, resolución OIDC/dev-HS256)
 tests/               test_pipeline.py (mock-mode, offline)
 tools/               mint_dev_token.py · scrape_mycatholicdoctor.py · run_demo_web.sh
 infra/               Terraform (Azure) + scripts/
-run_demo.py          Demo end-to-end de 5 escenarios
+run_demo.py          Demo end-to-end de 8 escenarios
 ```
-Docs: `README.md`, `ARCHITECTURE.md`, `SETUP_AND_HANDOFF.md`, `DEMO.md`, `DEPLOY_AZURE.md`.
+Docs: `README.md`, `ARCHITECTURE.md`, `SETUP_AND_HANDOFF.md`, `DEMO.md`, `DEPLOY_AZURE.md`,
+`ATHENA_LABS.md` (+ diseño: `INTERACTION_DESIGN.md`, `PROVIDER_COPILOT_DESIGN.md`, `UI_UX_DESIGN.md`).
 
 ## Comandos (Makefile)
 
 ```bash
 make install    # python -m venv .venv && pip install -r requirements.txt
-make demo       # python run_demo.py — 5 escenarios por el pipeline completo
+make demo       # python run_demo.py — 8 escenarios por el pipeline completo
 make test       # python tests/test_pipeline.py
 make serve      # uvicorn app.main:app --reload --port 8080
 ```
@@ -74,8 +77,9 @@ PYTHONPATH=. python -m pytest tests/ -q   # como corre CI (pytest, no el target 
 - **Pipeline (`Sovereign.handle`):** check de emergencia (corta a 911/988 antes de cualquier gate
   de auth) → resolución de persona (el principal JWT verificado sobreescribe la persona del body)
   → gate de seguridad (provider/PHI requiere identidad verificada o el switch dev
-  `allow_provider_persona` + `baa_attested`) → ruteo (intent + tier de sensibilidad doctrinal) →
-  dispatch (DOCTRINAL → Magisterium directo; REFERRAL/CONCIERGE/ENGAGEMENT → agente; SMALL_TALK →
+  `allow_provider_persona` + `baa_attested`) → ruteo (intent + tier de sensibilidad doctrinal;
+  ETHICS_CONSULT fuerza tier HIGH siempre) → dispatch (DOCTRINAL → Magisterium directo;
+  REFERRAL/CONCIERGE/ENGAGEMENT/ETHICS_CONSULT/VISIT_PREP/PLAN_WORKBENCH/LAB_REVIEW → agente; SMALL_TALK →
   LLM) → arbitraje doctrinal por Magisterium sobre una copia **con PHI removido** → disclaimer de
   seguridad → auditoría con hash de contenido → egress.
 - **La frontera de PHI es central:** `ComplianceProfile.phi_boundary_enforced` significa que los

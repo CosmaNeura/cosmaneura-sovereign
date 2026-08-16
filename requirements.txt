@@ -12,6 +12,9 @@ pydantic-settings~=2.14
 pyjwt[crypto]~=2.10
 # Partner-directory scraper (tools/scrape_mycatholicdoctor.py), run by the
 # scheduled data-refresh job. Bundled in the image so the job reuses it.
+# athenahealth lab client (vendored in app/clients/athena) is sync `requests`;
+# it is dispatched off the event loop by app/clients/labs.py.
+requests~=2.32
 beautifulsoup4~=4.12
 lxml~=5.3
 # Clinical-grade PHI de-identification (DEID_PROVIDER=azure) via Azure Health

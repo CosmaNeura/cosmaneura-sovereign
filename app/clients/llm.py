@@ -128,18 +128,25 @@ class LLMClient:
                 "AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are required "
                 "when llm_provider=azure_openai and mock_mode is off."
             )
-        endpoint = self.s.azure_openai_endpoint.rstrip("/")
-        url = (f"{endpoint}/openai/deployments/{deployment}/chat/completions"
-               f"?api-version={self.s.azure_openai_api_version}")
-        headers = {"api-key": self.s.azure_openai_api_key, "content-type": "application/json"}
+        url, headers, body_extra = _azure_chat_request(
+            self.s.azure_openai_endpoint, deployment,
+            self.s.azure_openai_api_version, self.s.azure_openai_api_key,
+        )
+        headers["content-type"] = "application/json"
         body = {
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": max_tokens,
             "temperature": temperature,
+            **body_extra,
         }
+        # GPT-5-generation models on the v1 surface take max_completion_tokens;
+        # the classic deployments path keeps the legacy max_tokens name.
+        if body_extra:
+            body["max_completion_tokens"] = max_tokens
+        else:
+            body["max_tokens"] = max_tokens
         try:
             async with httpx.AsyncClient(timeout=self.s.request_timeout_seconds) as client:
                 resp = await client.post(url, headers=headers, json=body)
@@ -169,6 +176,31 @@ class LLMClient:
             return {}
 
 
+def _azure_chat_request(endpoint: str, deployment: str, api_version: str,
+                        api_key: str) -> tuple[str, dict, dict]:
+    """
+    Build (url, headers, body_extras) for an Azure OpenAI chat call.
+
+    Azure currently ships two endpoint generations, and Foundry hands out
+    whichever its resource type uses — so we speak both:
+      * CLASSIC (….openai.azure.com): deployment name in the PATH, api-version
+        query parameter, `api-key` header.
+      * V1 / Foundry (….services.ai.azure.com, path /openai/v1): OpenAI-
+        compatible — deployment name in the BODY as `model`, Bearer auth,
+        no api-version. A bare Foundry root gets /openai/v1 appended.
+    """
+    e = endpoint.rstrip("/")
+    if ".openai.azure.com" in e:
+        url = (f"{e}/openai/deployments/{deployment}/chat/completions"
+               f"?api-version={api_version}")
+        return url, {"api-key": api_key}, {}
+    if not e.endswith("/openai/v1"):
+        e = f"{e}/openai/v1"
+    return (f"{e}/chat/completions",
+            {"authorization": f"Bearer {api_key}"},
+            {"model": deployment})
+
+
 # ---------------------------------------------------------------------------
 # Mock brain — keeps the demo deterministic and dependency-free.
 # Heuristics here are intentionally crude; they only exist so the *plumbing*
@@ -193,9 +225,35 @@ def _mock_completion(*, system: str, prompt: str) -> str:
                                             "telehealth", "refer", "appointment", "book "])
                     or ("doctor" in text and any(k in text for k in ["in ", "near", "want", "looking"]))
                     or ("catholic" in text and ("doctor" in text or "provider" in text)))
+        clinician_case = any(k in text for k in ["my patient", "our patient",
+                                                 "ethics consult", "ethics committee",
+                                                 "religious directives", "erds"])
+        prep = any(k in text for k in ["next session", "next visit", "session prep",
+                                       "talking points", "organize my next",
+                                       "prepare for my next", "plan my next"])
+        workbench = any(k in text for k in ["troubleshoot", "which levers",
+                                            "care plan", "diet protocol",
+                                            "meal plan", "standard of care",
+                                            "nutrient"])
+        # Retrieval of a specific patient's results, as opposed to reasoning
+        # about a plan: "anything concerning in her labs", "A1c trend".
+        lab_review = (any(k in text for k in ["lab result", "labs", "a1c", "trend",
+                                              "out of range", "abnormal", "lab work",
+                                              "pull up", "lab value"])
+                      and not any(k in text for k in ["which levers", "diet protocol",
+                                                      "meal plan"]))
         if any(w in text for w in ["chest pain", "suicid", "overdose", "can't breathe",
                                    "cant breathe", "stroke", "kill myself"]):
             intent, sensitivity = "emergency", "none"
+        elif clinician_case and (moral or "licit" in text or "may we" in text
+                                 or "allowed" in text):
+            intent, sensitivity = "ethics_consult", "high"
+        elif prep:
+            intent, sensitivity = "visit_prep", "low"
+        elif workbench:
+            intent, sensitivity = "plan_workbench", "low"
+        elif lab_review:
+            intent, sensitivity = "lab_review", "low"
         elif moral and any(w in text for w in ["permit", "church", "sin", "teach", "moral", "ethical"]):
             intent, sensitivity = "doctrinal", "high"
         elif referral:

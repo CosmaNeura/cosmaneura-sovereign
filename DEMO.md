@@ -1,4 +1,47 @@
-# Live demo — doctor-matching chat
+# Demos
+
+Two of them:
+
+1. **Embedded panel demo** (below) — the provider experience: the Sovereign
+   panel mounted inside a stand-in Cosmas dashboard. Zero credentials.
+2. **Live doctor-matching chat** (further down) — the patient experience
+   against real Azure OpenAI + the scraped directory.
+
+---
+
+## Embedded panel demo (no credentials, no setup)
+
+```bash
+make install          # once
+make demo-dashboard   # then open http://localhost:8080/demo/dashboard
+```
+
+What it shows, and why each part matters:
+
+| On screen | What it proves |
+|---|---|
+| A single **C** button, bottom-right (above the “Report a Bug” pill) | Not a plugin, not an iframe, quiet by default — it speaks only when opened, and `fabBottom` keeps it clear of controls the host already owns |
+| **“▸ show context sent to assistant”** in the top strip | The host decides what flows (note, journey digest, care model, terminology, labs, metrics). The panel never scrapes the page |
+| Ask “*help me prep my next session*” → **Insert into note** | Scott's daily workflow, native: no pasting into consumer ChatGPT, and the answer lands in the note |
+| Switch to **M. Torres** in the notes list | Context *and* conversation thread switch with the record — one thread per patient |
+| The note stays fully readable with the panel open | The panel reflows the host instead of covering it (`shiftContent`) — you can read the note you are inserting into |
+| Ask about labs/levers → **✓ Verified calculations** | Sandy's trust fix: BMI, resting energy and macros are computed in Python (`app/agents/calculators.py`) and locked to the clinician's stated calorie range — the model may quote them but never invent them |
+| Choose **Note text** in the format selector | Clean text for the EHR paste (Maura's Athena workflow); **Document** adds a download |
+| Type anything urgent (e.g. chest pain) | Emergency short-circuit renders as a distinct red card, before any other processing |
+| “✓ Reviewed for conformity with Catholic teaching” | The Magisterium arbitration gate, visible to the clinician |
+
+All records are **synthetic**, and the Sovereign runs in `MOCK_MODE`, so the
+assistant's prose is a visible stub (`[MOCK MODEL OUTPUT]`) — the *plumbing* is
+real, the words are not. Point it at live models (see
+`SETUP_AND_HANDOFF.md` §12) to get genuine output.
+
+The harness lives at `app/demo_dashboard.html` and is served only when
+`DEMO_UI_ENABLED=true`. It mounts the same `app/panel.js` the real dashboard
+will use, so it doubles as the reference integration for the Cosmas developer.
+
+---
+
+## Live demo — doctor-matching chat
 
 A simple in-browser chat to show the referral assistant working live (real Azure
 OpenAI + the scraped MyCatholicDoctor directory).

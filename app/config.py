@@ -139,6 +139,25 @@ class Settings(BaseSettings):
     # --- Public data sources (free, no key) --------------------------------
     nppes_base_url: str = "https://npiregistry.cms.hhs.gov/api"
     clinicaltrials_base_url: str = "https://clinicaltrials.gov/api/v2"
+    # PubMed/PMC via NCBI E-utilities. Free; the optional API key only raises
+    # rate limits. Reaches the Catholic bioethics corpus too (Linacre Quarterly).
+    pubmed_base_url: str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    pubmed_api_key: Optional[str] = Field(default=None)
+
+    # --- EMR lab results (athenahealth) ------------------------------------
+    # Whole capability off by default: this ships as a sandbox demo feature and
+    # must be excludable from a production build until the pilot practice goes
+    # live (BAA signed + the app enabled in athenaOne Certified API Access).
+    feature_athena_labs: bool = False
+    athena_client_id: Optional[str] = Field(default=None)
+    athena_client_secret: Optional[str] = Field(default=None)
+    athena_env: str = "preview"            # preview | production
+    athena_practice_id: str = "195900"     # athenahealth shared sandbox practice
+    athena_department_id: str = "1"
+    # Patient lookup by NAME lets a model reach any patient in the practice,
+    # which would bypass the host app's own authorization. Sandbox only unless
+    # a deployment deliberately opts in.
+    labs_allow_patient_search: bool = False
 
     # --- Partner directory (MyCatholicDoctor + resource partners) ----------
     # Until MyCatholicDoctor exposes a feed/API, the adapter reads a local
@@ -159,6 +178,10 @@ class Settings(BaseSettings):
     # Serve the built-in chat demo UI at GET /demo. Off by default; enable only
     # for local demos (the launch script tools/run_demo_web.sh sets it).
     demo_ui_enabled: bool = False
+
+    # Display name used in the served greeting (GET /welcome). Becomes
+    # per-tenant branding in the Phase 2 tenant layer.
+    partner_name: str = "CosmaNeura"
 
     # Audit sink: "stdout" for local dev, "file" writes JSONL to audit_path.
     # In production point this at an append-only, access-controlled store.

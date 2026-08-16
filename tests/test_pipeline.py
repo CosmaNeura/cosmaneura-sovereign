@@ -1,5 +1,6 @@
 """Pipeline tests that run in mock mode (no credentials needed)."""
 import asyncio
+import os
 
 from app.compliance.phi import deidentify, assert_no_phi, PHIBoundaryViolation
 from app.config import Persona
@@ -285,6 +286,319 @@ def test_session_id_charset_enforced():
         pass
 
 
+# --- provider copilot: ethics consult + visit prep ---------------------------
+
+def test_ethics_consult_routes_with_full_arbitration():
+    from app.config import Settings
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.handle(ChatRequest(
+        persona=Persona.PROVIDER,
+        message="My patient is asking about tubal ligation at delivery. Is that "
+                "permitted under the ERDs, and what alternatives may I discuss?")))
+    assert resp.intent == Intent.ETHICS_CONSULT
+    assert resp.doctrinal_review is not None       # the full gate actually ran
+    assert any(c.source == "PubMed" for c in resp.citations)
+    assert any(c.source == "USCCB" for c in resp.citations)
+
+
+def test_ethics_consult_forces_full_gate_even_if_router_says_none():
+    """The tiered gate must never skip arbitration on an ethics consult."""
+    from app.config import Settings
+    from app.schemas import DoctrinalSensitivity
+
+    sov = Sovereign(Settings(allow_provider_persona=True))
+
+    async def lax_route(request):
+        return Intent.ETHICS_CONSULT, DoctrinalSensitivity.NONE, "lax router"
+    sov.router.route = lax_route
+
+    seen = {}
+    original_review = sov.arbiter.review
+
+    async def spy(**kwargs):
+        seen["sensitivity"] = kwargs.get("sensitivity")
+        return await original_review(**kwargs)
+    sov.arbiter.review = spy
+
+    _run(sov.handle(ChatRequest(persona=Persona.PROVIDER,
+                                message="case question for the ethics consult")))
+    assert seen["sensitivity"] == DoctrinalSensitivity.HIGH
+
+
+def test_visit_prep_routes_and_returns_prep():
+    from app.config import Settings
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.handle(ChatRequest(
+        persona=Persona.PROVIDER,
+        message="Help me organize my next session with this client - talking "
+                "points and a short outline.",
+        metadata={"prior_sessions": "Last time the client explored family history.",
+                  "terminology": "client/therapist"})))
+    assert resp.intent == Intent.VISIT_PREP
+    assert resp.structured.get("feature") == "visit_prep"
+    assert resp.structured.get("terminology") == "client/therapist"
+
+
+def test_new_phi_agents_require_baa_attestation():
+    from app.agents.ethics_agent import EthicsConsultAgent
+    from app.agents.visit_prep_agent import VisitPrepAgent
+    from app.config import ComplianceProfile, Settings
+
+    from app.agents.plan_workbench_agent import PlanWorkbenchAgent
+
+    profile = ComplianceProfile(Persona.PROVIDER)
+    for cls in (EthicsConsultAgent, VisitPrepAgent, PlanWorkbenchAgent):
+        agent = cls(Settings(mock_mode=False, baa_attested=False))
+        try:
+            _run(agent.run(ChatRequest(persona=Persona.PROVIDER, message="case"),
+                           profile))
+            assert False, f"{cls.__name__} should refuse without BAA attestation"
+        except RuntimeError as e:
+            assert "BAA" in str(e)
+
+
+def test_pubmed_client_refuses_raw_phi():
+    """PubMed is a public non-BAA API; identifier-bearing queries must fail."""
+    from app.clients.pubmed import PubMedClient
+    from app.compliance.phi import PHIBoundaryViolation
+    from app.config import Settings
+
+    client = PubMedClient(Settings())
+    try:
+        _run(client.search("case report for jane@example.com"))
+        assert False, "should have refused identifiers"
+    except PHIBoundaryViolation:
+        pass
+
+
+# --- plan workbench: deterministic numbers + routing --------------------------
+
+def test_calculators_catch_the_reported_failure():
+    """Direct user bug: asked 1500-1600 kcal, consumer AI delivered 1400s."""
+    from app.agents import calculators
+    assert calculators.within_target(1450, "1500-1600") is False
+    assert calculators.within_target(1550, "1500-1600") is True
+    m = calculators.macro_grams(1550, protein_pct=30, carb_pct=40, fat_pct=30)
+    assert m["protein_g"] == round(1550 * 0.30 / 4)
+    assert m["fat_g"] == round(1550 * 0.30 / 9)
+    assert calculators.macro_grams(1550, protein_pct=50, carb_pct=40,
+                                   fat_pct=30) is None   # split must total 100
+    assert calculators.bmi(weight_lb=200, height_in=65) == 33.3
+    # Bad input degrades to "unavailable", never to invented numbers.
+    assert calculators.compute({"sex": "x"}, calorie_target="soon") == {}
+
+
+def test_plan_workbench_routes_and_computes():
+    from app.config import Settings
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.handle(ChatRequest(
+        persona=Persona.PROVIDER,
+        message="Her labs are back and the standard of care isn't working - "
+                "help me troubleshoot which levers to adjust.",
+        metadata={"labs": "A1c 8.9",
+                  "patient_metrics": {"sex": "female", "age": 52,
+                                      "weight_lb": 200, "height_in": 65},
+                  "calorie_target": "1500-1600",
+                  "terminology": "client/therapist",
+                  "output_format": "note"})))
+    assert resp.intent == Intent.PLAN_WORKBENCH
+    assert resp.structured.get("feature") == "plan_workbench"
+    assert resp.structured.get("output_format") == "note"
+    assert resp.structured.get("terminology") == "client/therapist"
+    computed = resp.structured.get("computed") or {}
+    assert computed.get("bmi") == 33.3                      # code, not model
+    assert computed["calorie_target"]["min"] == 1500
+    assert computed["macros_at_target_midpoint"]["calories"] == 1550
+    assert any(c.source == "PubMed" for c in resp.citations)
+
+
+def test_output_format_falls_back_to_chat():
+    from app.config import Settings
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.handle(ChatRequest(
+        persona=Persona.PROVIDER,
+        message="Help me organize my next session with this client - talking points.",
+        metadata={"output_format": "hologram"})))
+    assert resp.intent == Intent.VISIT_PREP
+    assert resp.structured.get("output_format") == "chat"
+
+
+# --- context plumbing: history-aware routing + journey digest -----------------
+
+def test_router_includes_history_in_classification():
+    """Follow-ups like "tell me more" need prior turns in the routing context."""
+    from app.schemas import ChatMessage
+    from app.sovereign.router import Router
+
+    router = Router()
+    seen = {}
+    original = router.llm.classify_json
+
+    async def spy(**kwargs):
+        seen["prompt"] = kwargs.get("prompt", "")
+        return await original(**kwargs)
+
+    router.llm.classify_json = spy
+    _run(router.route(ChatRequest(
+        persona=Persona.PATIENT,
+        message="tell me more about the second one",
+        history=[ChatMessage(role="user", content="find me a catholic cardiologist in Ohio"),
+                 ChatMessage(role="assistant", content="Here are three matches...")])))
+    assert "[history user]: find me a catholic cardiologist" in seen["prompt"]
+    assert "tell me more about the second one" in seen["prompt"]
+
+
+def test_agents_consume_journey_digest():
+    """The digest the panel sends must actually reach the agents' prompts."""
+    from app.agents.plan_workbench_agent import PlanWorkbenchAgent
+    from app.agents.visit_prep_agent import VisitPrepAgent
+    from app.config import ComplianceProfile, Settings
+
+    profile = ComplianceProfile(Persona.PROVIDER)
+    marker = "JOURNEY-DIGEST-MARKER-XYZ"
+    for cls in (VisitPrepAgent, PlanWorkbenchAgent):
+        agent = cls(Settings(allow_provider_persona=True))
+        prompts: list[str] = []
+        original = agent.llm.complete
+
+        async def spy(**kwargs):
+            prompts.append(kwargs.get("prompt", ""))
+            return await original(**kwargs)
+
+        agent.llm.complete = spy
+        _run(agent.run(ChatRequest(
+            persona=Persona.PROVIDER, message="prep for the next visit",
+            metadata={"journey_digest": marker}), profile))
+        assert any(marker in p for p in prompts), \
+            f"{cls.__name__} dropped the journey digest"
+
+
+# --- Azure endpoint dialects ---------------------------------------------------
+
+def test_azure_endpoint_forms_supported():
+    """Classic (….openai.azure.com) and Foundry v1 endpoints both work."""
+    from app.clients.llm import _azure_chat_request
+
+    # Foundry v1 form — exactly what the portal's sample code hands out.
+    url, hdrs, extra = _azure_chat_request(
+        "https://sovereign-reasoning-resource.services.ai.azure.com/openai/v1",
+        "gpt-5.6-sol", "2025-03-01-preview", "k")
+    assert url.endswith("/openai/v1/chat/completions")
+    assert extra == {"model": "gpt-5.6-sol"}
+    assert hdrs["authorization"] == "Bearer k"
+
+    # Bare Foundry root gets /openai/v1 appended.
+    url3, _, _ = _azure_chat_request(
+        "https://x.services.ai.azure.com", "d", "v", "k")
+    assert url3.endswith("/openai/v1/chat/completions")
+
+    # Classic form unchanged: deployment in path, api-version, api-key header.
+    url2, hdrs2, extra2 = _azure_chat_request(
+        "https://myres.openai.azure.com", "sovereign-reasoning",
+        "2025-03-01-preview", "k")
+    assert "/openai/deployments/sovereign-reasoning/chat/completions" in url2
+    assert "api-version=2025-03-01-preview" in url2
+    assert hdrs2["api-key"] == "k" and extra2 == {}
+
+
+# --- journey digest: multi-session compression off the hot path ---------------
+
+def test_digest_merges_sessions_with_gates_intact():
+    from app.config import Settings
+    from app.schemas import DigestRequest
+
+    sov = Sovereign(Settings(allow_provider_persona=True))
+    resp = _run(sov.digest(DigestRequest(
+        persona=Persona.PROVIDER,
+        sessions=["Session 1: explored family history.",
+                  "Session 2: committed to journaling."],
+        existing_digest="Prior digest text.",
+        terminology="client/therapist")))
+    assert resp.digest and resp.trace_id
+
+    # Same provider gate as /chat: unverified provider without the dev
+    # switch is refused before any PHI-bearing session text is processed.
+    locked = Sovereign()  # allow_provider_persona defaults False
+    try:
+        _run(locked.digest(DigestRequest(persona=Persona.PROVIDER,
+                                         sessions=["s"])))
+        assert False, "should have refused unverified provider digest"
+    except PermissionError:
+        pass
+
+
+def test_digest_requires_baa_attestation():
+    from app.config import Settings
+    from app.schemas import DigestRequest
+
+    sov = Sovereign(Settings(mock_mode=False, baa_attested=False,
+                             allow_provider_persona=True))
+    try:
+        _run(sov.digest(DigestRequest(persona=Persona.PROVIDER, sessions=["s"])))
+        assert False, "should have refused without BAA attestation"
+    except RuntimeError as e:
+        assert "BAA" in str(e)
+
+
+def test_panel_component_served():
+    from fastapi.testclient import TestClient
+    from app.main import app as web_app
+
+    r = TestClient(web_app).get("/panel.js")
+    assert r.status_code == 200
+    assert "CosmaNeuraPanel" in r.text
+    assert "javascript" in r.headers["content-type"]
+
+
+def test_dashboard_harness_gated_by_demo_flag():
+    """The embedded-panel harness ships only when the demo UI is enabled."""
+    import importlib
+    from fastapi.testclient import TestClient
+
+    import app.main
+
+    # Default settings: demo UI off -> harness must not be routable.
+    assert TestClient(app.main.app).get("/demo/dashboard").status_code == 404
+
+    import app.config
+    app.config.get_settings.cache_clear()
+    try:
+        os.environ["DEMO_UI_ENABLED"] = "true"
+        reloaded = importlib.reload(app.main)
+        r = TestClient(reloaded.app).get("/demo/dashboard")
+        assert r.status_code == 200
+        assert "CosmaNeuraPanel.mount" in r.text
+        assert "synthetic" in r.text.lower()      # honest demo labelling
+    finally:
+        os.environ.pop("DEMO_UI_ENABLED", None)
+        app.config.get_settings.cache_clear()
+        importlib.reload(app.main)
+
+
+# --- HTTP surface: welcome bootstrap ------------------------------------------
+
+def test_welcome_serves_greeting_and_guided_paths():
+    """Both UI surfaces bootstrap from /welcome — no auth, no LLM call."""
+    from fastapi.testclient import TestClient
+    from app.main import app as web_app
+
+    client = TestClient(web_app)
+    r = client.get("/welcome")
+    assert r.status_code == 200
+    w = r.json()
+    assert w["persona"] == "patient"
+    assert "Catholic" in w["greeting"]
+    assert len(w["paths"]) == 4
+    assert {p["intent"] for p in w["paths"]} == {"referral", "engagement",
+                                                 "concierge", "doctrinal"}
+    assert "911" in w["emergency_note"]
+    assert w["disclaimer"]
+
+    rp = client.get("/welcome", params={"persona": "provider"})
+    intents = {p["intent"] for p in rp.json()["paths"]}
+    assert "visit_prep" in intents and "ethics_consult" in intents
+
+
 # --- authentication (JWT/OIDC) tests ----------------------------------------
 
 def _dev_settings(**kw):
@@ -409,6 +723,22 @@ if __name__ == "__main__":
     test_emergency_overrides_provider_gate()
     test_partner_booking_url_https_only()
     test_session_id_charset_enforced()
+    test_ethics_consult_routes_with_full_arbitration()
+    test_ethics_consult_forces_full_gate_even_if_router_says_none()
+    test_visit_prep_routes_and_returns_prep()
+    test_new_phi_agents_require_baa_attestation()
+    test_pubmed_client_refuses_raw_phi()
+    test_calculators_catch_the_reported_failure()
+    test_plan_workbench_routes_and_computes()
+    test_output_format_falls_back_to_chat()
+    test_router_includes_history_in_classification()
+    test_agents_consume_journey_digest()
+    test_azure_endpoint_forms_supported()
+    test_digest_merges_sessions_with_gates_intact()
+    test_digest_requires_baa_attestation()
+    test_panel_component_served()
+    test_dashboard_harness_gated_by_demo_flag()
+    test_welcome_serves_greeting_and_guided_paths()
     test_auth_disabled_returns_no_principal()
     test_auth_required_when_enabled()
     test_valid_token_maps_provider_role_to_persona()

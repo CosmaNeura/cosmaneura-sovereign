@@ -25,6 +25,34 @@ SCENARIOS = [
         message="Help me explain this patient's new type 2 diabetes diagnosis before the visit.",
         metadata={"health_history": "Pt John Doe, DOB 04/12/1971, MRN 88231, A1c 8.2, "
                                     "email john@example.com, phone 603-555-0142."})),
+    ("Ethics consult (provider)", ChatRequest(
+        persona=Persona.PROVIDER,
+        message="My patient with a high-risk pregnancy is asking about tubal ligation "
+                "at delivery. Is that permitted under the ERDs, and what alternatives "
+                "may I discuss with her?",
+        metadata={"case_context": "G4P3, prior classical cesarean; cardiology advises "
+                                  "against future pregnancy."})),
+    ("Visit prep (provider)", ChatRequest(
+        persona=Persona.PROVIDER,
+        message="Help me organize my next session with this client — a few talking "
+                "points and a short outline. We're using internal family systems.",
+        metadata={"prior_sessions": "[Transcript excerpt] Client explored resentment "
+                                    "toward father; agreed to a journaling exercise "
+                                    "before next meeting.",
+                  "care_model": "internal family systems",
+                  "terminology": "client/therapist"})),
+    ("Plan workbench (provider)", ChatRequest(
+        persona=Persona.PROVIDER,
+        message="Her labs are back and the standard of care isn't working — help me "
+                "troubleshoot which levers to adjust. She's motivated for a "
+                "structured diet protocol.",
+        metadata={"labs": "A1c 8.9 (was 8.2), LDL 160, TSH 2.1, ferritin 18",
+                  "case_context": "T2DM 6 yrs, metformin + SGLT2i, adherent; "
+                                  "clinician suspects iron deficiency compounding fatigue.",
+                  "patient_metrics": {"sex": "female", "age": 52,
+                                      "weight_lb": 200, "height_in": 65},
+                  "calorie_target": "1500-1600",
+                  "output_format": "note"})),
     ("Doctrinal (patient)", ChatRequest(
         persona=Persona.PATIENT,
         message="Does the Church permit IVF for a married couple struggling with infertility?",

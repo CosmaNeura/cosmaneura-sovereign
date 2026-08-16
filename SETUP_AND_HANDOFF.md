@@ -275,3 +275,82 @@ Emergencies still short-circuit before auth.
 
 Your dev handles model-ID confirmation, the hardening checklist, and pointing
 the (already-built) JWT auth at your identity provider (§10).
+
+---
+
+## 12. Sprint status & go-live runbook (July 24, 2026)
+
+Everything below reflects the `claude/repo-review-8e9d5x` branch (PR #1).
+Written so the incoming developer can go from clone to first live output in
+under an hour.
+
+### What is DONE (built, tested offline — 43 tests passing)
+
+| Piece | Where |
+|---|---|
+| Six agents incl. ethics consult (forced-HIGH arbitration), visit prep, plan workbench (deterministic calculators) | `app/agents/` |
+| PubMed client (Linacre filter, PHI tripwire) | `app/clients/pubmed.py` |
+| 3-way output selector (chat/note/document) across provider lanes | `BaseAgent.resolve_output_format` |
+| `GET /welcome` bootstrap, `POST /digest` journey compression, `GET /panel.js` drop-in dashboard component | `app/main.py`, `app/panel.js` |
+| History-aware routing; agents consume `metadata.journey_digest` | `app/sovereign/router.py`, agents |
+| Azure client speaks BOTH endpoint dialects (classic + Foundry v1, incl. `max_completion_tokens`) | `app/clients/llm.py` |
+| Live smoke test with plain-language failure hints | `tools/smoke_live.py` |
+| Design docs: `INTERACTION_DESIGN.md`, `PROVIDER_COPILOT_DESIGN.md`, `UI_UX_DESIGN.md`; data governance in `README.md` | repo root |
+
+### Azure facts + consolidation checklist (owner decision, July 24, 2026)
+
+**Decision: consolidate on the `CosmasCode` Foundry resource.** During setup a
+stray resource (`sovereign-reasoning-resource`) was auto-created and currently
+holds the only copies of the two model deployments. Developer performs the
+consolidation — 15 minutes:
+
+1. In ai.azure.com, under the **CosmasCode** resource/project, deploy two
+   models with these EXACT deployment names (they're already wired in config):
+   `gpt-5.6-sol` (the newest reasoning-tier GPT) and `gpt-5.4-mini`.
+   If Foundry rejects those names, accept its defaults and update
+   REASONING_MODEL / FAST_MODEL in the env to match verbatim.
+2. portal.azure.com → **CosmasCode** → Keys and Endpoint → **Regenerate
+   Key 1** (a key was exposed in chat during setup and it is not certain
+   which resource it belonged to — rotate to be sure) → store the new key in
+   1Password item **`CosmasCode`**.
+3. Delete the stray `sovereign-reasoning-resource` (and its
+   "Sovereign-Reasoning" project). This removes duplicate spend paths and
+   retires any lingering exposed credential on that resource for good.
+4. Verify CosmasCode sits in the credits-bearing subscription and a monthly
+   budget (~$10k, 50%/90% email alerts) exists on that subscription.
+
+- Endpoint (wired in config): `https://cosmascode.services.ai.azure.com/openai/v1`
+- Deployments (wired in config): `gpt-5.6-sol` · `gpt-5.4-mini`
+- Key: 1Password item `CosmasCode` — never transmitted outside 1Password
+- `tools/smoke_live.py` validates all of the above; a 404 there means a
+  deployment-name mismatch and says so in plain language
+
+### Go-live runbook (first real output, synthetic data)
+
+1. `git fetch && git checkout claude/repo-review-8e9d5x && make install`
+2. `cp .env.example .env` — endpoint + deployment names are already correct;
+   fill `AZURE_OPENAI_API_KEY` (1Password) and `MAGISTERIUM_API_KEY` (vault);
+   set `MOCK_MODE=false`.
+3. `PYTHONPATH=. python tools/smoke_live.py` → expect three PASSes. Each
+   failure mode prints its own remediation hint.
+4. `PYTHONPATH=. python run_demo.py` with real models — read all 8 scenarios,
+   eyeball routing choices and doctrinal verdicts. SYNTHETIC DATA ONLY.
+5. Deploy staging via `infra/` (Terraform targets Azure Container Apps; env
+   contract in `infra/variables.tf` already matches the new config).
+
+### Blocked on (not code)
+
+| Item | Blocks | Owner |
+|---|---|---|
+| Microsoft DPA/BAA written confirmation | `BAA_ATTESTED=true` → any real PHI | John (support ticket filed) |
+| Credits-cover-AOAI + quota tier answer | cost planning; 5.6 quota headroom | John (same ticket) |
+| Clerk OIDC production values | `AUTH_MODE=oidc` → provider persona in prod | Developer + John |
+| Cosmas dashboard mount (panel.js + `getAuthToken`/`getContext` + `/digest` at note-write) | Surface B | Developer (Cosmas repo; contract in `UI_UX_DESIGN.md` §3) |
+| SSE streaming on `/chat` | perceived latency polish | Developer (post-launch) |
+
+### First post-launch engineering items (in order)
+
+1. Auth bridge (Cosmas session → provider JWT) — security-critical, small.
+2. Panel mount in Cosmas with minimal context (latest note + terminology).
+3. Prompt tuning against real material (redacted long note, labs, templates).
+4. SSE streaming; per-field size bounds on `prior_sessions`/`labs`/`sessions`.
