@@ -69,6 +69,11 @@ def test_mount_profile_is_the_only_pinned_authority_selector():
         ("feature_athena_labs", True, "FEATURE_ATHENA_LABS"),
         ("athena_client_id", "client-id-sentinel", "ATHENA_CLIENT_ID"),
         ("athena_client_secret", "secret-value-sentinel", "ATHENA_CLIENT_SECRET"),
+        (
+            "sovereign_record_grant_secret",
+            "record-grant-secret-value-must-not-leak",
+            "SOVEREIGN_RECORD_GRANT_SECRET",
+        ),
         ("labs_allow_patient_search", True, "LABS_ALLOW_PATIENT_SEARCH"),
         ("deid_provider", "azure", "DEID_PROVIDER"),
         ("azure_deid_endpoint", "https://deid-sentinel.example", "AZURE_DEID_ENDPOINT"),
@@ -228,6 +233,31 @@ def test_provider_boot_requires_tenant_and_production_oidc_configuration():
             deid_provider="azure",
         ))
 
+    invalid_grant_keys = (
+        "too-short",
+        "A" * 44,
+        "A" * 42 + "==",
+        "!" * 43 + "=",
+    )
+    for invalid_grant_key in invalid_grant_keys:
+        with pytest.raises(
+            DeploymentConfigurationError,
+            match="SOVEREIGN_RECORD_GRANT_SECRET",
+        ):
+            validate_deployment_configuration(Settings(
+                mount_profile=MountProfile.PROVIDER_ASSISTANT,
+                mount_tenant_id="tenant_test",
+                mock_mode=False,
+                auth_mode=AuthMode.OIDC,
+                baa_attested=True,
+                oidc_issuer="https://identity.example",
+                oidc_audience="cosmaneura-sovereign",
+                oidc_jwks_url="https://identity.example/.well-known/jwks.json",
+                deid_provider="azure",
+                azure_deid_endpoint="https://deid.example",
+                sovereign_record_grant_secret=invalid_grant_key,
+            ))
+
     validate_deployment_configuration(Settings(
         mount_profile=MountProfile.PROVIDER_ASSISTANT,
         mount_tenant_id="tenant_test",
@@ -239,6 +269,7 @@ def test_provider_boot_requires_tenant_and_production_oidc_configuration():
         oidc_jwks_url="https://identity.example/.well-known/jwks.json",
         deid_provider="azure",
         azure_deid_endpoint="https://deid.example",
+        sovereign_record_grant_secret="A" * 43 + "=",
     ))
 
 

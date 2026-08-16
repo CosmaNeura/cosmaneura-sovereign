@@ -2,14 +2,15 @@
 #
 # This is a SEPARATE state and a SEPARATE resource group from the main app
 # (cosmaneura/infra). That isolation is deliberate: the provider/PHI build pulls
-# this service into HIPAA scope (BAA inference, ZDR, ≥6yr WORM audit), and we do
+# this service into HIPAA scope (BAA inference and PHI-adjacent operations), and
+# we do
 # not want that scope to engulf the main stack's shared logging/storage. See
 # ../DEPLOY_AZURE.md.
 #
 # Patterns here intentionally mirror cosmaneura/infra/main.tf so it reads the
-# same to anyone who knows that stack: data.external secrets export, the
-# public/secret env-var split, SHA-pinned images deployed by CI with Terraform
-# ignoring the live image, etc.
+# same to anyone who knows that stack: non-secret configuration export,
+# mount-specific Key Vault references, digest-pinned images deployed by CI with
+# Terraform ignoring the live image, etc.
 
 locals {
   environment           = "prod"
@@ -39,7 +40,7 @@ terraform {
       # v4 line until that provider migration is made deliberately.
       version = ">=4.14.0, <5.0.0"
     }
-    # extract secrets (from 1Password via `op inject`) as JSON for env wiring
+    # export a closed allowlist of non-secret env configuration as JSON
     external = {
       source  = "hashicorp/external"
       version = ">=2.3.4"

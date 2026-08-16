@@ -42,7 +42,7 @@ resource "azurerm_container_registry" "main" {
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   sku                 = "Basic"
-  admin_enabled       = true
+  admin_enabled       = false
   tags                = var.tags
 }
 
@@ -71,15 +71,18 @@ resource "azurerm_container_app_environment" "public" {
 ########################################
 
 resource "azurerm_container_app" "sovereign" {
+  count                        = var.live_apps_enabled ? 1 : 0
   name                         = "${local.base_name}-app"
   resource_group_name          = azurerm_resource_group.main.name
   container_app_environment_id = azurerm_container_app_environment.main.id
   revision_mode                = "Single"
 
-  # Managed identity for keyless auth to Azure services (the de-identification
-  # service — see deid.tf). No stored secret.
+  # A stable user-assigned identity reads only the provider vault, pulls the
+  # image, and calls the de-identification service. It exists before the app so
+  # Key Vault RBAC can be established without a secret-bearing bootstrap.
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.provider_runtime.id]
   }
 
   ingress {
@@ -98,7 +101,7 @@ resource "azurerm_container_app" "sovereign" {
 
     container {
       name   = "${local.base_name}-app-web"
-      image  = "${azurerm_container_registry.main.login_server}/cosmaneura/sovereign:latest"
+      image  = var.initial_image_ref
       cpu    = 0.5
       memory = "1Gi"
 
@@ -111,17 +114,12 @@ resource "azurerm_container_app" "sovereign" {
         value = "provider_assistant"
       }
 
-      # Read the scraped MyCatholicDoctor directory from the shared volume
-      # (written by the scheduled scraper job — see data_refresh.tf). The
-      # client falls back to the bundled fixture if the file isn't there yet.
+      # DefaultAzureCredential must select the same provider-only user-assigned
+      # identity that Key Vault and ACR use. Without this, Azure DeID attempts a
+      # nonexistent system identity.
       env {
-        name  = "PARTNER_DIRECTORY_PATH"
-        value = "/data/providers.json"
-      }
-
-      volume_mounts {
-        name = "partner-data"
-        path = "/data"
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.provider_runtime.client_id
       }
 
       # Unlike the main app (TCP probes), the Sovereign exposes a real health
@@ -146,7 +144,7 @@ resource "azurerm_container_app" "sovereign" {
         for_each = var.sovereign_public_vars
         content {
           name  = env.key
-          value = data.external.secrets.result[env.key]
+          value = data.external.provider_public_config[count.index].result[env.key]
         }
       }
 
@@ -159,41 +157,51 @@ resource "azurerm_container_app" "sovereign" {
       }
     }
 
-    # Shared partner-directory volume, written by the scraper job.
-    volume {
-      name         = "partner-data"
-      storage_type = "AzureFile"
-      storage_name = azurerm_container_app_environment_storage.partner_data.name
-    }
   }
 
   dynamic "secret" {
     for_each = var.sovereign_secret_vars
     content {
-      name  = replace(lower(secret.key), "_", "-")
-      value = data.external.secrets.result[secret.key]
+      name                = replace(lower(secret.key), "_", "-")
+      key_vault_secret_id = local.provider_key_vault_secret_ids[secret.key]
+      identity            = azurerm_user_assigned_identity.provider_runtime.id
     }
   }
 
   registry {
-    server               = azurerm_container_registry.main.login_server
-    username             = azurerm_container_registry.main.admin_username
-    password_secret_name = "registry-secret"
-  }
-
-  secret {
-    name  = "registry-secret"
-    value = azurerm_container_registry.main.admin_password
+    server   = azurerm_container_registry.main.login_server
+    identity = azurerm_user_assigned_identity.provider_runtime.id
   }
 
   # Image lifecycle is owned by the deploy pipeline (CI runs
-  # `az containerapp update --set-image <SHA>`); Terraform must not revert the
-  # live revision back to ":latest". Mirrors cosmaneura/infra.
+  # `az containerapp update --image <digest>`); Terraform must not revert the
+  # live revision to the bootstrap digest.
   lifecycle {
+    # Losing the persistent live-app inputs or changing a replacement-only
+    # property must fail a plan, never silently destroy/recreate an ingress app
+    # on its original bootstrap digest.
+    prevent_destroy = true
     ignore_changes = [
       template[0].container[0].image,
     ]
+    precondition {
+      condition     = var.key_vault_secrets_ready
+      error_message = "Seed both mount-specific Key Vaults before creating the Container Apps."
+    }
+    precondition {
+      condition = (
+        startswith(var.initial_image_ref, "${azurerm_container_registry.main.login_server}/") &&
+        can(regex("@sha256:[0-9a-f]{64}$", var.initial_image_ref))
+      )
+      error_message = "Create both Container Apps from one immutable digest in this deployment's ACR."
+    }
   }
+
+  depends_on = [
+    azurerm_role_assignment.provider_acr_pull,
+    azurerm_role_assignment.provider_key_vault_secrets,
+    azurerm_role_assignment.sovereign_deid,
+  ]
 
   tags = var.tags
 }
@@ -203,10 +211,16 @@ resource "azurerm_container_app" "sovereign" {
 ########################################
 
 resource "azurerm_container_app" "public" {
+  count                        = var.live_apps_enabled ? 1 : 0
   name                         = "${local.public_base_name}-app"
   resource_group_name          = azurerm_resource_group.main.name
   container_app_environment_id = azurerm_container_app_environment.public.id
   revision_mode                = "Single"
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.public_runtime.id]
+  }
 
   ingress {
     external_enabled = true
@@ -226,7 +240,7 @@ resource "azurerm_container_app" "public" {
 
     container {
       name   = "${local.public_base_name}-web"
-      image  = "${azurerm_container_registry.main.login_server}/cosmaneura/sovereign:latest"
+      image  = var.initial_image_ref
       cpu    = 0.5
       memory = "1Gi"
 
@@ -262,16 +276,6 @@ resource "azurerm_container_app" "public" {
         name  = "PUBLIC_CHAT_TRUST_FORWARDED_FOR"
         value = "true"
       }
-      env {
-        name  = "PARTNER_DIRECTORY_PATH"
-        value = "/data/providers.json"
-      }
-
-      volume_mounts {
-        name = "partner-data"
-        path = "/data"
-      }
-
       readiness_probe {
         port      = 8000
         transport = "HTTP"
@@ -292,7 +296,7 @@ resource "azurerm_container_app" "public" {
         for_each = var.public_public_vars
         content {
           name  = env.key
-          value = data.external.public_secrets.result[env.key]
+          value = data.external.public_config[count.index].result[env.key]
         }
       }
 
@@ -305,37 +309,44 @@ resource "azurerm_container_app" "public" {
       }
     }
 
-    volume {
-      name         = "partner-data"
-      storage_type = "AzureFile"
-      storage_name = azurerm_container_app_environment_storage.public_partner_data.name
-    }
   }
 
   dynamic "secret" {
     for_each = var.public_secret_vars
     content {
-      name  = replace(lower(secret.key), "_", "-")
-      value = data.external.public_secrets.result[secret.key]
+      name                = replace(lower(secret.key), "_", "-")
+      key_vault_secret_id = local.public_key_vault_secret_ids[secret.key]
+      identity            = azurerm_user_assigned_identity.public_runtime.id
     }
   }
 
   registry {
-    server               = azurerm_container_registry.main.login_server
-    username             = azurerm_container_registry.main.admin_username
-    password_secret_name = "registry-secret"
-  }
-
-  secret {
-    name  = "registry-secret"
-    value = azurerm_container_registry.main.admin_password
+    server   = azurerm_container_registry.main.login_server
+    identity = azurerm_user_assigned_identity.public_runtime.id
   }
 
   lifecycle {
+    prevent_destroy = true
     ignore_changes = [
       template[0].container[0].image,
     ]
+    precondition {
+      condition     = var.key_vault_secrets_ready
+      error_message = "Seed both mount-specific Key Vaults before creating the Container Apps."
+    }
+    precondition {
+      condition = (
+        startswith(var.initial_image_ref, "${azurerm_container_registry.main.login_server}/") &&
+        can(regex("@sha256:[0-9a-f]{64}$", var.initial_image_ref))
+      )
+      error_message = "Create both Container Apps from one immutable digest in this deployment's ACR."
+    }
   }
+
+  depends_on = [
+    azurerm_role_assignment.public_acr_pull,
+    azurerm_role_assignment.public_key_vault_secrets,
+  ]
 
   tags = merge(var.tags, { mount = "public" })
 }
@@ -375,7 +386,8 @@ resource "azurerm_role_assignment" "github_env_operator" {
 }
 
 resource "azurerm_role_assignment" "github_app_operator" {
-  scope                = azurerm_container_app.sovereign.id
+  count                = var.live_apps_enabled ? 1 : 0
+  scope                = azurerm_container_app.sovereign[0].id
   role_definition_name = "Contributor"
   principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
 }
@@ -387,7 +399,8 @@ resource "azurerm_role_assignment" "github_public_env_operator" {
 }
 
 resource "azurerm_role_assignment" "github_public_app_operator" {
-  scope                = azurerm_container_app.public.id
+  count                = var.live_apps_enabled ? 1 : 0
+  scope                = azurerm_container_app.public[0].id
   role_definition_name = "Contributor"
   principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
 }

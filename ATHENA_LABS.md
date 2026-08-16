@@ -1,8 +1,8 @@
 # athenahealth Lab Results — Integration Notes
 
-Status: **integrated, tested offline (56 tests), and LIVE-VERIFIED against
-the athenahealth Preview sandbox** — the owner ran `tools/smoke_labs.py` on
-2026-08-14 with real Developer Console credentials: OAuth token issued,
+Status: **integrated, tested offline, and historically live-verified against
+the athenahealth Preview sandbox** — on 2026-08-14 the owner ran the earlier
+direct-client smoke with real Developer Console credentials: OAuth token issued,
 Donna Sandboxtest resolved (`a-195900.E-60178`), 76 lab reports / 129
 discrete values retrieved (entered-in-error filtered), abnormal summary
 returned 14 analytes (low platelets, high fasting glucose, high BUN and
@@ -12,6 +12,12 @@ Sandbox data note: Donna carries only ONE A1C observation, so the panel's
 trend chart (which requires >= 2 numeric points) will not draw for A1C on
 live sandbox data — the agent states single-point trends in prose instead,
 by design. Multi-observation analytes (e.g. creatinine, glucose) chart.
+
+The current `tools/smoke_labs.py` exercises one host-bound record through the
+deployed OIDC provider mount. It refuses name search, requires explicit
+synthetic-record confirmation plus a fresh actor-bound grant, and prints no token,
+record reference, lab value,
+answer, or upstream response body.
 
 Source: the `chatbot-bundle` delivered 2026-08-14, sandbox-verified against
 athenahealth Preview (practice 195900, patient Donna Sandboxtest).
@@ -71,24 +77,24 @@ The tool *capabilities* are unchanged: `find_patient`, `get_lab_results`
   it from production — omitted so it cannot be called by accident), plus the
   demo/seed/chat-loop reference scripts.
 
-## 3. Authorization — the gap worth naming
+## 3. Authorization — host mapping plus a signed grant
 
-The brief asks for a provider↔patient authorization check before tool calls.
-**The Sovereign cannot perform that check**: it has no patient roster. Only
-the host app knows which patients a clinician may open. Left unaddressed,
-`find_patient` is an authorization bypass in production — the model can name
-any patient in the practice and the tool fetches their labs.
+The Sovereign has no patient roster, so the platform host performs the
+provider↔patient/open-appointment lookup. It returns a 60-second Fernet grant
+whose fixed claims bind the verified Clerk subject to one synthetic Athena
+Preview record. Sovereign verifies that grant before releasing the vendor
+record reference to the bounded `labs.read` operation; raw caller-provided
+record identifiers are not production authority.
 
-Implemented instead:
-
-1. **The host supplies the patient.** `metadata.patient_ref` comes from the
-   record the clinician already has open — the host authorized it by
-   displaying it. This is the normal path.
-2. **Name search is sandbox-only.** Outside `ATHENA_ENV=preview` it is
-   refused unless a deployment explicitly sets
-   `LABS_ALLOW_PATIENT_SEARCH=true`. Regression-tested.
-3. **Access is audited without identifiers.** The agent returns
-   `access.patient_ref_sha256_16` (a hash) plus how the patient was resolved,
+1. **The host maps the open record.** Only an active, synthetic practice
+   `195900` mapping for the authenticated provider's appointment can mint a grant.
+2. **Sovereign verifies the grant.** Actor, issuer, audience, expiry, adapter,
+   practice, environment, tier, and synthetic-only claims must all match.
+3. **Name search is forbidden.** `LABS_ALLOW_PATIENT_SEARCH=true` fails startup;
+   the model cannot select another patient by name.
+4. **Access is audited without identifiers.** The agent returns
+   `access.record_ref_sha256_16` (a hash) plus
+   `resolved_by=platform_signed_open_record`,
    so the hash-chained audit shows who reached which record without writing a
    patient identifier into the log. *Open question for counsel: a HIPAA
    accounting of disclosures may require the real identifier in a protected
@@ -104,6 +110,7 @@ ATHENA_ENV=preview                # preview | production
 ATHENA_PRACTICE_ID=195900
 ATHENA_DEPARTMENT_ID=1
 LABS_ALLOW_PATIENT_SEARCH=false   # keep false outside the sandbox
+SOVEREIGN_RECORD_GRANT_SECRET=…   # provider-only Fernet key, from Key Vault
 ```
 
 With `MOCK_MODE=true` (the default) the lane returns deterministic stub labs

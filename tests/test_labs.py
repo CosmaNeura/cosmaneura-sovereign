@@ -1065,6 +1065,7 @@ def _nonmock_provider_settings(**updates) -> Settings:
         "athena_practice_id": "195900",
         "athena_client_id": "preview-client",
         "athena_client_secret": "preview-secret",
+        "sovereign_record_grant_secret": "A" * 43 + "=",
     }
     values.update(updates)
     return Settings(**values)
@@ -1126,10 +1127,11 @@ def test_welcome_and_panel_label_sandbox_persistently_and_per_result():
 
 def test_smoke_is_one_bounded_known_record_read_without_name_search():
     smoke = (Path(__file__).resolve().parents[1] / "tools" / "smoke_labs.py").read_text()
-    assert "SYNTHETIC_RECORD_REF" in smoke
-    assert "timedelta(days=730)" in smoke
-    assert "response.result_count == 0" in smoke
-    assert "labs.read" in smoke
+    assert "SOVEREIGN_SYNTHETIC_RECORD_GRANT" in smoke
+    assert "SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED" in smoke
+    assert '"metadata": {"record_ref": record_grant}' in smoke
+    assert 'provider_url,\n        "/chat"' in smoke
+    assert "1 <= count <= 500" in smoke
     assert "find_patient" not in smoke
     assert "Patient.read" not in smoke
     assert "Binary.read" not in smoke

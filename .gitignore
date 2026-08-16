@@ -9,6 +9,7 @@ __pycache__/
 venv/
 # terraform/opentofu
 infra/.terraform/
+infra/deployment.auto.tfvars
 *.tfstate
 *.tfstate.*
 audit_log.jsonl

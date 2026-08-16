@@ -1,0 +1,10 @@
+# Copy to deployment.auto.tfvars before the first full plan. This file is
+# intentionally ignored so an operator, not a source-code merge, controls when
+# externally reachable apps may exist.
+live_apps_enabled      = false
+key_vault_secrets_ready = false
+initial_image_ref       = ""
+
+# For one reviewed paired activation, set both booleans to true and persist the
+# exact registry/repository@sha256:... fallback digest. Refresh that digest to
+# the current paired deployment before every later infrastructure plan.

@@ -18,61 +18,93 @@ warn() { echo "  [WARN] $1"; warn=$((warn+1)); }
 bad()  { echo "  [FAIL] $1"; fail=$((fail+1)); }
 
 echo "== Tooling =="
-for t in tofu az yq op nixpacks docker python3 jq; do
+for t in tofu az op curl git uv python3 tar; do
   if command -v "$t" >/dev/null 2>&1; then ok "$t installed"; else bad "$t missing"; fi
 done
 
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64|Darwin:x86_64|Linux:x86_64|Linux:aarch64|Linux:arm64)
+    ok "bootstrap platform has a checksum-pinned Nixpacks 1.41.0 artifact"
+    ;;
+  *) bad "bootstrap platform has no reviewed Nixpacks artifact" ;;
+esac
+
 echo "== Cloud / secret auth =="
 if az account show >/dev/null 2>&1; then
-  ok "az logged in ($(az account show --query name -o tsv 2>/dev/null))"
+  subscription_id="$(az account show --query id -o tsv 2>/dev/null)"
+  if [[ "$subscription_id" == "bab2a709-1fcb-4c87-a9fc-802f7477ec13" ]]; then
+    ok "az logged in to the expected subscription"
+  else
+    bad "az is logged in to the wrong subscription"
+  fi
 else
-  warn "az not logged in — run 'az login' before 'tofu apply' / deploy"
+  bad "az not logged in — run 'az login' before bootstrap"
 fi
 if op whoami >/dev/null 2>&1; then
   ok "1Password (op) authenticated"
 else
-  warn "op not authenticated — needed to resolve op:// secret references"
+  bad "op not authenticated — needed to resolve op:// secret references"
 fi
-if docker info >/dev/null 2>&1; then ok "docker daemon running"; else warn "docker daemon not running (needed to build the image)"; fi
+echo "== Config (provider + public) =="
+deployment_gate_status=""
+if deployment_gate_status="$(python3 "$HERE/validate-deployment-inputs.py" \
+    "$ROOT/infra/deployment.auto.tfvars")"; then
+  ok "persistent Terraform deployment gates are internally consistent"
+else
+  bad "infra/deployment.auto.tfvars is missing or unsafe (copy and validate the example)"
+fi
+if python3 "$HERE/validate-deployment-env.py" \
+    provider "$ROOT/.env.production.backend" >/dev/null; then
+  ok ".env.production.backend satisfies provider invariants"
+else
+  bad ".env.production.backend is missing or unsafe (run the validator directly)"
+fi
+if python3 "$HERE/validate-deployment-env.py" \
+    public "$ROOT/.env.production.public" >/dev/null; then
+  ok ".env.production.public satisfies public invariants"
+else
+  bad ".env.production.public is missing or unsafe (run the validator directly)"
+fi
 
-check_env_file() {
-  local env_file="$1" example="$2" label="$3"
-  if [[ -f "$env_file" ]]; then
-    ok "$label present"
-    # Required keys = every assignment in the example (the canonical key set).
-    required=$(grep -oE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "$example" \
-             | sed -E 's/^[[:space:]]*(export[[:space:]]+)?//; s/=$//' | sort -u)
-    resolved=$("$HERE/export-env.sh" "$env_file" 2>/dev/null | jq -r 'keys[]' 2>/dev/null | sort -u)
-    if [[ -z "$resolved" ]]; then
-      bad "$label could not be resolved (op auth? op:// refs valid?)"
+if [[ "$deployment_gate_status" == *"(enabled)" ]]; then
+  echo "== Enabled deployment boundaries =="
+  if "$HERE/verify-key-vault-boundaries.sh" >/dev/null 2>&1; then
+    ok "vault inventories and direct/inherited runtime roles are mount-exact"
+  else
+    bad "vault inventory or runtime role boundary verification failed"
+  fi
+  if az containerapp show \
+      --resource-group cosmaneura-sovereign-prod \
+      --name cosmaneura-sovereign-prod-app >/dev/null 2>&1 &&
+    az containerapp show \
+      --resource-group cosmaneura-sovereign-prod \
+      --name cosmaneura-web-prod-app >/dev/null 2>&1; then
+    if RESOURCE_GROUP=cosmaneura-sovereign-prod \
+      PROVIDER_APP=cosmaneura-sovereign-prod-app \
+      PUBLIC_APP=cosmaneura-web-prod-app \
+      "$HERE/verify-live-app-boundaries.sh" >/dev/null 2>&1; then
+      ok "live app identities, vault references, and registry binds are mount-exact"
     else
-      missing=$(comm -23 <(echo "$required") <(echo "$resolved"))
-      if [[ -z "$missing" ]]; then ok "$label has all required keys"; else
-        bad "$label missing/unresolved keys: $(echo "$missing" | tr '\n' ' ')"; fi
+      bad "live app identity or secret reference boundary verification failed"
     fi
   else
-    bad "no $label — copy from $(basename "$example") and fill it in"
+    warn "live app boundary check awaits the first reviewed paired creation"
   fi
-}
-
-echo "== Config (provider + public) =="
-check_env_file "$ROOT/.env.production.backend" \
-  "$ROOT/.env.production.backend.example" ".env.production.backend"
-check_env_file "$ROOT/.env.production.public" \
-  "$ROOT/.env.production.public.example" ".env.production.public"
+fi
 
 echo "== Terraform =="
 if command -v tofu >/dev/null 2>&1; then
   ( cd infra && tofu fmt -check -recursive >/dev/null 2>&1 ) \
     && ok "tofu fmt clean" || warn "tofu fmt would reformat (run: tofu -chdir=infra fmt -recursive)"
-  if ( cd infra && tofu init -backend=false >/dev/null 2>&1 && tofu validate >/dev/null 2>&1 ); then
+  if ( cd infra && tofu init -backend=false -lockfile=readonly >/dev/null 2>&1 \
+       && tofu validate >/dev/null 2>&1 ); then
     ok "tofu validate passes"
   else
-    bad "tofu validate failed (run: cd infra && tofu init -backend=false && tofu validate)"
+    bad "tofu validate failed (run: cd infra && tofu init -backend=false -lockfile=readonly && tofu validate)"
   fi
 fi
 
 echo
 echo "Summary: $pass ok, $warn warn, $fail fail"
 [[ "$fail" -eq 0 ]] || { echo "Resolve [FAIL] items before deploying."; exit 1; }
-echo "No hard blockers. Address any [WARN] items, then: cd infra && tofu apply"
+echo "No hard blockers. Follow DEPLOY_CHECKLIST.md; do not run an ungated full apply."

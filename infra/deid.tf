@@ -17,5 +17,5 @@ variable "azure_deid_service_id" {
 resource "azurerm_role_assignment" "sovereign_deid" {
   scope                = var.azure_deid_service_id
   role_definition_name = "DeID Realtime Data User"
-  principal_id         = azurerm_container_app.sovereign.identity[0].principal_id
+  principal_id         = azurerm_user_assigned_identity.provider_runtime.principal_id
 }
