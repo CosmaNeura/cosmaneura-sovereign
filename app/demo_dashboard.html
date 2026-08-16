@@ -169,7 +169,7 @@
 
 <div class="bug">🕬 Report a Bug</div>
 
-<script src="/panel.js"></script>
+<script src="/embed/v1/panel.js"></script>
 <script>
 // ---------------------------------------------------------------------------
 // Synthetic records. In the real dashboard these come from the Cosmas DB.
@@ -223,7 +223,7 @@ const RECORDS = [
     labs: "A1c 8.9 (was 8.2, and 7.6 three years ago); LDL 160; TSH 2.1; ferritin 18; vitamin D 22",
     patient_metrics: { sex: "female", age: 52, weight_lb: 200, height_in: 65 },
     calorie_target: "1500-1600",
-    patient_ref: "a-195900.E-60178",   // EMR record id — enables the lab_review lane
+    record_ref: "a-195900.E-60178",    // open EMR record — enables the lab_review lane
     sections: [
       ["Subjective", "Chief Concern: Fatigue and lack of progress despite adherence.\n\n" +
         "Reports fatigue most afternoons and new cold intolerance. Taking all medications as " +
@@ -305,7 +305,7 @@ function buildContext(){
     prior_sessions: noteText          // the note IS the compressed session
   };
   if (r.labs) ctx.labs = r.labs;
-  if (r.patient_ref) ctx.patient_ref = r.patient_ref;
+  if (r.record_ref) ctx.record_ref = r.record_ref;
   if (r.patient_metrics) ctx.patient_metrics = r.patient_metrics;
   if (r.calorie_target) ctx.calorie_target = r.calorie_target;
   return ctx;
@@ -329,10 +329,9 @@ document.getElementById("ctxtoggle").onclick = function(){
 
 const panel = CosmaNeuraPanel.mount({
   sovereignUrl: "",                     // same origin in this harness
-  persona: "provider",
   // Demo runs with AUTH_MODE=disabled, so there is no token. In production
-  // this returns the clinician's verified Clerk JWT and the Sovereign derives
-  // the provider persona from it.
+  // this returns the clinician's verified Clerk JWT. The panel derives its
+  // presentation hint from the server-resolved /welcome response.
   getAuthToken: async () => null,
   getContext: async () => buildContext(),
   // Raised so the launcher clears the existing "Report a Bug" pill.
@@ -352,6 +351,8 @@ const panel = CosmaNeuraPanel.mount({
 });
 
 render();
+// Bind the first visible record too; every later switch calls setRecord above.
+panel.setRecord(currentId);
 </script>
 </body>
 </html>

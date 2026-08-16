@@ -275,21 +275,35 @@ async def digest(request: DigestRequest,
                                    "accept provider (PHI) requests.")
 
 
-# Drop-in dashboard panel component (reference implementation). Static JS,
-# no secrets — the mounting host supplies auth + context via callbacks.
-_PANEL_JS = (Path(__file__).parent / "panel.js").read_text()
+# Drop-in panel component (reference implementation). Static JS, no secrets —
+# the mounting host supplies auth + context via callbacks. Read bytes so the
+# versioned route and its temporary compatibility alias are byte-identical.
+_PANEL_JS = (Path(__file__).parent / "panel.js").read_bytes()
+
+
+@app.get("/embed/v1/panel.js")
+async def panel_js() -> Response:
+    return Response(content=_PANEL_JS, media_type="application/javascript")
 
 
 @app.get("/panel.js")
-async def panel_js() -> Response:
-    return Response(content=_PANEL_JS, media_type="application/javascript")
+async def deprecated_panel_js() -> Response:
+    """Compatibility alias; new hosts must pin the versioned embed contract."""
+    return Response(
+        content=_PANEL_JS,
+        media_type="application/javascript",
+        headers={
+            "Deprecation": "true",
+            "Link": '</embed/v1/panel.js>; rel="successor-version"',
+        },
+    )
 
 
 # Built-in chat demo UI (same-origin, so it talks to /chat without CORS). Gated
 # off by default; the launch script tools/run_demo_web.sh enables it locally.
 if _settings.demo_ui_enabled:
     _DEMO_HTML = (Path(__file__).parent / "demo.html").read_text()
-    # Harness that mounts panel.js inside a stand-in for the Cosmas
+    # Harness that mounts the versioned panel inside a stand-in for the Cosmas
     # notetaking dashboard — the Surface B experience, same-origin so it
     # needs no CORS setup locally (production hosts are cross-origin and
     # must be added to CORS_ALLOW_ORIGINS).

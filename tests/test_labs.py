@@ -1116,8 +1116,8 @@ def test_welcome_and_panel_label_sandbox_persistently_and_per_result():
         main_module._settings = original
 
     panel = (Path(__file__).resolve().parents[1] / "app" / "panel.js").read_text()
-    assert "Lab environment not verified" in panel
-    assert "welcomeData().then(applyEnvironmentLabel)" in panel
+    assert "Environment not verified" in panel
+    assert "welcomeData().then(function (w)" in panel
     assert 'd.structured.tier === "sandbox"' in panel
     assert "d.structured.sandbox_label" in panel
     assert "meta.record_ref = ctx.patient_ref" in panel

@@ -4,7 +4,7 @@
  * A collapsed right-rail button that expands into the Sovereign chat panel.
  * No framework, no dependencies, styles self-injected and prefixed (.cnp-).
  * The HOST owns auth, context, and persistence — the panel never scrapes the
- * page. Served by the Sovereign at GET /panel.js.
+ * page. Served by the Sovereign at GET /embed/v1/panel.js.
  *
  * Minimal mount (two functions is all a host must implement):
  *
@@ -22,8 +22,8 @@
  *       // calorie_target, note_template, patient_profile, intake_summary
  *     }),
  *     onInsert: (text, resp) => note.insert(text),       // optional action hooks
- *     onSave:   (text, resp) => visits.savePrep(text),
- *     loadHistory: async (clientId) => [...],            // optional persistence
+ *     onSave:   (text, resp, clientId) => visits.savePrep(clientId, text),
+ *     loadHistory: async (clientId, {signal}) => [...],  // optional persistence
  *     saveHistory: async (clientId, history) => {},
  *     shiftContent: true,   // default: reflow the host page instead of covering it
  *     fabBottom: "18px",    // launcher offset — raise it above an existing
@@ -93,7 +93,8 @@
     "padding:9px 13px;font-weight:700;cursor:pointer}.cnp-send:disabled{opacity:.5}",
     ".cnp-fmt{background:var(--panel);border:1px solid var(--line);color:var(--ink);",
     "border-radius:9px;padding:8px;font:inherit;font-size:12.5px}",
-    ".cnp-disc{font-size:10px;color:var(--muted);margin-top:6px;text-align:center}",
+    ".cnp-welcome-disc{font-size:10px;color:var(--muted);margin-top:6px;text-align:center}",
+    ".cnp-welcome-disc[hidden],.cnp-chips[hidden]{display:none}",
     ".cnp-typing span{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--muted);",
     "margin-right:3px;animation:cnpb 1s infinite}.cnp-typing span:nth-child(2){animation-delay:.2s}",
     ".cnp-typing span:nth-child(3){animation-delay:.4s}",
@@ -178,7 +179,7 @@
     return m ? [parseFloat(m[1]), parseFloat(m[2])] : null;
   }
 
-  function trendChart(trend) {
+  function trendChart(trend, tipHost, ownedTips, listen) {
     var pts = (trend.points || []).map(function (p) {
       var v = parseFloat(p.value), t = Date.parse(p.observed_at || "");
       return isNaN(v) ? null : { v: v, t: t, p: p };
@@ -249,11 +250,11 @@
 
     // Hover layer: oversized hit targets, one shared tooltip.
     var tip = document.createElement("div"); tip.className = "cnp-tip";
-    document.body.appendChild(tip);
+    tipHost.appendChild(tip); ownedTips.push(tip);
     pts.forEach(function (d, i) {
       var hit = el("circle", { cx: x(i, d), cy: y(d.v), r: 11,
         fill: "transparent", cursor: "pointer" });
-      hit.addEventListener("mousemove", function (ev) {
+      listen(hit, "mousemove", function (ev) {
         tip.textContent = fdate(d.p.observed_at) + " · " + d.v +
           (d.p.unit ? " " + d.p.unit : "") +
           (d.p.abnormal_flag ? " (" + d.p.abnormal_flag + ")" : "") +
@@ -261,8 +262,8 @@
         tip.style.display = "block";
         tip.style.left = Math.min(ev.clientX + 12, window.innerWidth - 230) + "px";
         tip.style.top = (ev.clientY + 12) + "px";
-      });
-      hit.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+      }, "record");
+      listen(hit, "mouseleave", function () { tip.style.display = "none"; }, "record");
     });
     box.appendChild(svg);
     return box;
@@ -289,8 +290,14 @@
   function mount(opts) {
     opts = opts || {};
     var url = (opts.sovereignUrl || "").replace(/\/$/, "");
-    var persona = opts.persona || "provider";
-    var state = { open: false, busy: false, clientId: null, history: [], welcomePromise: null };
+    var state = {
+      open: false, busy: false, switching: false, destroyed: false,
+      clientId: null, history: [], persona: "patient", generation: 0,
+      welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
+      recordController: null, chatController: null,
+    };
+    var ownedTips = [];
+    var listeners = [];
 
     var style = document.createElement("style");
     style.textContent = CSS;
@@ -303,7 +310,7 @@
       '<div class="cnp-rail" role="complementary" aria-label="CosmaNeura assistant">' +
       '  <div class="cnp-head"><div class="cnp-logo">C</div>' +
       '    <div><div class="cnp-title">CosmaNeura</div>' +
-      '    <div class="cnp-sub">Faithful clinical assistant</div>' +
+      '    <div class="cnp-sub">Loading assistant…</div>' +
       '    <div class="cnp-sandbox" hidden></div></div>' +
       '    <button class="cnp-x" title="Close">×</button></div>' +
       '  <div class="cnp-thread"></div>' +
@@ -311,9 +318,8 @@
       '  <div class="cnp-foot"><div class="cnp-row">' +
       '    <select class="cnp-fmt"><option value="chat">Chat</option>' +
       '      <option value="note">Note text</option><option value="document">Document</option></select>' +
-      '    <textarea class="cnp-in" rows="1" placeholder="Ask about the open record…"></textarea>' +
-      '    <button class="cnp-send">Send</button></div>' +
-      '  <div class="cnp-disc">Educational information — not medical advice.</div></div></div>';
+      '    <textarea class="cnp-in" rows="1" placeholder="Ask a question…"></textarea>' +
+      '    <button class="cnp-send">Send</button></div></div></div>';
     (opts.target || document.body).appendChild(root);
 
     // Hosts often already own the bottom-right corner (support widgets, bug
@@ -324,7 +330,8 @@
     var fab = root.querySelector(".cnp-fab"), rail = root.querySelector(".cnp-rail"),
         thread = root.querySelector(".cnp-thread"), chips = root.querySelector(".cnp-chips"),
         input = root.querySelector(".cnp-in"), send = root.querySelector(".cnp-send"),
-        fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox");
+        fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox"),
+        sub = root.querySelector(".cnp-sub");
 
     function bubble(cls) {
       var w = document.createElement("div"); w.className = "cnp-msg " + (cls === "u" ? "cnp-u" : "");
@@ -333,51 +340,139 @@
       return b;
     }
 
+    function currentGeneration(generation) {
+      return !state.destroyed && generation === state.generation;
+    }
+
+    function abort(controller) {
+      if (controller) controller.abort();
+    }
+
+    function clearOwnedTips() {
+      ownedTips.forEach(function (tip) { tip.remove(); });
+      ownedTips.length = 0;
+    }
+
+    function listen(target, event, handler, scope) {
+      target.addEventListener(event, handler);
+      listeners.push({
+        target: target, event: event, handler: handler, scope: scope || "mount",
+      });
+    }
+
+    function clearEventHandlers(scope) {
+      var retained = [];
+      listeners.forEach(function (item) {
+        if (!scope || item.scope === scope) {
+          item.target.removeEventListener(item.event, item.handler);
+        } else {
+          retained.push(item);
+        }
+      });
+      listeners = retained;
+      // Dynamic chips and response actions use property handlers. Revoke them
+      // too, even if a host retained a reference to the detached root.
+      if (!scope) {
+        root.querySelectorAll("*").forEach(function (node) { node.onclick = null; });
+      }
+    }
+
+    function syncControls() {
+      var disabled = state.destroyed || state.busy || state.switching;
+      input.disabled = disabled; fmt.disabled = disabled; send.disabled = disabled;
+    }
+
+    function setSensitiveChrome(sensitive) {
+      root.querySelectorAll(".cnp-welcome-disc").forEach(function (notice) {
+        notice.hidden = sensitive;
+      });
+      chips.hidden = sensitive;
+    }
+
     function welcomeData() {
       if (!state.welcomePromise) {
-        state.welcomePromise = fetch(url + "/welcome?persona=" + persona)
-          .then(function (r) {
-            if (!r.ok) throw new Error("welcome unavailable");
-            return r.json();
-          })
-          .catch(function (error) {
-            state.welcomePromise = null;
-            throw error;
-          });
+        state.welcomeController = new AbortController();
+        state.welcomePromise = fetch(url + "/welcome", {
+          signal: state.welcomeController.signal,
+        }).then(function (r) {
+          if (!r.ok) throw new Error("welcome unavailable");
+          return r.json();
+        }).catch(function (error) {
+          state.welcomePromise = null;
+          if (error.name !== "AbortError") throw error;
+          throw error;
+        });
       }
       return state.welcomePromise;
     }
 
+    function applyWelcomeUX(w) {
+      state.persona = w.persona === "provider" ? "provider" : "patient";
+      sub.textContent = state.persona === "provider"
+        ? "Faithful clinical assistant" : "Faithful health assistant";
+      input.placeholder = state.persona === "provider"
+        ? "Ask about the open record…" : "Ask a health or values question…";
+    }
+
     function applyEnvironmentLabel(w) {
+      var hasLabsPath = (w.paths || []).some(function (path) {
+        return path.intent === "lab_review";
+      });
       if (w.labs_tier === "sandbox" && w.labs_label) {
         sandboxBadge.textContent = w.labs_label;
         sandboxBadge.hidden = false;
-      } else {
+      } else if ((w.persona === "patient" || w.persona === "provider") &&
+                 !hasLabsPath && !w.labs_tier && !w.labs_label) {
         sandboxBadge.textContent = "";
         sandboxBadge.hidden = true;
+      } else {
+        // Unknown or inconsistent lab-capable bootstrap data must never make
+        // the environment look production-safe.
+        sandboxBadge.textContent = "Environment not verified";
+        sandboxBadge.hidden = false;
       }
     }
 
-    // The environment badge is mount-level chrome, not a greeting artifact.
-    // Resolve it even when restored record history means no welcome bubble is
-    // rendered, so a synthetic sandbox can never look like production.
-    if (persona === "provider") {
-      sandboxBadge.textContent = "Lab environment not verified";
-      sandboxBadge.hidden = false;
-    }
-    welcomeData().then(applyEnvironmentLabel).catch(function () {});
+    // Welcome is mount-resolved by the server: the browser sends no persona.
+    // The response drives tone and the persistent sandbox badge even when a
+    // restored record history means no welcome bubble is rendered.
+    // Fail closed while bootstrap is pending or unavailable. A successful
+    // public welcome hides it; a sandbox welcome replaces it with the exact
+    // synthetic-data label.
+    sandboxBadge.textContent = "Environment not verified";
+    sandboxBadge.hidden = false;
+    welcomeData().then(function (w) {
+      if (state.destroyed) return;
+      applyWelcomeUX(w); applyEnvironmentLabel(w);
+    }).catch(function () {});
 
-    // Record-scoped threads. The host MUST call panel.setRecord(id) when the
-    // open record changes: the wire payload already keys history by clientId,
-    // but leaving the previous patient's bubbles on screen under a new
-    // patient's chart is wrong-patient display, which is unacceptable in a
-    // clinical UI. ask() also calls this defensively, so a host that forgets
-    // still cannot show one patient's conversation against another's record.
+    // Record-scoped threads. A monotonically increasing generation plus an
+    // AbortController protects against both cooperative and non-cooperative
+    // history loaders. A late A load can never paint after record B is active.
     async function loadThreadFor(id) {
-      state.clientId = id;
-      state.history = opts.loadHistory ? (await opts.loadHistory(id)) || [] : [];
-      thread.innerHTML = "";
-      if (state.history.length) {
+      if (state.destroyed) return;
+      var recordId = id == null ? null : String(id);
+      var generation = ++state.generation;
+      abort(state.chatController); abort(state.recordController);
+      state.chatController = null;
+      var recordController = new AbortController();
+      state.recordController = recordController;
+      state.clientId = recordId;
+      state.history = [];
+      state.welcomeRenderGeneration = null;
+      state.busy = false;
+      state.switching = true;
+      clearEventHandlers("record");
+      input.value = ""; input.style.height = "auto";
+      thread.innerHTML = ""; chips.innerHTML = "";
+      setSensitiveChrome(false); clearOwnedTips(); syncControls();
+
+      try {
+        var loaded = opts.loadHistory
+          ? await opts.loadHistory(recordId, { signal: recordController.signal })
+          : [];
+        if (!currentGeneration(generation)) return null;
+        state.history = Array.isArray(loaded) ? loaded : [];
         // Restored turns render as text; citations and actions belong to the
         // live response and are not replayed.
         state.history.forEach(function (m) {
@@ -385,18 +480,31 @@
           if (m.role === "user") b.textContent = m.content || "";
           else b.innerHTML = md(m.content || "");
         });
-      } else if (state.open) {
-        await loadWelcome();
+      } catch (error) {
+        if (currentGeneration(generation) && error.name !== "AbortError") {
+          bubble("a").innerHTML = "<p>Conversation history is unavailable.</p>";
+        }
+      } finally {
+        if (currentGeneration(generation)) {
+          if (state.recordController === recordController) state.recordController = null;
+          state.switching = false;
+          syncControls();
+          if (!state.history.length && state.open) await loadWelcome(generation);
+        }
       }
+      return currentGeneration(generation) && !state.switching ? generation : null;
     }
 
-    async function loadWelcome() {
+    async function loadWelcome(generation) {
+      if (state.welcomeRenderGeneration === generation) return;
+      state.welcomeRenderGeneration = generation;
       try {
         var w = await welcomeData();
-        applyEnvironmentLabel(w);
+        if (!currentGeneration(generation)) return;
+        applyWelcomeUX(w); applyEnvironmentLabel(w); setSensitiveChrome(false);
         var b = bubble("a");
         b.innerHTML = "<p>" + esc(w.greeting) + "</p><p><b>" + esc(w.emergency_note) + "</b></p>";
-        var d = document.createElement("div"); d.className = "cnp-cite";
+        var d = document.createElement("div"); d.className = "cnp-cite cnp-welcome-disc";
         d.textContent = w.disclaimer; b.appendChild(d);
         chips.innerHTML = "";
         (w.paths || []).forEach(function (p) {
@@ -404,13 +512,17 @@
           c.onclick = function () { input.value = p.message; input.focus(); };
           chips.appendChild(c);
         });
-      } catch (e) {
-        bubble("a").innerHTML = "<p>Assistant unavailable — check the Sovereign service.</p>";
+      } catch (error) {
+        if (currentGeneration(generation) && error.name !== "AbortError") {
+          state.welcomeRenderGeneration = null;
+          bubble("a").innerHTML = "<p>Assistant unavailable — check the Sovereign service.</p>";
+        }
       }
     }
 
-    function render(b, d) {
+    function render(b, d, recordId) {
       var html = "";
+      setSensitiveChrome(d.intent === "sensitive_disclosure");
       if (d.intent === "emergency") { b.classList.add("cnp-emg"); html += '<div class="cnp-emg-h">⚠ This may be an emergency</div>'; }
       else if (d.intent) html += '<span class="cnp-badge">' + esc(d.intent.replace(/_/g, " ")) + "</span>";
       if (d.structured && d.structured.tier === "sandbox" && d.structured.sandbox_label)
@@ -442,7 +554,7 @@
       }
       var trend = d.structured && d.structured.trend;
       if (trend && trend.points && trend.points.length >= 2) {
-        var chart = trendChart(trend);
+        var chart = trendChart(trend, root, ownedTips, listen);
         if (chart) b.appendChild(chart);
       }
       var bar = document.createElement("div"); bar.className = "cnp-acts";
@@ -460,30 +572,53 @@
           a.download = "cosmaneura-" + (d.intent || "output") + ".md"; a.click();
         });
       if (opts.onInsert && (ofmt === "note" || (d.structured && d.structured.feature === "visit_prep")))
-        act("Insert into note", function () { opts.onInsert(d.answer || "", d); });
+        act("Insert into note", function () { opts.onInsert(d.answer || "", d, recordId); });
       if (opts.onSave && d.structured && d.structured.feature)
-        act("Save", function () { opts.onSave(d.answer || "", d); });
+        act("Save", function () { opts.onSave(d.answer || "", d, recordId); });
       if (bar.children.length) b.appendChild(bar);
     }
 
     async function ask() {
       var text = input.value.trim();
-      if (!text || state.busy) return;
-      state.busy = true; send.disabled = true;
+      if (!text || state.busy || state.switching || state.destroyed) return;
+      var generation = state.generation;
+      var controller = null;
+      var b = null;
+      state.busy = true; syncControls();
       input.value = ""; input.style.height = "auto";
 
       var ctx = {};
       try {
-        ctx = opts.getContext ? (await opts.getContext()) || {} : {};
-      } catch (e) { ctx = {}; }
-      // Resolve the record BEFORE painting this turn, so a stale thread is
-      // rebuilt rather than appended to.
-      if (ctx.clientId && ctx.clientId !== state.clientId) await loadThreadFor(ctx.clientId);
+        // Persona is a response-derived presentation hint, never a mount claim.
+        // Waiting for welcome here also makes the first chat deterministic when
+        // the user submits before the bootstrap request has completed.
+        var welcome = await welcomeData();
+        if (!currentGeneration(generation)) return;
+        applyWelcomeUX(welcome); applyEnvironmentLabel(welcome);
 
-      bubble("u").textContent = text;
-      var b = bubble("a");
-      b.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
-      try {
+        ctx = opts.getContext ? (await opts.getContext()) || {} : {};
+        if (!currentGeneration(generation)) return;
+        // Resolve the record BEFORE painting this turn. loadThreadFor advances
+        // the generation and aborts any older record work.
+        var contextRecordId = ctx.clientId == null ? null : String(ctx.clientId);
+        if (contextRecordId && contextRecordId !== state.clientId) {
+          state.busy = false; syncControls();
+          var loadedGeneration = await loadThreadFor(contextRecordId);
+          // Bind to this exact switch, not merely the same record id. A host
+          // may issue a second setRecord(B) while this B load is pending.
+          if (loadedGeneration == null ||
+              !currentGeneration(loadedGeneration) || state.switching ||
+              state.clientId !== contextRecordId) return;
+          generation = loadedGeneration;
+          state.busy = true; syncControls();
+        }
+        if (!currentGeneration(generation)) return;
+
+        // Bind every side effect to the record/generation that originated the
+        // turn. Never read state.clientId again when saving this response.
+        var recordId = state.clientId;
+        var requestPersona = state.persona;
+        var historyForRequest = state.history.slice(-20);
         var meta = { output_format: fmt.value };
         ["journey_digest", "care_model", "terminology", "case_context", "labs",
          "patient_metrics", "calorie_target", "macro_split", "note_template",
@@ -500,31 +635,55 @@
 
         var headers = { "content-type": "application/json" };
         var token = opts.getAuthToken ? await opts.getAuthToken() : null;
+        if (!currentGeneration(generation)) return;
         if (token) headers["authorization"] = "Bearer " + token;
 
+        bubble("u").textContent = text;
+        b = bubble("a");
+        b.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
+        controller = new AbortController();
+        state.chatController = controller;
         var r = await fetch(url + "/chat", {
           method: "POST", headers: headers,
+          signal: controller.signal,
           body: JSON.stringify({
-            persona: persona, message: text,
-            history: state.history.slice(-20), metadata: meta,
-            session_id: state.clientId ? String(state.clientId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || null : null,
+            persona: requestPersona, message: text,
+            history: historyForRequest, metadata: meta,
+            session_id: recordId ? String(recordId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || null : null,
           }),
         });
+        if (!currentGeneration(generation) || state.chatController !== controller) return;
         if (!r.ok) {
           b.innerHTML = "<p>That request couldn’t be completed (" + r.status + "). " +
                         (r.status === 401 ? "Please sign in again." : "Please try again.") + "</p>";
         } else {
           var d = await r.json();
-          render(b, d);
+          if (!currentGeneration(generation) || state.chatController !== controller) return;
+          render(b, d, recordId);
           state.history.push({ role: "user", content: text },
                              { role: "assistant", content: d.answer || "" });
-          if (opts.saveHistory && state.clientId) opts.saveHistory(state.clientId, state.history);
+          var historySnapshot = state.history.slice();
+          if (opts.saveHistory && recordId) {
+            // Defer invocation too: a synchronous host persistence failure must
+            // never replace an already-rendered successful assistant response.
+            Promise.resolve().then(function () {
+              return opts.saveHistory(recordId, historySnapshot);
+            }).catch(function () {});
+          }
         }
-      } catch (e) {
-        b.innerHTML = "<p>Couldn’t reach the assistant. Is the Sovereign service up?</p>";
+      } catch (error) {
+        if (currentGeneration(generation) && error.name !== "AbortError") {
+          if (!b) b = bubble("a");
+          b.innerHTML = "<p>Couldn’t reach the assistant. Is the Sovereign service up?</p>";
+        }
+      } finally {
+        if (currentGeneration(generation) &&
+            (!controller || state.chatController === controller)) {
+          if (state.chatController === controller) state.chatController = null;
+          state.busy = false; syncControls();
+          thread.scrollTop = thread.scrollHeight; input.focus();
+        }
       }
-      state.busy = false; send.disabled = false;
-      thread.scrollTop = thread.scrollHeight; input.focus();
     }
 
     // Reflow the host instead of covering it: a clinician reading a note while
@@ -533,6 +692,7 @@
     // skips the shift on narrow screens where the rail is nearly full-width.
     var savedPad = null;
     function setOpen(open) {
+      if (state.destroyed) return;
       state.open = open;
       rail.classList.toggle("cnp-open", open);
       var canShift = opts.shiftContent !== false && window.innerWidth >= 900;
@@ -543,17 +703,38 @@
         document.body.style.paddingRight = savedPad;
         savedPad = null;
       }
-      if (open && !thread.children.length) loadWelcome();
+      if (open && !thread.children.length && !state.switching) {
+        loadWelcome(state.generation);
+      }
       if (open) input.focus();
+    }
+
+    function destroy() {
+      if (state.destroyed) return;
+      state.destroyed = true;
+      state.generation += 1;
+      abort(state.chatController); abort(state.recordController);
+      abort(state.welcomeController);
+      state.chatController = null; state.recordController = null;
+      state.welcomeController = null;
+      state.history = []; state.clientId = null; state.welcomePromise = null;
+      if (savedPad !== null) {
+        document.body.style.paddingRight = savedPad;
+        savedPad = null;
+      }
+      clearOwnedTips();
+      clearEventHandlers();
+      root.innerHTML = "";
+      root.remove(); style.remove();
     }
 
     fab.onclick = function () { setOpen(!state.open); };
     root.querySelector(".cnp-x").onclick = function () { setOpen(false); };
     send.onclick = ask;
-    input.addEventListener("keydown", function (e) {
+    listen(input, "keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
     });
-    input.addEventListener("input", function () {
+    listen(input, "input", function () {
       input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 110) + "px";
     });
 
@@ -564,6 +745,7 @@
       // that record's history, and re-renders it. Prevents one patient's
       // conversation from being displayed against another's chart.
       setRecord: function (id) { return loadThreadFor(id); },
+      destroy: destroy,
       root: root,
     };
   }
