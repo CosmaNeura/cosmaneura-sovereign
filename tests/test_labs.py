@@ -11,7 +11,7 @@ import asyncio
 
 from app.clients.athena import LabReport, LabValue
 from app.clients.labs import (LabsClient, LabsNotAuthorized, LabsUnavailable)
-from app.config import ComplianceProfile, Persona, Settings
+from app.config import ComplianceProfile, MountProfile, Persona, Settings
 from app.schemas import ChatRequest, Intent
 from app.security.auth import Principal
 from app.sovereign.orchestrator import Sovereign
@@ -24,18 +24,8 @@ def _run(coro):
 def _enabled(**kw):
     base = dict(
         feature_athena_labs=True,
-        mount_surface="provider_assistant",
-        mount_auth_tier="provider",
-        mount_capabilities=[
-            "education:answer",
-            "values:answer",
-            "referrals:search",
-            "ethics:consult",
-            "visit-prep:run",
-            "plan-workbench:run",
-            "ehr:labs:read",
-            "journey-digest:write",
-        ],
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
     )
     base.update(kw)
     return Settings(**base)

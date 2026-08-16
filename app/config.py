@@ -10,9 +10,11 @@ Nothing in this file is doctrine-specific; doctrine lives in the arbiter.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 from typing import Optional
+from urllib.parse import urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -63,6 +65,49 @@ class AuthMode(str, Enum):
     DISABLED = "disabled"
     DEV_HS256 = "dev_hs256"
     OIDC = "oidc"
+
+
+class MountProfile(str, Enum):
+    """The one mount a Sovereign process is allowed to serve."""
+
+    PUBLIC = "public"
+    PROVIDER_ASSISTANT = "provider_assistant"
+
+
+@dataclass(frozen=True)
+class DeploymentMount:
+    """Immutable authority values selected by ``MOUNT_PROFILE``."""
+
+    surface: str
+    auth_tier: str
+    capabilities: tuple[str, ...]
+
+
+DEPLOYMENT_MOUNTS: dict[MountProfile, DeploymentMount] = {
+    MountProfile.PUBLIC: DeploymentMount(
+        surface="public",
+        auth_tier="anonymous",
+        capabilities=(
+            "education:answer",
+            "values:answer",
+            "referrals:search",
+            "intake:invite",
+        ),
+    ),
+    MountProfile.PROVIDER_ASSISTANT: DeploymentMount(
+        surface="provider_assistant",
+        auth_tier="provider",
+        capabilities=(
+            "education:answer",
+            "referrals:search",
+            "ethics:consult",
+            "visit-prep:run",
+            "plan-workbench:run",
+            "ehr:labs:read",
+            "journey-digest:write",
+        ),
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -194,19 +239,30 @@ class Settings(BaseSettings):
     allow_provider_persona: bool = False
 
     # --- Deployment-scoped mount authority --------------------------------
-    # ADR 0014 permits one fixed mount per deployment until the platform mount
-    # resolver is live. These values are server configuration; no request body
-    # field can override them. PR 2 will replace the individual fields with
-    # named deployment profiles and stricter startup validation.
-    mount_surface: str = "public"
-    mount_auth_tier: str = "anonymous"
-    mount_capabilities: list[str] = Field(default_factory=lambda: [
-        "education:answer",
-        "values:answer",
-        "referrals:search",
-        "intake:invite",
-    ])
+    # Exactly one named profile is selected for the lifetime of the process.
+    # Surface, tier, and capabilities come from DEPLOYMENT_MOUNTS and cannot be
+    # widened by environment variables or request data.
+    mount_profile: MountProfile = MountProfile.PUBLIC
     mount_tenant_id: Optional[str] = None
+    # Accepted only so an old deployment fails loudly at startup instead of
+    # silently believing these legacy authority overrides still work.
+    mount_surface: Optional[str] = None
+    mount_auth_tier: Optional[str] = None
+    mount_capabilities: Optional[list[str]] = None
+
+    # Anonymous public traffic is limited in-process before any model call.
+    # Container Apps is configured with a single public replica until a shared
+    # rate-limit store is introduced.
+    public_chat_rate_limit_requests: int = Field(default=30, ge=1, le=10_000)
+    public_chat_rate_limit_window_seconds: float = Field(
+        default=60.0, gt=0.0, le=86_400.0,
+    )
+    public_chat_rate_limit_max_clients: int = Field(
+        default=10_000, ge=100, le=1_000_000,
+    )
+    # Trust only when a deployment-controlled reverse proxy appends the
+    # right-most X-Forwarded-For hop (Azure Container Apps does).
+    public_chat_trust_forwarded_for: bool = False
 
     # Explicit legal attestation that the configured LLM inference path is
     # covered by an executed BAA with Zero Data Retention (or an equivalent
@@ -232,6 +288,185 @@ class Settings(BaseSettings):
     # Browser CORS allowlist. Empty = no cross-origin browser access (default).
     # Set to explicit origins for a browser-facing deployment; never use "*".
     cors_allow_origins: list[str] = Field(default_factory=list)
+
+    @property
+    def deployment_mount(self) -> DeploymentMount:
+        """Return the fixed mount selected by the deployment profile."""
+        return DEPLOYMENT_MOUNTS[self.mount_profile]
+
+
+class DeploymentConfigurationError(RuntimeError):
+    """A deployment profile contains authority it must not possess."""
+
+
+def _has_value(value: Optional[str]) -> bool:
+    return value is not None and bool(value.strip())
+
+
+def _cors_origin_is_exact(origin: str, *, mock_mode: bool) -> bool:
+    if not origin or origin != origin.strip() or origin == "*":
+        return False
+    try:
+        parsed = urlparse(origin)
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        origin != f"{parsed.scheme}://{parsed.netloc}"
+        or not parsed.netloc
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or "*" in parsed.hostname
+    ):
+        return False
+    if parsed.scheme == "https":
+        return port is None or 1 <= port <= 65_535
+    return (
+        mock_mode
+        and parsed.scheme == "http"
+        and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        and (port is None or 1 <= port <= 65_535)
+    )
+
+
+def validate_deployment_configuration(settings: Settings) -> None:
+    """Fail boot on profile drift before the HTTP service starts accepting work."""
+    if (
+        len(settings.cors_allow_origins) != len(set(settings.cors_allow_origins))
+        or any(
+            not _cors_origin_is_exact(origin, mock_mode=settings.mock_mode)
+            for origin in settings.cors_allow_origins
+        )
+    ):
+        raise DeploymentConfigurationError(
+            "CORS_ALLOW_ORIGINS must contain unique, exact HTTPS origins; "
+            "wildcards, paths, credentials, queries, and fragments are forbidden."
+        )
+
+    legacy = [
+        name
+        for name, value in (
+            ("MOUNT_SURFACE", settings.mount_surface),
+            ("MOUNT_AUTH_TIER", settings.mount_auth_tier),
+            ("MOUNT_CAPABILITIES", settings.mount_capabilities),
+        )
+        if value is not None
+    ]
+    if legacy:
+        raise DeploymentConfigurationError(
+            "Legacy mount authority settings are forbidden; select only "
+            f"MOUNT_PROFILE. Remove: {', '.join(legacy)}."
+        )
+
+    ehr_configuration = [
+        name
+        for name, configured in (
+            ("FEATURE_ATHENA_LABS", settings.feature_athena_labs),
+            ("ATHENA_CLIENT_ID", _has_value(settings.athena_client_id)),
+            ("ATHENA_CLIENT_SECRET", _has_value(settings.athena_client_secret)),
+            ("LABS_ALLOW_PATIENT_SEARCH", settings.labs_allow_patient_search),
+        )
+        if configured
+    ]
+    if ehr_configuration and settings.athena_env != "preview":
+        raise DeploymentConfigurationError(
+            "EHR configuration is permitted only with ATHENA_ENV=preview. "
+            "Remove or correct: ATHENA_ENV, "
+            + ", ".join(ehr_configuration)
+            + "."
+        )
+
+    if settings.mount_profile == MountProfile.PUBLIC:
+        forbidden: list[str] = []
+        if settings.auth_mode != AuthMode.DISABLED:
+            forbidden.append("AUTH_MODE")
+        if _has_value(settings.auth_dev_secret):
+            forbidden.append("AUTH_DEV_SECRET")
+        if _has_value(settings.oidc_issuer):
+            forbidden.append("OIDC_ISSUER")
+        if _has_value(settings.oidc_audience):
+            forbidden.append("OIDC_AUDIENCE")
+        if _has_value(settings.oidc_jwks_url):
+            forbidden.append("OIDC_JWKS_URL")
+        if _has_value(settings.mount_tenant_id):
+            forbidden.append("MOUNT_TENANT_ID")
+        if settings.allow_provider_persona:
+            forbidden.append("ALLOW_PROVIDER_PERSONA")
+        if settings.baa_attested:
+            forbidden.append("BAA_ATTESTED")
+        if settings.feature_athena_labs:
+            forbidden.append("FEATURE_ATHENA_LABS")
+        if _has_value(settings.athena_client_id):
+            forbidden.append("ATHENA_CLIENT_ID")
+        if _has_value(settings.athena_client_secret):
+            forbidden.append("ATHENA_CLIENT_SECRET")
+        if settings.labs_allow_patient_search:
+            forbidden.append("LABS_ALLOW_PATIENT_SEARCH")
+        if settings.deid_provider.strip().lower() != "regex":
+            forbidden.append("DEID_PROVIDER")
+        for name, value in (
+            ("AZURE_DEID_ENDPOINT", settings.azure_deid_endpoint),
+            ("AZURE_DEID_TENANT_ID", settings.azure_deid_tenant_id),
+            ("AZURE_DEID_CLIENT_ID", settings.azure_deid_client_id),
+            ("AZURE_DEID_CLIENT_SECRET", settings.azure_deid_client_secret),
+        ):
+            if _has_value(value):
+                forbidden.append(name)
+        if forbidden:
+            raise DeploymentConfigurationError(
+                "MOUNT_PROFILE=public cannot start with forbidden configuration: "
+                + ", ".join(forbidden)
+                + "."
+            )
+        return
+
+    if not _has_value(settings.mount_tenant_id):
+        raise DeploymentConfigurationError(
+            "MOUNT_PROFILE=provider_assistant requires MOUNT_TENANT_ID."
+        )
+    if settings.auth_mode == AuthMode.DISABLED:
+        raise DeploymentConfigurationError(
+            "MOUNT_PROFILE=provider_assistant requires authenticated actors; "
+            "AUTH_MODE cannot be disabled."
+        )
+    if not settings.mock_mode and settings.auth_mode != AuthMode.OIDC:
+        raise DeploymentConfigurationError(
+            "A non-mock MOUNT_PROFILE=provider_assistant deployment requires "
+            "AUTH_MODE=oidc."
+        )
+    if not settings.mock_mode:
+        if not settings.baa_attested:
+            raise DeploymentConfigurationError(
+                "A non-mock provider deployment requires BAA_ATTESTED=true."
+            )
+        missing_oidc = [
+            name
+            for name, value in (
+                ("OIDC_ISSUER", settings.oidc_issuer),
+                ("OIDC_AUDIENCE", settings.oidc_audience),
+                ("OIDC_JWKS_URL", settings.oidc_jwks_url),
+                ("AUTH_PROVIDER_ROLE", settings.auth_provider_role),
+            )
+            if not _has_value(value)
+        ]
+        if missing_oidc:
+            raise DeploymentConfigurationError(
+                "A non-mock provider deployment is missing required OIDC "
+                "configuration: " + ", ".join(missing_oidc) + "."
+            )
+        if settings.deid_provider != "azure":
+            raise DeploymentConfigurationError(
+                "A non-mock provider deployment requires DEID_PROVIDER=azure."
+            )
+        if not _has_value(settings.azure_deid_endpoint):
+            raise DeploymentConfigurationError(
+                "A non-mock provider deployment requires AZURE_DEID_ENDPOINT."
+            )
 
 
 @lru_cache

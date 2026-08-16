@@ -34,6 +34,17 @@ resource "azurerm_container_app_environment_storage" "partner_data" {
   access_mode                  = "ReadWrite"
 }
 
+# Register the same public directory in the physically separate public
+# environment. The web app can read it but cannot alter the scraper output.
+resource "azurerm_container_app_environment_storage" "public_partner_data" {
+  name                         = "partner-data"
+  container_app_environment_id = azurerm_container_app_environment.public.id
+  account_name                 = azurerm_storage_account.data.name
+  share_name                   = azurerm_storage_share.partner_data.name
+  access_key                   = azurerm_storage_account.data.primary_access_key
+  access_mode                  = "ReadOnly"
+}
+
 # Scheduled scraper. Reuses the service image (which bundles the scraper +
 # beautifulsoup/lxml) and writes providers.json to the shared volume.
 resource "azurerm_container_app_job" "scraper" {

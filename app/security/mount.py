@@ -130,11 +130,12 @@ class PinnedResolver(MountResolver):
 
     @classmethod
     def from_settings(cls, settings: "Settings") -> "PinnedResolver":
+        deployment = settings.deployment_mount
         return cls(MountContext(
-            surface=settings.mount_surface,
-            auth_tier=settings.mount_auth_tier,
-            capabilities=tuple(settings.mount_capabilities),
-            tenant_id=settings.mount_tenant_id,
+            surface=deployment.surface,
+            auth_tier=deployment.auth_tier,
+            capabilities=deployment.capabilities,
+            tenant_id=settings.mount_tenant_id or None,
             actor_id=None,
         ))
 

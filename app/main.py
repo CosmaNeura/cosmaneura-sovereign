@@ -7,6 +7,7 @@ an authority input.
 """
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 from typing import Optional
 
@@ -16,16 +17,26 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.compliance import safety
-from app.config import AuthMode, Persona, get_settings
-from app.schemas import ChatRequest, ChatResponse, DigestRequest, DigestResponse
+from app.config import (AuthMode, MountProfile, Persona, get_settings,
+                        validate_deployment_configuration)
+from app.schemas import (ChatRequest, ChatResponse, DigestRequest,
+                         DigestResponse, Intent)
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
 from app.security.mount import MountResolutionError
-from app.sovereign.orchestrator import Sovereign
+from app.security.rate_limit import TokenBucketRateLimiter
+from app.sovereign.orchestrator import INTENT_CAPABILITIES, Sovereign
+
+_settings = get_settings()
+validate_deployment_configuration(_settings)
 
 app = FastAPI(title="CosmaNeura Sovereign", version="0.1.0")
-_sovereign = Sovereign()
-_settings = get_settings()
+_sovereign = Sovereign(_settings)
 _verifier = TokenVerifier(_settings)
+_public_chat_limiter = TokenBucketRateLimiter(
+    requests=_settings.public_chat_rate_limit_requests,
+    window_seconds=_settings.public_chat_rate_limit_window_seconds,
+    max_clients=_settings.public_chat_rate_limit_max_clients,
+)
 
 # auto_error=False so "disabled" mode tolerates a missing header; we enforce
 # presence ourselves in the dependency for dev/oidc modes.
@@ -99,18 +110,50 @@ async def _security_middleware(request: Request, call_next):
 @app.get("/healthz")
 async def healthz() -> dict:
     return {"status": "ok", "mock_mode": _settings.mock_mode,
-            "auth_mode": _settings.auth_mode.value}
+            "auth_mode": _settings.auth_mode.value,
+            "mount_profile": _settings.mount_profile.value}
+
+
+def _client_ip(request: Request) -> str:
+    """Resolve the address appended by the single trusted Container Apps ingress."""
+    forwarded_for = (
+        request.headers.get("x-forwarded-for")
+        if _settings.public_chat_trust_forwarded_for
+        else None
+    )
+    candidates = []
+    if forwarded_for:
+        # Container Apps appends the direct client to the right of any
+        # caller-supplied values. Never trust an arbitrary left-most value.
+        candidates.append(forwarded_for.rsplit(",", 1)[-1].strip())
+    if request.client is not None:
+        candidates.append(request.client.host)
+    for candidate in candidates:
+        try:
+            return ipaddress.ip_address(candidate).compressed
+        except ValueError:
+            continue
+    return "unknown"
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
+    http_request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
 ) -> ChatResponse:
     # The only pre-context exception is deterministic acute-emergency guidance.
     # Do not let missing/invalid auth suppress 911/988 instructions.
     if safety.detect_emergency(request.message):
         return await _sovereign.handle(request)
+    if _settings.mount_profile == MountProfile.PUBLIC:
+        decision = _public_chat_limiter.check(_client_ip(http_request))
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please try again shortly.",
+                headers={"Retry-After": str(decision.retry_after_seconds)},
+            )
     principal = _principal_from_credentials(creds)
     try:
         return await _sovereign.handle(request, principal=principal)
@@ -159,9 +202,24 @@ _PROVIDER_PATHS = [
 ]
 
 
+def _required_capability_for_path(path: dict) -> Optional[str]:
+    """Return no grant for malformed or newly added, unmapped welcome paths."""
+    try:
+        intent = Intent(path["intent"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return INTENT_CAPABILITIES.get(intent)
+
+
 @app.get("/welcome")
-async def welcome(persona: Persona = Persona.PATIENT) -> dict:
+async def welcome() -> dict:
     name = _settings.partner_name
+    mount = _settings.deployment_mount
+    persona = (
+        Persona.PROVIDER
+        if mount.surface == "provider_assistant"
+        else Persona.PATIENT
+    )
     if persona == Persona.PROVIDER:
         greeting = (f"Welcome — I'm the {name} clinical assistant. I can prep your "
                     "next session, prepare an ERD ethics consult, explain a "
@@ -172,11 +230,14 @@ async def welcome(persona: Persona = Persona.PATIENT) -> dict:
                     "teaching. I'm not a doctor and I can't diagnose or treat "
                     "anything — think of me as preparation for real care, not a "
                     "replacement for it.")
-    paths = _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS
-    # The lab chip only shows where the EMR feature is actually on — a chip
-    # that leads to "not enabled on this deployment" is UI noise.
-    if not _settings.feature_athena_labs:
-        paths = [p for p in paths if p["intent"] != "lab_review"]
+    candidates = _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS
+    granted = set(mount.capabilities)
+    paths = [
+        path
+        for path in candidates
+        if _required_capability_for_path(path) in granted
+        and (path["intent"] != "lab_review" or _settings.feature_athena_labs)
+    ]
     return {
         "partner_name": name,
         "persona": persona.value,

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# One command to run the live chat demo locally against real Azure OpenAI and
-# the scraped MyCatholicDoctor directory. Requires: `az login`, the .venv
-# (make install), and a scraped data file (tools/scrape_mycatholicdoctor.py).
+# One command to run the anonymous public mount locally against real Azure
+# OpenAI and the scraped MyCatholicDoctor directory. Requires: `az login`, the
+# .venv, and a scraped data file (tools/scrape_mycatholicdoctor.py).
 #
 #   ./tools/run_demo_web.sh
 # then open http://localhost:8000/demo
@@ -14,6 +14,15 @@ if [ -f .env.demo.local ]; then
   set -a; . ./.env.demo.local; set +a
   echo "→ loaded .env.demo.local"
 fi
+
+# This launcher is public-only. Remove stale provider/EHR values that may be
+# present in an older .env.demo.local; public startup intentionally rejects
+# them instead of relying on a runtime feature gate.
+unset MOUNT_SURFACE MOUNT_AUTH_TIER MOUNT_CAPABILITIES MOUNT_TENANT_ID
+unset AUTH_DEV_SECRET OIDC_ISSUER OIDC_AUDIENCE OIDC_JWKS_URL
+unset ATHENA_CLIENT_ID ATHENA_CLIENT_SECRET
+unset AZURE_DEID_ENDPOINT AZURE_DEID_TENANT_ID
+unset AZURE_DEID_CLIENT_ID AZURE_DEID_CLIENT_SECRET
 
 # Azure OpenAI resource (override via env if needed).
 AOAI_NAME="${AOAI_NAME:-cosmaneuraprodopenai}"
@@ -47,22 +56,18 @@ export MOCK_MODE=false \
   FAST_MODEL="gpt-4.1-mini-2025-04-14" \
   MAGISTERIUM_API_KEY="$MAGISTERIUM_API_KEY" \
   PARTNER_DIRECTORY_PATH="$DATA" \
+  MOUNT_PROFILE=public \
   AUTH_MODE=disabled \
+  ALLOW_PROVIDER_PERSONA=false \
+  BAA_ATTESTED=false \
+  FEATURE_ATHENA_LABS=false \
+  LABS_ALLOW_PATIENT_SEARCH=false \
+  DEID_PROVIDER=regex \
+  PUBLIC_CHAT_TRUST_FORWARDED_FOR=false \
   DEMO_UI_ENABLED=true \
-  PYTHONPATH=. \
-  `# Clinical-grade PHI de-id (Azure Health Data Services). Uses your az-login` \
-  `# identity (needs the 'DeID Realtime Data User' role on the deid service).` \
-  DEID_PROVIDER=azure \
-  AZURE_DEID_ENDPOINT="https://fba4aeg2gaf0hwf0.api.eus001.deid.azure.com" \
-  `# --- DEMO ONLY: enable the provider/PHI persona so the UI toggle works. ---` \
-  `# ALLOW_PROVIDER_PERSONA lets a body-supplied persona=provider through since` \
-  `# there is no auth in the demo. BAA_ATTESTED is a LEGAL attestation in prod —` \
-  `# it is set here ONLY to exercise Agent 3 locally on Azure OpenAI (BAA-eligible)` \
-  `# with synthetic data. Do NOT treat this as a real BAA attestation.` \
-  ALLOW_PROVIDER_PERSONA=true \
-  BAA_ATTESTED=true
+  PYTHONPATH=.
 
 URL="http://localhost:8000/demo"
-echo "→ starting…  opening $URL"
+echo "→ starting public mount…  opening $URL"
 ( sleep 2; (command -v open >/dev/null && open "$URL") || true ) &
 exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000

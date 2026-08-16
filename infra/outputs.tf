@@ -6,6 +6,10 @@ output "container_app" {
   value = azurerm_container_app.sovereign.name
 }
 
+output "public_container_app" {
+  value = azurerm_container_app.public.name
+}
+
 output "container_registry" {
   value = azurerm_container_registry.main.login_server
 }
@@ -14,6 +18,10 @@ output "container_registry" {
 # bound — see ../DEPLOY_AZURE.md §3 for sovereign.cosmaneura.com).
 output "ingress_fqdn" {
   value = azurerm_container_app.sovereign.ingress[0].fqdn
+}
+
+output "public_ingress_fqdn" {
+  value = azurerm_container_app.public.ingress[0].fqdn
 }
 
 # Wire these into the GitHub repo (vars/secrets) for the deploy workflow.

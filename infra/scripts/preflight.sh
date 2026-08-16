@@ -35,25 +35,31 @@ else
 fi
 if docker info >/dev/null 2>&1; then ok "docker daemon running"; else warn "docker daemon not running (needed to build the image)"; fi
 
-echo "== Config (.env.production.backend) =="
-ENV_FILE="$ROOT/.env.production.backend"
-EXAMPLE="$ROOT/.env.production.backend.example"
-if [[ -f "$ENV_FILE" ]]; then
-  ok ".env.production.backend present"
-  # Required keys = every assignment in the example (the canonical key set).
-  required=$(grep -oE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "$EXAMPLE" \
+check_env_file() {
+  local env_file="$1" example="$2" label="$3"
+  if [[ -f "$env_file" ]]; then
+    ok "$label present"
+    # Required keys = every assignment in the example (the canonical key set).
+    required=$(grep -oE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "$example" \
              | sed -E 's/^[[:space:]]*(export[[:space:]]+)?//; s/=$//' | sort -u)
-  resolved=$("$HERE/export-env.sh" "$ENV_FILE" 2>/dev/null | jq -r 'keys[]' 2>/dev/null | sort -u)
-  if [[ -z "$resolved" ]]; then
-    bad "could not resolve env file (op auth? op:// refs valid?)"
+    resolved=$("$HERE/export-env.sh" "$env_file" 2>/dev/null | jq -r 'keys[]' 2>/dev/null | sort -u)
+    if [[ -z "$resolved" ]]; then
+      bad "$label could not be resolved (op auth? op:// refs valid?)"
+    else
+      missing=$(comm -23 <(echo "$required") <(echo "$resolved"))
+      if [[ -z "$missing" ]]; then ok "$label has all required keys"; else
+        bad "$label missing/unresolved keys: $(echo "$missing" | tr '\n' ' ')"; fi
+    fi
   else
-    missing=$(comm -23 <(echo "$required") <(echo "$resolved"))
-    if [[ -z "$missing" ]]; then ok "all required keys resolve"; else
-      bad "missing/unresolved keys: $(echo $missing | tr '\n' ' ')"; fi
+    bad "no $label — copy from $(basename "$example") and fill it in"
   fi
-else
-  warn "no .env.production.backend — copy from .env.production.backend.example and fill it in"
-fi
+}
+
+echo "== Config (provider + public) =="
+check_env_file "$ROOT/.env.production.backend" \
+  "$ROOT/.env.production.backend.example" ".env.production.backend"
+check_env_file "$ROOT/.env.production.public" \
+  "$ROOT/.env.production.public.example" ".env.production.public"
 
 echo "== Terraform =="
 if command -v tofu >/dev/null 2>&1; then

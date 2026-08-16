@@ -25,7 +25,8 @@ locals {
     key             = "sovereign-${local.environment}.tfstate"
   }
 
-  base_name = azurerm_resource_group.main.name
+  base_name        = azurerm_resource_group.main.name
+  public_base_name = "cosmaneura-web-${local.environment}"
   # Azure requires alphanumeric-only names in several places (ACR, etc.).
   base_name_alphanumeric = replace(local.base_name, "/[^a-zA-Z0-9]/", "")
 }
@@ -33,8 +34,10 @@ locals {
 terraform {
   required_providers {
     azurerm = {
-      source  = "hashicorp/azurerm"
-      version = ">=4.14.0"
+      source = "hashicorp/azurerm"
+      # v5 changes the federated-identity resource schema. Stay on the tested
+      # v4 line until that provider migration is made deliberately.
+      version = ">=4.14.0, <5.0.0"
     }
     # extract secrets (from 1Password via `op inject`) as JSON for env wiring
     external = {

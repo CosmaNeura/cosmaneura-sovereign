@@ -82,9 +82,10 @@ def main() -> None:
     _real_guard = auth_mod.assert_safe_outbound_url
     auth_mod.assert_safe_outbound_url = lambda url: None  # loopback allowed locally
 
-    from app.config import Persona, Settings
+    from app.config import MountProfile, Persona, Settings
     from app.schemas import ChatRequest, Intent
     from app.security.auth import AuthError, TokenVerifier, resolve_principal
+    from app.security.mount import MountResolutionError
     from app.sovereign.orchestrator import Sovereign
     import app.compliance.audit as audit_mod
 
@@ -109,6 +110,8 @@ def main() -> None:
         oidc_algorithms=["RS256"],
         auth_role_claim=ROLE_CLAIM,
         auth_provider_role=PROVIDER_ROLE,
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_clerk_demo",
         allow_provider_persona=False,   # irrelevant: a VERIFIED provider is allowed
     )
     verifier = TokenVerifier(settings)
@@ -183,14 +186,14 @@ def main() -> None:
           bool(ov) and ov[0]["details"].get("granted") == "provider",
           json.dumps(ov[0]["details"]) if ov else "no persona_override event")
 
-    # Patient token, but body lies and says "provider": cannot reach PHI path.
-    resp, ov = asyncio.run(handle(mint(None), Persona.PROVIDER))
-    check("patient token + body=provider -> stays PATIENT (no PHI escalation)",
-          resp.persona == Persona.PATIENT)
-    check("  ...and the override attempt is audited",
-          bool(ov) and ov[0]["details"].get("claimed") == "provider"
-          and ov[0]["details"].get("granted") == "patient",
-          json.dumps(ov[0]["details"]) if ov else "no persona_override event")
+    # A patient token cannot enter this physically separate provider mount,
+    # regardless of what its body claims. It is rejected before routing.
+    try:
+        asyncio.run(handle(mint(None), Persona.PROVIDER))
+        check("patient token rejected by provider mount", False)
+    except MountResolutionError as exc:
+        check("patient token rejected by provider mount",
+              exc.code == "PROVIDER_ACTOR_REQUIRED", exc.code)
 
     # restore patched globals (tidy for any importer)
     auth_mod.assert_safe_outbound_url = _real_guard
