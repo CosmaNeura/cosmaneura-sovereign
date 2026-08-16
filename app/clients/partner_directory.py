@@ -82,7 +82,9 @@ class PartnerDirectoryClient:
             if specialty and specialty.lower() not in (p.get("specialty", "").lower()):
                 # soft match only; the ranking LLM can reconcile near-misses
                 pass
-            if language and language.lower() not in [l.lower() for l in p.get("languages", [])]:
+            if language and language.lower() not in [
+                item.lower() for item in p.get("languages", [])
+            ]:
                 continue
             out.append(p)
         return out

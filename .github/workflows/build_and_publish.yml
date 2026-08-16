@@ -17,26 +17,73 @@ concurrency:
 
 jobs:
   test:
-    name: Test
+    name: Quality & tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.12.5"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Verify dependency locks are current
+        run: tools/compile_requirements_locks.sh --check
       - name: Install deps
         run: |
           uv venv --python 3.13 .venv
-          uv pip install --python .venv -r requirements.txt pytest pytest-asyncio
-      # Runs offline in mock mode — no API keys required.
+          uv pip install --python .venv \
+            --require-hashes --only-binary=:all: \
+            -r requirements.lock -r requirements-ci.lock
+          uv pip check --python .venv
+      - name: Ruff
+        run: .venv/bin/ruff check .
+      # Runs offline in mock mode -- no API keys required.
       - name: Pytest
         run: PYTHONPATH=. .venv/bin/python -m pytest tests/ -q
+      - name: Compile Python
+        run: .venv/bin/python -m compileall -q app tests tools run_demo.py
+      - name: Check JavaScript syntax
+        run: |
+          node --check app/panel.js
+          for html in app/demo.html app/demo_dashboard.html; do
+            output="/tmp/$(basename "$html" .html).js"
+            awk '/<script>/{inside=1; next} /<\/script>/{inside=0} inside{print}' \
+              "$html" > "$output"
+            node --check "$output"
+          done
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find infra tools -type f -name '*.sh' -print0)
+
+  infrastructure:
+    name: OpenTofu
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+        with:
+          tofu_version: 1.12.5
+      - name: Format
+        run: tofu -chdir=infra fmt -check -recursive
+      - name: Initialize from committed provider lock
+        run: tofu -chdir=infra init -backend=false -lockfile=readonly
+      - name: Validate
+        run: tofu -chdir=infra validate
 
   deploy:
     name: 🚀 Deploy
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [test]
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    needs: [test, infrastructure]
+    # Default-off kill switch. Do not enable until the external deployment,
+    # governance, secrets, dual-app, smoke, and rollback gates are cleared.
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.SOVEREIGN_DEPLOY_ENABLED == 'true' }}
     environment: production
     permissions:
       contents: read
@@ -47,13 +94,24 @@ jobs:
       REGISTRY: ${{ vars.CONTAINER_REGISTRY_HOST }} # e.g. cosmaneurasovereignprodregistry.azurecr.io
       IMAGE_REPO: cosmaneura/sovereign
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - name: Install nixpacks
-        run: curl -sSL https://nixpacks.com/install.sh | bash
+      - name: Install Nixpacks 1.41.0
+        run: |
+          archive="$RUNNER_TEMP/nixpacks-v1.41.0.tar.gz"
+          install_dir="$RUNNER_TEMP/nixpacks-v1.41.0"
+          curl --fail --location --silent --show-error \
+            --output "$archive" \
+            https://github.com/railwayapp/nixpacks/releases/download/v1.41.0/nixpacks-v1.41.0-x86_64-unknown-linux-gnu.tar.gz
+          echo "194bcad8c379f78a309eee1a88b2e6b2abc59f354efe7ecd7b4bbaf21de99a06  $archive" \
+            | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir"
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/nixpacks" --version
 
       # OIDC login — uses the federated identity created in infra/main.tf.
-      - uses: azure/login@v3
+      - uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}

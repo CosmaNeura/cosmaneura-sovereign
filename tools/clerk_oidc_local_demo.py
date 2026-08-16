@@ -83,7 +83,7 @@ def main() -> None:
     auth_mod.assert_safe_outbound_url = lambda url: None  # loopback allowed locally
 
     from app.config import MountProfile, Persona, Settings
-    from app.schemas import ChatRequest, Intent
+    from app.schemas import ChatRequest
     from app.security.auth import AuthError, TokenVerifier, resolve_principal
     from app.security.mount import MountResolutionError
     from app.sovereign.orchestrator import Sovereign

@@ -8,5 +8,10 @@ providers = ["python"]
 # Match the version the service is developed/tested against.
 NIXPACKS_PYTHON_VERSION = "3.13"
 
+[phases.install]
+# Override Python-provider auto-installation so production never resolves the
+# compatible ranges in requirements.txt during an image build.
+cmds = ["python -m venv --copies /opt/venv && . /opt/venv/bin/activate && python -m pip install --require-hashes --only-binary=:all: -r requirements.lock"]
+
 [start]
 cmd = "uvicorn app.main:app --host 0.0.0.0 --port 8000"

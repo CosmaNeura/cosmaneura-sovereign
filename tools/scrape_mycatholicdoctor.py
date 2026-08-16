@@ -81,19 +81,26 @@ def parse_state(html: str, state: str, out: dict) -> int:
         booking_url = _abs(appt["href"]) if appt else _abs(prof["href"])
 
         # text lines minus the link labels
-        lines = [l.strip() for l in bio.get_text("\n").split("\n") if l.strip()]
-        lines = [l for l in lines if l.lower() not in ("about", "make appointment")]
-        rest = [l for l in lines if l != name]
+        lines = [
+            line.strip()
+            for line in bio.get_text("\n").split("\n")
+            if line.strip()
+        ]
+        lines = [
+            line for line in lines
+            if line.lower() not in ("about", "make appointment")
+        ]
+        rest = [line for line in lines if line != name]
         specialty, languages, desc = None, [], []
-        for l in rest:
-            low = l.lower()
+        for line in rest:
+            low = line.lower()
             if low.startswith("*languages") or low.startswith("languages"):
-                langs = l.split(":", 1)[1] if ":" in l else ""
+                langs = line.split(":", 1)[1] if ":" in line else ""
                 languages = [x.strip() for x in re.split(r"[/,&]|\band\b", langs) if x.strip()]
             elif specialty is None:
-                specialty = l
+                specialty = line
             else:
-                desc.append(l)
+                desc.append(line)
 
         if slug in out:
             st = out[slug]["licensed_states"]

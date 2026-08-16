@@ -9,7 +9,6 @@ __pycache__/
 venv/
 # terraform/opentofu
 infra/.terraform/
-infra/.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 audit_log.jsonl

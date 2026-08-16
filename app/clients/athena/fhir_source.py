@@ -78,7 +78,11 @@ class AthenaFhirLabSource(LabSource):
             if len(entries) > _MAX_FHIR_SEARCH_ENTRIES:
                 raise RuntimeError("FHIR bounded search entry limit exceeded")
             next_url = next(
-                (l["url"] for l in bundle.get("link", []) if l.get("relation") == "next"),
+                (
+                    link["url"]
+                    for link in bundle.get("link", [])
+                    if link.get("relation") == "next"
+                ),
                 None,
             )
             if not next_url:

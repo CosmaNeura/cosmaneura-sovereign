@@ -1,7 +1,6 @@
-# Pinned to compatible-release ranges (~=) so patch/minor updates are allowed
-# but surprise major bumps are not pulled in unreviewed. Re-pin deliberately
-# after testing. For fully reproducible builds, generate a hash-locked
-# requirements.lock (e.g. pip-compile) in CI.
+# Human-maintained compatible-release ranges. Runtime builds install the
+# generated requirements.lock; regenerate it deterministically with
+# tools/compile_requirements_locks.sh after reviewing a dependency update.
 fastapi~=0.136
 uvicorn[standard]~=0.30
 httpx~=0.28
