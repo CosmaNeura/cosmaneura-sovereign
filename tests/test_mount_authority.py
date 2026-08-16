@@ -427,8 +427,11 @@ def test_mount_context_is_closed_and_rejects_public_ehr_grant():
             pass
 
 
-def test_intent_capability_map_is_exhaustive_and_emergency_is_pre_context():
-    assert set(INTENT_CAPABILITIES) == set(Intent) - {Intent.EMERGENCY}
+def test_intent_capability_map_excludes_only_static_short_circuits():
+    assert set(INTENT_CAPABILITIES) == set(Intent) - {
+        Intent.EMERGENCY,
+        Intent.SENSITIVE_DISCLOSURE,
+    }
 
 
 def test_platform_resolver_calls_ratified_endpoint_and_parses_exact_response():
