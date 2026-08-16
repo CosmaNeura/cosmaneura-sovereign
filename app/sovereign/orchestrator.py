@@ -25,8 +25,12 @@ it is shown to Magisterium, because Magisterium is not a business associate.
 """
 from __future__ import annotations
 
+import re
 import uuid
+from datetime import date, timedelta
 from typing import Optional
+
+from pydantic import ValidationError
 
 from app.agents.concierge_agent import ConciergeAgent
 from app.agents.engagement_agent import EngagementAgent
@@ -36,6 +40,14 @@ from app.agents.plan_workbench_agent import PlanWorkbenchAgent
 from app.agents.referral_agent import ReferralAgent
 from app.agents.visit_prep_agent import VisitPrepAgent
 from app.clients.llm import LLMClient
+from app.clients.labs import (
+    LabsCategory,
+    LabsPurpose,
+    LabsReadAccess,
+    LabsReadRequest,
+    LabsTier,
+    LabsTimeWindow,
+)
 from app.clients.magisterium import MagisteriumClient
 from app.compliance import safety, sensitive_disclosure
 from app.compliance.audit import AuditLogger
@@ -82,7 +94,111 @@ _AUTHORITY_METADATA_KEYS = frozenset({
     "mount_context_token",
     "mount_profile",
     "persona",
+    "turn_request_ref",
+    "actor_ref",
+    "tenant_ref",
+    "record_ref",
+    "purpose",
+    "categories",
+    "analytes",
+    "time_window",
+    "tier",
+    "labs_request",
+    "patient_ref",
+    "patient_name",
 })
+
+_DEFAULT_SANDBOX_LOOKBACK_DAYS = 730
+
+
+_DIAGNOSIS_CLAIM_RE = re.compile(
+    r"\b(?:diagnos(?:e|ed|is|tic)|you have|patient has|this (?:means|confirms))\b",
+    re.IGNORECASE,
+)
+_TREATMENT_ORDER_RE = re.compile(
+    r"\b(?:must|should|start|stop|increase|decrease|prescribe|discontinue|"
+    r"double|halve)\b",
+    re.IGNORECASE,
+)
+_CLINICIAN_DEFERENCE_RE = re.compile(
+    r"\b(?:clinical judgment|clinician|treating provider|diagnosis and treatment "
+    r"decisions?)\b",
+    re.IGNORECASE,
+)
+_OPTIONAL_FOLLOW_UP_RE = re.compile(
+    r"\b(?:consider|option|follow[- ]?up questions?|repeat testing|discuss with)\b",
+    re.IGNORECASE,
+)
+_MORAL_CLAIM_RE = re.compile(
+    r"\b(?:Catholic|Church|moral|immoral|sin|doctrine|ERDs?|faith|"
+    r"contracept(?:ion|ive)|birth control|abort(?:ion|ifacient)|IVF|"
+    r"in vitro fertilization|sterili[sz]ation|vasectomy|tubal ligation|"
+    r"euthanasia|assisted suicide)\b",
+    re.IGNORECASE,
+)
+_SENSITIVE_MORAL_TOPICS = (
+    ("contraception", re.compile(r"\b(?:contracept(?:ion|ive)|birth control)\b", re.I)),
+    ("abortion", re.compile(r"\b(?:abort(?:ion|ifacient))\b", re.I)),
+    ("in vitro fertilization", re.compile(r"\b(?:IVF|in vitro fertilization)\b", re.I)),
+    ("direct sterilization", re.compile(
+        r"\b(?:direct sterili[sz]ation|vasectomy|tubal ligation)\b", re.I
+    )),
+    ("euthanasia or assisted suicide", re.compile(
+        r"\b(?:euthanasia|assisted suicide)\b", re.I
+    )),
+)
+_AFFIRMATIVE_OR_DIRECTIVE_RE = re.compile(
+    r"\b(?:acceptable|appropriate|permitted|recommend(?:ed)?|endorse(?:d)?|"
+    r"offer(?:ed)?|provide(?:d)?|use|start|should|must)\b",
+    re.IGNORECASE,
+)
+
+
+def _value_safe_lab_review_projection(answer: str, structured: dict) -> str:
+    """Project the actual draft into a provably value-free policy posture.
+
+    Redacting literal leaves is insufficient: a BAA model can spell a number
+    out or paraphrase a qualitative result. The non-BAA reviewer therefore
+    receives no draft tokens at all. It receives only deterministic booleans
+    about clinically and doctrinally relevant properties of that draft. The
+    fixed vocabulary contains no chart value, date, unit, analyte, range, or
+    qualitative finding, while still letting the arbiter reject diagnosis,
+    treatment-order, or moral-claim posture on every lab turn.
+    """
+    del structured  # Deliberately prove that no structured leaf is rendered.
+    properties = (
+        ("a diagnosis claim", bool(_DIAGNOSIS_CLAIM_RE.search(answer))),
+        ("an imperative treatment instruction", bool(_TREATMENT_ORDER_RE.search(answer))),
+        ("a religious or moral claim", bool(_MORAL_CLAIM_RE.search(answer))),
+        ("deference to the treating clinician", bool(_CLINICIAN_DEFERENCE_RE.search(answer))),
+        ("optional follow-up framing", bool(_OPTIONAL_FOLLOW_UP_RE.search(answer))),
+    )
+    rendered = [
+        "Value-free doctrinal review projection of a clinician-facing lab draft.",
+        "All patient-specific findings and retrieved chart text are withheld.",
+    ]
+    rendered.extend(
+        f"The draft {'contains' if present else 'does not contain'} {label}."
+        for label, present in properties
+    )
+    clauses = re.split(r"[.!?\n]+", answer)
+    for label, pattern in _SENSITIVE_MORAL_TOPICS:
+        matching_clauses = [clause for clause in clauses if pattern.search(clause)]
+        if not matching_clauses:
+            continue
+        affirmative = any(
+            _AFFIRMATIVE_OR_DIRECTIVE_RE.search(clause)
+            for clause in matching_clauses
+        )
+        rendered.append(
+            f"The draft references the morally sensitive topic of {label}."
+        )
+        rendered.append(
+            "Its local posture "
+            + ("includes" if affirmative else "does not include")
+            + " affirmative or directive language."
+        )
+    return " ".join(rendered)
 
 
 def _without_authority_metadata(metadata: dict) -> dict:
@@ -189,6 +305,13 @@ class Sovereign:
         # Persona is retained only as a derived UX/prompt hint. Replace the
         # legacy body field before routing or dispatch so downstream code can
         # never observe it as authority (or even as a tone hint).
+        # The sandbox record is the one exception allowed by ADR 0015: capture
+        # the host-open record once, then strip both its canonical key and the
+        # temporary legacy alias before the router, model, or agent sees the
+        # chat metadata. Production never accepts this host-supplied scope.
+        host_record_ref = request.metadata.get("record_ref")
+        if host_record_ref is None:
+            host_record_ref = request.metadata.get("patient_ref")
         if request.persona != effective_persona:
             self.audit.record(trace_id=trace_id, profile=profile, event="persona_override",
                               details={"claimed": request.persona.value,
@@ -213,6 +336,10 @@ class Sovereign:
         # gate skip full arbitration on it, whatever the router said.
         if intent == Intent.ETHICS_CONSULT:
             sensitivity = DoctrinalSensitivity.HIGH
+        # A lab answer still receives the doctrinal gate on every turn. A
+        # classifier may raise it to HIGH, but it may never lower it to NONE.
+        elif intent == Intent.LAB_REVIEW and sensitivity == DoctrinalSensitivity.NONE:
+            sensitivity = DoctrinalSensitivity.LOW
         self.audit.record(trace_id=trace_id, profile=profile, event="routed",
                           details={"intent": intent.value, "sensitivity": sensitivity.value})
 
@@ -265,18 +392,93 @@ class Sovereign:
                 trace_id,
                 safety_notice="capability_denied",
             )
-        result: AgentResult = await agent.run(request, profile)
+        if intent == Intent.LAB_REVIEW:
+            labs_request = None
+            labs_access = None
+            record_value = host_record_ref
+            if (
+                isinstance(record_value, str)
+                and record_value.strip()
+                and record_value == record_value.strip()
+                and mount.actor_id is not None
+                and mount.tenant_id is not None
+            ):
+                until = date.today()
+                time_window = LabsTimeWindow(
+                    since=until - timedelta(days=_DEFAULT_SANDBOX_LOOKBACK_DAYS),
+                    until=until,
+                )
+                try:
+                    labs_request = LabsReadRequest(
+                        turn_request_ref=str(resolution.client_turn_id),
+                        actor_ref=mount.actor_id,
+                        tenant_ref=mount.tenant_id,
+                        record_ref=record_value,
+                        purpose=LabsPurpose.LAB_REVIEW,
+                        categories=(LabsCategory.LABORATORY,),
+                        time_window=time_window,
+                        tier=LabsTier.SANDBOX,
+                    )
+                except ValidationError:
+                    self.audit.record(
+                        trace_id=trace_id,
+                        profile=profile,
+                        event="ehr_labs_request_refused",
+                        details={"reason": "invalid_record_ref"},
+                    )
+                else:
+                    labs_access = LabsReadAccess(
+                        trace_id=trace_id,
+                        expected_turn_request_ref=str(resolution.client_turn_id),
+                        authorized_record_ref=record_value,
+                        expected_purpose=LabsPurpose.LAB_REVIEW,
+                        expected_categories=(LabsCategory.LABORATORY,),
+                        expected_time_window=time_window,
+                        expected_tier=LabsTier.SANDBOX,
+                        mount=mount,
+                        profile=profile,
+                        audit=self.audit,
+                        record_scope_source="host_open_record",
+                    )
+            result = await agent.run(
+                request,
+                profile,
+                labs_request=labs_request,
+                labs_access=labs_access,
+            )
+        else:
+            result = await agent.run(request, profile)
         self.audit.record(trace_id=trace_id, profile=profile, event="agent_complete",
                           details={"agent": result.agent},
                           content_for_hash=result.content)
 
-        # 4) Doctrinal arbitration on a PHI-scrubbed copy of the draft.
-        deid = deidentify(result.content)
-        if deid.found_phi:
-            self.audit.record(trace_id=trace_id, profile=profile, event="phi_scrubbed_for_arbiter",
-                              details={"types": deid.redacted_types})
+        # 4) Doctrinal arbitration. Lab values never enter a non-BAA hop: no
+        # draft or structured token is rendered. Magisterium receives only a
+        # deterministic policy projection derived from the actual answer, on
+        # the normal routed LOW/HIGH review. Other lanes retain the existing
+        # de-identification boundary before Magisterium.
+        if intent == Intent.LAB_REVIEW:
+            safe_lab_projection = _value_safe_lab_review_projection(
+                result.content, result.data
+            )
+            arbiter_input = deidentify(safe_lab_projection).text
+            self.audit.record(
+                trace_id=trace_id,
+                profile=profile,
+                event="lab_values_withheld_from_non_baa_arbiter",
+            )
+        else:
+            deid = deidentify(result.content)
+            arbiter_input = deid.text
+            if deid.found_phi:
+                self.audit.record(
+                    trace_id=trace_id,
+                    profile=profile,
+                    event="phi_scrubbed_for_arbiter",
+                    details={"types": deid.redacted_types},
+                )
         verdict = await self.arbiter.review(
-            deidentified_draft=deid.text, intent=intent, sensitivity=sensitivity
+            deidentified_draft=arbiter_input, intent=intent, sensitivity=sensitivity
         )
         self.audit.record(trace_id=trace_id, profile=profile, event="arbitration",
                           details={"conforms": verdict.conforms})

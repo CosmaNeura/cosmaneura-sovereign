@@ -32,6 +32,10 @@ variable "sovereign_secret_vars" {
     # Azure BAA, reuses the main app's resource). For Anthropic instead, swap
     # this for "ANTHROPIC_API_KEY".
     "AZURE_OPENAI_API_KEY",
+    # Provider-only synthetic Preview EHR credentials. These names are absent
+    # from both public allowlists below.
+    "ATHENA_CLIENT_ID",
+    "ATHENA_CLIENT_SECRET",
     # Add "MAGISTERIUM_MCP_TOKEN" here only when the optional inline doctrinal
     # MCP layer is enabled (MAGISTERIUM_MCP_ENABLED=true) — otherwise it would
     # force an unused, empty Container App secret.
@@ -61,6 +65,9 @@ variable "sovereign_public_vars" {
     "MAGISTERIUM_BASE_URL", "MAGISTERIUM_MODEL",
     "MAGISTERIUM_MCP_ENABLED", "ANTHROPIC_MCP_BETA",
     "NPPES_BASE_URL", "CLINICALTRIALS_BASE_URL",
+    # Synthetic lab pilot; startup pins these to Preview practice 195900.
+    "FEATURE_ATHENA_LABS", "ATHENA_ENV", "ATHENA_PRACTICE_ID",
+    "ATHENA_DEPARTMENT_ID", "LABS_ALLOW_PATIENT_SEARCH",
     # audit + web
     "AUDIT_SINK", "AUDIT_PATH", "CORS_ALLOW_ORIGINS",
   ]

@@ -13,6 +13,7 @@
  *     getAuthToken: async () => currentUserJwt,          // null when auth disabled (dev)
  *     getContext:   async () => ({                       // whatever is on screen now
  *       clientId: "abc123",                              // keys the thread
+ *       record_ref: client.athenaRecordId,                 // host-open synthetic record
  *       journey_digest: client.journeyDigest,            // from POST /digest, see docs
  *       prior_sessions: latestNote,                      // most recent note/transcript
  *       terminology: settings.terminology,               // "client/therapist" etc.
@@ -48,6 +49,10 @@
     ".cnp-logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#9c7a2f);",
     "display:grid;place-items:center;font-weight:800;color:#1a130a;font-size:13px}",
     ".cnp-title{font-weight:700;font-size:14px}.cnp-sub{font-size:11px;color:var(--muted)}",
+    ".cnp-sandbox{display:inline-block;margin-top:3px;padding:1px 7px;border-radius:999px;",
+    "border:1px solid #d8b75d;color:#ffe6a0;background:#3b3015;font-size:9px;font-weight:800;",
+    "letter-spacing:.45px;text-transform:uppercase}",
+    ".cnp-sandbox[hidden]{display:none}",
     ".cnp-x{margin-left:auto;background:none;border:none;color:var(--muted);font-size:19px;cursor:pointer}",
     ".cnp-thread{flex:1;overflow-y:auto;padding:14px}",
     ".cnp-msg{margin:10px 0;display:flex}.cnp-msg.cnp-u{justify-content:flex-end}",
@@ -285,7 +290,7 @@
     opts = opts || {};
     var url = (opts.sovereignUrl || "").replace(/\/$/, "");
     var persona = opts.persona || "provider";
-    var state = { open: false, busy: false, clientId: null, history: [] };
+    var state = { open: false, busy: false, clientId: null, history: [], welcomePromise: null };
 
     var style = document.createElement("style");
     style.textContent = CSS;
@@ -298,7 +303,8 @@
       '<div class="cnp-rail" role="complementary" aria-label="CosmaNeura assistant">' +
       '  <div class="cnp-head"><div class="cnp-logo">C</div>' +
       '    <div><div class="cnp-title">CosmaNeura</div>' +
-      '    <div class="cnp-sub">Faithful clinical assistant</div></div>' +
+      '    <div class="cnp-sub">Faithful clinical assistant</div>' +
+      '    <div class="cnp-sandbox" hidden></div></div>' +
       '    <button class="cnp-x" title="Close">×</button></div>' +
       '  <div class="cnp-thread"></div>' +
       '  <div class="cnp-chips"></div>' +
@@ -318,7 +324,7 @@
     var fab = root.querySelector(".cnp-fab"), rail = root.querySelector(".cnp-rail"),
         thread = root.querySelector(".cnp-thread"), chips = root.querySelector(".cnp-chips"),
         input = root.querySelector(".cnp-in"), send = root.querySelector(".cnp-send"),
-        fmt = root.querySelector(".cnp-fmt");
+        fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox");
 
     function bubble(cls) {
       var w = document.createElement("div"); w.className = "cnp-msg " + (cls === "u" ? "cnp-u" : "");
@@ -326,6 +332,40 @@
       w.appendChild(b); thread.appendChild(w); thread.scrollTop = thread.scrollHeight;
       return b;
     }
+
+    function welcomeData() {
+      if (!state.welcomePromise) {
+        state.welcomePromise = fetch(url + "/welcome?persona=" + persona)
+          .then(function (r) {
+            if (!r.ok) throw new Error("welcome unavailable");
+            return r.json();
+          })
+          .catch(function (error) {
+            state.welcomePromise = null;
+            throw error;
+          });
+      }
+      return state.welcomePromise;
+    }
+
+    function applyEnvironmentLabel(w) {
+      if (w.labs_tier === "sandbox" && w.labs_label) {
+        sandboxBadge.textContent = w.labs_label;
+        sandboxBadge.hidden = false;
+      } else {
+        sandboxBadge.textContent = "";
+        sandboxBadge.hidden = true;
+      }
+    }
+
+    // The environment badge is mount-level chrome, not a greeting artifact.
+    // Resolve it even when restored record history means no welcome bubble is
+    // rendered, so a synthetic sandbox can never look like production.
+    if (persona === "provider") {
+      sandboxBadge.textContent = "Lab environment not verified";
+      sandboxBadge.hidden = false;
+    }
+    welcomeData().then(applyEnvironmentLabel).catch(function () {});
 
     // Record-scoped threads. The host MUST call panel.setRecord(id) when the
     // open record changes: the wire payload already keys history by clientId,
@@ -352,8 +392,8 @@
 
     async function loadWelcome() {
       try {
-        var r = await fetch(url + "/welcome?persona=" + persona);
-        var w = await r.json();
+        var w = await welcomeData();
+        applyEnvironmentLabel(w);
         var b = bubble("a");
         b.innerHTML = "<p>" + esc(w.greeting) + "</p><p><b>" + esc(w.emergency_note) + "</b></p>";
         var d = document.createElement("div"); d.className = "cnp-cite";
@@ -373,6 +413,8 @@
       var html = "";
       if (d.intent === "emergency") { b.classList.add("cnp-emg"); html += '<div class="cnp-emg-h">⚠ This may be an emergency</div>'; }
       else if (d.intent) html += '<span class="cnp-badge">' + esc(d.intent.replace(/_/g, " ")) + "</span>";
+      if (d.structured && d.structured.tier === "sandbox" && d.structured.sandbox_label)
+        html += '<div class="cnp-sandbox">' + esc(d.structured.sandbox_label) + "</div>";
       html += md(d.answer || "");
       b.innerHTML = html;
       var cites = (d.citations || []).map(function (c) { return c.source; }).filter(Boolean);
@@ -446,9 +488,13 @@
         ["journey_digest", "care_model", "terminology", "case_context", "labs",
          "patient_metrics", "calorie_target", "macro_split", "note_template",
          "patient_profile", "intake_summary",
-         "patient_ref", "patient_name", "analyte"].forEach(function (k) {
+         "record_ref", "analyte"].forEach(function (k) {
           if (ctx[k] != null && ctx[k] !== "") meta[k] = ctx[k];
         });
+        // Temporary host compatibility: normalize the old open-record key to
+        // the contract's canonical name. Never forward a patient display name.
+        if (meta.record_ref == null && ctx.patient_ref != null && ctx.patient_ref !== "")
+          meta.record_ref = ctx.patient_ref;
         var prior = budgetSessions(ctx.prior_sessions);
         if (prior) meta.prior_sessions = prior;
 

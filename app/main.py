@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.compliance import safety
+from app.clients.labs import SANDBOX_LABEL
 from app.config import (AuthMode, MountProfile, Persona, get_settings,
                         validate_deployment_configuration)
 from app.schemas import (ChatRequest, ChatResponse, DigestRequest,
@@ -232,11 +233,17 @@ async def welcome() -> dict:
                     "replacement for it.")
     candidates = _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS
     granted = set(mount.capabilities)
+    labs_sandbox = (
+        persona == Persona.PROVIDER
+        and _settings.feature_athena_labs
+        and _settings.athena_env == "preview"
+        and _settings.athena_practice_id == "195900"
+    )
     paths = [
         path
         for path in candidates
         if _required_capability_for_path(path) in granted
-        and (path["intent"] != "lab_review" or _settings.feature_athena_labs)
+        and (path["intent"] != "lab_review" or labs_sandbox)
     ]
     return {
         "partner_name": name,
@@ -245,6 +252,8 @@ async def welcome() -> dict:
         "paths": paths,
         "disclaimer": safety.disclaimer_for(persona),
         "emergency_note": "If this is an emergency, call 911 now.",
+        "labs_tier": "sandbox" if labs_sandbox else None,
+        "labs_label": SANDBOX_LABEL if labs_sandbox else None,
     }
 
 
