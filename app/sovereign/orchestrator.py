@@ -37,7 +37,7 @@ from app.agents.referral_agent import ReferralAgent
 from app.agents.visit_prep_agent import VisitPrepAgent
 from app.clients.llm import LLMClient
 from app.clients.magisterium import MagisteriumClient
-from app.compliance import safety
+from app.compliance import safety, sensitive_disclosure
 from app.compliance.audit import AuditLogger
 from app.compliance.baa import require_baa_covered_llm
 from app.compliance.phi import deidentify
@@ -52,8 +52,9 @@ from app.sovereign.arbiter import DoctrinalArbiter
 from app.sovereign.router import Router
 
 
-# Routing fails closed: a new Intent receives no authority until it is added
-# here and the resolved mount carries the corresponding capability.
+# Routed intents fail closed: a new routed Intent receives no authority until
+# it is added here and the resolved mount carries the corresponding capability.
+# Emergency and sensitive-disclosure static responses never enter routing.
 INTENT_CAPABILITIES: dict[Intent, str] = {
     Intent.REFERRAL: "referrals:search",
     Intent.CONCIERGE: "education:answer",
@@ -160,6 +161,26 @@ class Sovereign:
             )
         effective_persona = mount.persona_hint
         profile = ComplianceProfile(effective_persona)
+
+        # A non-acute sensitive disclosure is a deterministic patient-mode
+        # response. The mount-derived persona, never the request body, decides
+        # whether this patient path exists. Resolve authority first, but do not
+        # route, call a model or agent, or send the disclosure to arbitration.
+        if (effective_persona == Persona.PATIENT
+                and sensitive_disclosure.detect_sensitive_disclosure(request.message)):
+            self.audit.record(
+                trace_id=trace_id,
+                profile=profile,
+                event="sensitive_disclosure",
+                details={"intent": Intent.SENSITIVE_DISCLOSURE.value},
+            )
+            return self._finalize(
+                sensitive_disclosure.SENSITIVE_DISCLOSURE_RESPONSE,
+                Intent.SENSITIVE_DISCLOSURE,
+                profile,
+                trace_id,
+                sensitive_mode=True,
+            )
 
         # Provider-mount content is PHI throughout, including the routing call.
         # Apply the existing tripwire before any model sees the request.
@@ -353,9 +374,15 @@ class Sovereign:
         self, answer: str, intent: Intent, profile: ComplianceProfile, trace_id: str,
         *, citations: Optional[list[Citation]] = None, doctrinal=None,
         structured: Optional[dict] = None, safety_notice: Optional[str] = None,
+        sensitive_mode: bool = False,
     ) -> ChatResponse:
-        disclaimer = safety.disclaimer_for(profile.persona)
-        final = f"{answer}\n\n— {disclaimer}"
+        if sensitive_mode and intent != Intent.SENSITIVE_DISCLOSURE:
+            raise ValueError("sensitive mode requires sensitive-disclosure intent")
+        if sensitive_mode:
+            final = answer
+        else:
+            disclaimer = safety.disclaimer_for(profile.persona)
+            final = f"{answer}\n\n— {disclaimer}"
         self.audit.record(trace_id=trace_id, profile=profile, event="egress",
                           content_for_hash=final)
         return ChatResponse(

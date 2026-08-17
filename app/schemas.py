@@ -20,6 +20,7 @@ class Intent(str, Enum):
     LAB_REVIEW = "lab_review"        # -> Agent 7 (EMR lab results)
     DOCTRINAL = "doctrinal"          # answered directly by Magisterium
     SMALL_TALK = "small_talk"        # handled by the Sovereign, no agent
+    SENSITIVE_DISCLOSURE = "sensitive_disclosure"  # static compassionate response
     EMERGENCY = "emergency"          # short-circuit to safety guidance
 
 
