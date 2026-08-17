@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 .env.production.backend
+.env.production.public
 # local demo secrets — never commit
 .env*.local
 .venv/

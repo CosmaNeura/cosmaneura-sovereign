@@ -3,7 +3,7 @@ import asyncio
 import os
 
 from app.compliance.phi import deidentify, assert_no_phi, PHIBoundaryViolation
-from app.config import Persona, Settings
+from app.config import MountProfile, Persona, Settings
 from app.schemas import ChatRequest, Intent
 from app.security.auth import Principal
 from app.sovereign.orchestrator import Sovereign
@@ -13,24 +13,10 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-_PROVIDER_CAPABILITIES = [
-    "education:answer",
-    "values:answer",
-    "referrals:search",
-    "engagement:respond",
-    "ethics:consult",
-    "visit-prep:run",
-    "plan-workbench:run",
-    "ehr:labs:read",
-    "journey-digest:write",
-]
-
-
 def _provider_settings(**overrides):
     values = {
-        "mount_surface": "provider_assistant",
-        "mount_auth_tier": "provider",
-        "mount_capabilities": _PROVIDER_CAPABILITIES,
+        "mount_profile": MountProfile.PROVIDER_ASSISTANT,
+        "mount_tenant_id": "tenant_test",
     }
     values.update(overrides)
     return Settings(**values)
@@ -628,9 +614,23 @@ def test_welcome_serves_greeting_and_guided_paths():
     assert "911" in w["emergency_note"]
     assert w["disclaimer"]
 
-    rp = client.get("/welcome", params={"persona": "provider"})
-    intents = {p["intent"] for p in rp.json()["paths"]}
+    # A caller cannot switch mounts by claiming a provider persona.
+    spoofed = client.get("/welcome", params={"persona": "provider"}).json()
+    assert spoofed["persona"] == "patient"
+    assert {p["intent"] for p in spoofed["paths"]} == {
+        "referral", "engagement", "concierge", "doctrinal",
+    }
+
+    from unittest.mock import patch
+    from app import main as main_module
+
+    provider = _provider_settings(feature_athena_labs=False)
+    with patch.object(main_module, "_settings", provider):
+        provider_welcome = client.get("/welcome").json()
+    intents = {p["intent"] for p in provider_welcome["paths"]}
+    assert provider_welcome["persona"] == "provider"
     assert "visit_prep" in intents and "ethics_consult" in intents
+    assert "lab_review" not in intents
 
 
 # --- authentication (JWT/OIDC) tests ----------------------------------------

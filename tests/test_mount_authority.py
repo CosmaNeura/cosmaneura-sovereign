@@ -6,7 +6,7 @@ from unittest.mock import patch
 import httpx
 from pydantic import ValidationError
 
-from app.config import AuthMode, Persona, Settings
+from app.config import AuthMode, MountProfile, Persona, Settings
 from app.schemas import (AgentResult, ChatRequest, DoctrinalSensitivity,
                          DoctrinalVerdict, Intent)
 from app.security.auth import Principal
@@ -278,9 +278,8 @@ def test_provider_baa_tripwire_runs_before_router_model():
     settings = Settings(
         mock_mode=False,
         baa_attested=False,
-        mount_surface="provider_assistant",
-        mount_auth_tier="provider",
-        mount_capabilities=["education:answer"],
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
     )
     sov = Sovereign(settings)
     calls = {"router": 0}
@@ -303,9 +302,8 @@ def test_provider_baa_tripwire_runs_before_router_model():
 
 def test_provider_mount_rejects_verified_non_provider_actor():
     settings = Settings(
-        mount_surface="provider_assistant",
-        mount_auth_tier="provider",
-        mount_capabilities=["education:answer"],
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
     )
     sov = Sovereign(settings)
     member = Principal(
@@ -337,9 +335,8 @@ def test_http_provider_mount_normalizes_non_provider_denial():
     settings = Settings(
         auth_mode=AuthMode.DEV_HS256,
         auth_dev_secret=secret,
-        mount_surface="provider_assistant",
-        mount_auth_tier="provider",
-        mount_capabilities=["education:answer", "journey-digest:write"],
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
     )
     now = int(time.time())
     token = jwt.encode(
