@@ -237,7 +237,7 @@ advisory won't be available there; the REST arbitration gate still applies.
 
 ---
 
-## 10. Wire authentication to your identity provider (Dev)
+## 10. Wire the provider Clerk template
 
 The JWT layer is built and tested; it needs to be pointed at your IdP. For a
 **provider/PHI deployment** (required — do not use `disabled` or `dev_hs256` in

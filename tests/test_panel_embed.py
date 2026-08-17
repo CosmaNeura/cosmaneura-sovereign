@@ -122,5 +122,6 @@ def test_dashboard_demo_pins_version_and_binds_initial_and_changed_records():
     assert "panel.setRecord(r.id);" in demo
     assert "panel.setRecord(currentId);" in demo
     assert 'persona: "provider"' not in demo
-    assert "ctx.record_ref = r.record_ref" in demo
+    assert "ctx.record_ref = r.record_ref" not in demo
+    assert "static demo deliberately cannot mint one" in demo
     assert "ctx.patient_ref" not in demo

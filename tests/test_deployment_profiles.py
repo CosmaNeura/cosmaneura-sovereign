@@ -71,7 +71,7 @@ def test_mount_profile_is_the_only_pinned_authority_selector():
         ("athena_client_secret", "secret-value-sentinel", "ATHENA_CLIENT_SECRET"),
         (
             "sovereign_record_grant_secret",
-            "record-grant-secret-value-must-not-leak",
+            "A" * 43 + "=",
             "SOVEREIGN_RECORD_GRANT_SECRET",
         ),
         ("labs_allow_patient_search", True, "LABS_ALLOW_PATIENT_SEARCH"),
@@ -163,6 +163,17 @@ def test_public_service_process_refuses_to_boot_with_ehr_credentials():
     assert result.returncode != 0
     assert "ATHENA_CLIENT_SECRET" in output
     assert sentinel not in output
+
+
+def test_record_grant_secret_is_in_provider_allowlist_only():
+    variables = (
+        Path(__file__).resolve().parents[1] / "infra" / "variables.tf"
+    ).read_text()
+    provider, public = variables.split(
+        'variable "public_secret_vars"', maxsplit=1
+    )
+    assert '"SOVEREIGN_RECORD_GRANT_SECRET"' in provider
+    assert '"SOVEREIGN_RECORD_GRANT_SECRET"' not in public
 
 
 def test_provider_boot_requires_tenant_and_production_oidc_configuration():

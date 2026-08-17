@@ -4,12 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import pytest
+from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
 from app import main as main_module
@@ -64,6 +65,34 @@ ACTOR = "actor_test_0001"
 TENANT = "tenant_test_0001"
 RECORD = "a-195900.E-60178"
 WINDOW = LabsTimeWindow(since=date(2026, 1, 1), until=date(2026, 12, 31))
+RECORD_GRANT_KEY = Fernet.generate_key()
+
+
+def _record_grant(*, actor_ref: str = "provider-labs-test-actor") -> str:
+    issued_at = datetime.now(UTC).replace(microsecond=0)
+    payload = {
+        "actor_ref": actor_ref,
+        "adapter": "athena",
+        "appointment_ref": "appointment_test_0001",
+        "audience": "cosmaneura-sovereign",
+        "doctor_ref": "doctor_test_0001",
+        "environment": "preview",
+        "expires_at": (issued_at + timedelta(seconds=60)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "issued_at": issued_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "issuer": "cosmaneura-platform",
+        "nonce": "12345678-1234-4678-9234-567812345678",
+        "patient_ref": "patient_test_0001",
+        "practice_ref": "195900",
+        "synthetic_only": True,
+        "tier": "sandbox",
+        "vendor_record_ref": RECORD,
+        "version": 1,
+    }
+    return Fernet(RECORD_GRANT_KEY).encrypt(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).decode()
 
 
 def _run(coro):
@@ -78,6 +107,7 @@ def _settings(**updates) -> Settings:
         "mount_tenant_id": TENANT,
         "athena_env": "preview",
         "athena_practice_id": "195900",
+        "sovereign_record_grant_secret": RECORD_GRANT_KEY.decode(),
     }
     values.update(updates)
     return Settings(**values)
@@ -129,7 +159,7 @@ def _access(
     audit: _Audit | None = None,
     mount: MountContext | None = None,
     profile: ComplianceProfile | None = None,
-    record_scope_source: str = "host_open_record",
+    record_scope_source: str = "platform_signed_open_record",
     **updates,
 ) -> LabsReadAccess:
     values = {
@@ -873,6 +903,7 @@ def test_orchestrator_derives_tool_authority_and_hides_record_from_models():
         feature_athena_labs=True,
         mount_profile=MountProfile.PROVIDER_ASSISTANT,
         mount_tenant_id=TENANT,
+        sovereign_record_grant_secret=RECORD_GRANT_KEY.decode(),
     )
     sovereign = Sovereign(settings)
     observed = {}
@@ -903,7 +934,7 @@ def test_orchestrator_derives_tool_authority_and_hides_record_from_models():
                 persona=Persona.PATIENT,
                 message="Review the open record's labs.",
                 metadata={
-                    "record_ref": RECORD,
+                    "record_ref": _record_grant(),
                     "patient_ref": "legacy-should-not-win",
                     "turn_request_ref": "body_turn_000001",
                     "actor_ref": "actor_body_0001",
@@ -936,6 +967,7 @@ def test_orchestrator_derives_tool_authority_and_hides_record_from_models():
     assert (request.time_window.until - request.time_window.since).days == 730
     assert access.audit is sovereign.audit
     assert access.expected_time_window == request.time_window
+    assert access.record_scope_source == "platform_signed_open_record"
 
 
 def test_invalid_or_name_like_record_never_reaches_lab_source():
@@ -944,6 +976,7 @@ def test_invalid_or_name_like_record_never_reaches_lab_source():
         feature_athena_labs=True,
         mount_profile=MountProfile.PROVIDER_ASSISTANT,
         mount_tenant_id=TENANT,
+        sovereign_record_grant_secret=RECORD_GRANT_KEY.decode(),
     )
     sovereign = Sovereign(settings)
 
@@ -965,12 +998,44 @@ def test_invalid_or_name_like_record_never_reaches_lab_source():
     assert response.structured["status"] == "no_patient"
 
 
+def test_grant_for_another_verified_actor_never_reaches_lab_source(capsys):
+    settings = Settings(
+        mock_mode=True,
+        feature_athena_labs=True,
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id=TENANT,
+        sovereign_record_grant_secret=RECORD_GRANT_KEY.decode(),
+    )
+    sovereign = Sovereign(settings)
+
+    async def route(_request):
+        return Intent.LAB_REVIEW, DoctrinalSensitivity.LOW, "fixed"
+
+    sovereign.router.route = route
+    grant = _record_grant(actor_ref="user_other_0001")
+    response = _run(
+        sovereign.handle(
+            ChatRequest(
+                persona=Persona.PROVIDER,
+                message="Review labs.",
+                metadata={"record_ref": grant},
+            ),
+            principal=_provider_principal(),
+        )
+    )
+    assert response.structured["status"] == "no_patient"
+    output = capsys.readouterr()
+    assert grant not in output.out + output.err
+    assert RECORD not in output.out + output.err
+
+
 def test_magisterium_is_called_with_policy_projection_and_never_lab_values():
     settings = Settings(
         mock_mode=True,
         feature_athena_labs=True,
         mount_profile=MountProfile.PROVIDER_ASSISTANT,
         mount_tenant_id=TENANT,
+        sovereign_record_grant_secret=RECORD_GRANT_KEY.decode(),
     )
     sovereign = Sovereign(settings)
 
@@ -1006,7 +1071,7 @@ def test_magisterium_is_called_with_policy_projection_and_never_lab_values():
             ChatRequest(
                 persona=Persona.PROVIDER,
                 message="Anything concerning in the open record's labs?",
-                metadata={"record_ref": RECORD},
+                metadata={"record_ref": _record_grant()},
             ),
             principal=_provider_principal(),
         )
@@ -1043,6 +1108,7 @@ def _mock_provider_settings(**updates) -> Settings:
         "athena_env": "preview",
         "athena_practice_id": "195900",
         "labs_allow_patient_search": False,
+        "sovereign_record_grant_secret": RECORD_GRANT_KEY.decode(),
     }
     values.update(updates)
     return Settings(**values)
@@ -1065,7 +1131,7 @@ def _nonmock_provider_settings(**updates) -> Settings:
         "athena_practice_id": "195900",
         "athena_client_id": "preview-client",
         "athena_client_secret": "preview-secret",
-        "sovereign_record_grant_secret": "A" * 43 + "=",
+        "sovereign_record_grant_secret": RECORD_GRANT_KEY.decode(),
     }
     values.update(updates)
     return Settings(**values)
@@ -1095,6 +1161,43 @@ def test_nonmock_sandbox_feature_requires_both_credentials(missing):
     with pytest.raises(DeploymentConfigurationError, match="required credentials"):
         validate_deployment_configuration(_nonmock_provider_settings(**missing))
     validate_deployment_configuration(_nonmock_provider_settings())
+
+
+@pytest.mark.parametrize(
+    "grant_key",
+    [None, "", "A" * 44, RECORD_GRANT_KEY.decode().rstrip("=")],
+)
+def test_nonmock_sandbox_feature_requires_canonical_record_grant_key(grant_key):
+    with pytest.raises(
+        DeploymentConfigurationError,
+        match="SOVEREIGN_RECORD_GRANT_SECRET",
+    ):
+        validate_deployment_configuration(
+            _nonmock_provider_settings(
+                sovereign_record_grant_secret=grant_key
+            )
+        )
+
+
+def test_public_profile_rejects_provider_record_grant_secret():
+    with pytest.raises(
+        DeploymentConfigurationError,
+        match="SOVEREIGN_RECORD_GRANT_SECRET",
+    ):
+        validate_deployment_configuration(
+            Settings(
+                mount_profile=MountProfile.PUBLIC,
+                sovereign_record_grant_secret=RECORD_GRANT_KEY.decode(),
+            )
+        )
+
+
+def test_record_grant_secret_is_redacted_from_settings_repr():
+    settings = Settings(
+        sovereign_record_grant_secret=RECORD_GRANT_KEY.decode()
+    )
+    assert RECORD_GRANT_KEY.decode() not in repr(settings)
+    assert "**********" in repr(settings)
 
 
 def test_welcome_and_panel_label_sandbox_persistently_and_per_result():

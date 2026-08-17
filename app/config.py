@@ -10,17 +10,19 @@ Nothing in this file is doctrine-specific; doctrine lives in the arbiter.
 """
 from __future__ import annotations
 
-import base64
-import binascii
-import re
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 from typing import Optional
 from urllib.parse import urlparse
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.security.record_grant import (
+    RecordGrantConfigurationError,
+    configured_record_grant_key,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -199,16 +201,15 @@ class Settings(BaseSettings):
     feature_athena_labs: bool = False
     athena_client_id: Optional[str] = Field(default=None)
     athena_client_secret: Optional[str] = Field(default=None)
+    # Provider-only shared key used to authenticate the platform's short-lived
+    # open-record grant. The public deployment must never possess it.
+    sovereign_record_grant_secret: Optional[SecretStr] = Field(default=None)
     athena_env: str = "preview"            # preview | production
     athena_practice_id: str = "195900"     # athenahealth shared sandbox practice
     athena_department_id: str = "1"
     # Retained so an old deployment fails loudly. Name search is not part of
     # the governed labs.read operation and is forbidden at every tier.
     labs_allow_patient_search: bool = False
-    # Shared Fernet key for the short-lived platform-to-Sovereign record grant.
-    # Provider-only; never present on the public mount.
-    sovereign_record_grant_secret: Optional[str] = Field(default=None)
-
     # --- Partner directory (MyCatholicDoctor + resource partners) ----------
     # Until MyCatholicDoctor exposes a feed/API, the adapter reads a local
     # JSON fixture (see app/clients/partner_directory.py).
@@ -308,15 +309,8 @@ def _has_value(value: Optional[str]) -> bool:
     return value is not None and bool(value.strip())
 
 
-def _is_fernet_key(value: Optional[str]) -> bool:
-    """Accept exactly the canonical Fernet encoding of one 32-byte key."""
-    if value is None or not re.fullmatch(r"[A-Za-z0-9_-]{43}=", value):
-        return False
-    try:
-        decoded = base64.b64decode(value, altchars=b"-_", validate=True)
-    except (binascii.Error, ValueError):
-        return False
-    return len(decoded) == 32 and base64.urlsafe_b64encode(decoded).decode() == value
+def _secret_value(value: Optional[SecretStr]) -> Optional[str]:
+    return value.get_secret_value() if value is not None else None
 
 
 def _cors_origin_is_exact(origin: str, *, mock_mode: bool) -> bool:
@@ -420,6 +414,15 @@ def validate_deployment_configuration(settings: Settings) -> None:
                 + ", ".join(missing_labs)
                 + "."
             )
+        try:
+            configured_record_grant_key(
+                _secret_value(settings.sovereign_record_grant_secret)
+            )
+        except RecordGrantConfigurationError:
+            raise DeploymentConfigurationError(
+                "Non-mock sandbox labs require a canonical "
+                "SOVEREIGN_RECORD_GRANT_SECRET."
+            ) from None
 
     if settings.mount_profile == MountProfile.PUBLIC:
         forbidden: list[str] = []
@@ -445,7 +448,7 @@ def validate_deployment_configuration(settings: Settings) -> None:
             forbidden.append("ATHENA_CLIENT_ID")
         if _has_value(settings.athena_client_secret):
             forbidden.append("ATHENA_CLIENT_SECRET")
-        if _has_value(settings.sovereign_record_grant_secret):
+        if _has_value(_secret_value(settings.sovereign_record_grant_secret)):
             forbidden.append("SOVEREIGN_RECORD_GRANT_SECRET")
         if settings.labs_allow_patient_search:
             forbidden.append("LABS_ALLOW_PATIENT_SEARCH")
@@ -509,12 +512,15 @@ def validate_deployment_configuration(settings: Settings) -> None:
             raise DeploymentConfigurationError(
                 "A non-mock provider deployment requires AZURE_DEID_ENDPOINT."
             )
-        if not _is_fernet_key(settings.sovereign_record_grant_secret):
-            raise DeploymentConfigurationError(
-                "A non-mock provider deployment requires "
-                "SOVEREIGN_RECORD_GRANT_SECRET as the exact 44-character "
-                "urlsafe-base64 Fernet encoding of 32 bytes."
+        try:
+            configured_record_grant_key(
+                _secret_value(settings.sovereign_record_grant_secret)
             )
+        except RecordGrantConfigurationError:
+            raise DeploymentConfigurationError(
+                "A non-mock provider deployment requires a canonical "
+                "SOVEREIGN_RECORD_GRANT_SECRET."
+            ) from None
 
 
 @lru_cache
