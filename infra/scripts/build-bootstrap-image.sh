@@ -106,22 +106,28 @@ python3 "$ROOT/infra/scripts/finalize-nixpacks-context.py" \
 # Build on Azure rather than requiring a privileged local Docker daemon. The
 # source is a clean Git archive plus the checksum-pinned, normalized Nixpacks
 # output; no untracked env file or operator secret can enter the context.
-az acr build \
-  --registry "${REGISTRY%%.*}" \
-  --image "$IMAGE_REPO:$sha" \
-  --file .nixpacks/Dockerfile \
-  --platform linux/amd64 \
-  --build-arg NIXPACKS_METADATA=python \
-  --build-arg NIXPACKS_PYTHON_VERSION=3.13 \
-  --build-arg PIP_DEFAULT_TIMEOUT=100 \
-  --build-arg PIP_DISABLE_PIP_VERSION_CHECK=1 \
-  --build-arg PIP_NO_CACHE_DIR=1 \
-  --build-arg PYTHONDONTWRITEBYTECODE=1 \
-  --build-arg PYTHONFAULTHANDLER=1 \
-  --build-arg PYTHONHASHSEED=random \
-  --build-arg PYTHONUNBUFFERED=1 \
-  --timeout 3600 \
-  "$source_dir" >&2
+# For a local context, Azure CLI validates an explicit --file against its
+# process working directory before it archives the positional source. Run from
+# the generated context so the same relative path is valid for both operations.
+(
+  cd "$source_dir"
+  az acr build \
+    --registry "${REGISTRY%%.*}" \
+    --image "$IMAGE_REPO:$sha" \
+    --file .nixpacks/Dockerfile \
+    --platform linux/amd64 \
+    --build-arg NIXPACKS_METADATA=python \
+    --build-arg NIXPACKS_PYTHON_VERSION=3.13 \
+    --build-arg PIP_DEFAULT_TIMEOUT=100 \
+    --build-arg PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    --build-arg PIP_NO_CACHE_DIR=1 \
+    --build-arg PYTHONDONTWRITEBYTECODE=1 \
+    --build-arg PYTHONFAULTHANDLER=1 \
+    --build-arg PYTHONHASHSEED=random \
+    --build-arg PYTHONUNBUFFERED=1 \
+    --timeout 3600 \
+    .
+) >&2
 digest="$(az acr manifest show-metadata \
   --registry "${REGISTRY%%.*}" \
   --name "$IMAGE_REPO:$sha" \
