@@ -15,7 +15,7 @@ pyjwt[crypto]~=2.10
 # it is dispatched off the event loop by app/clients/labs.py.
 requests~=2.32
 beautifulsoup4~=4.12
-lxml~=5.3
+lxml~=6.1
 # Clinical-grade PHI de-identification (DEID_PROVIDER=azure) via Azure Health
 # Data Services — catches names/locations the regex baseline misses.
 azure-health-deidentification~=1.0

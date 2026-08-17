@@ -186,10 +186,6 @@ Actions → Variables), so no cloud credentials are stored:
 ## Remaining follow-up
 - Distinct public/provider custom domains (mirror `cosmaneura/infra/domains.tf`);
   never point both mount URLs at the same hostname.
-- Upgrade `lxml` from 5.4.0 to 6.1.0 or newer to clear CVE-2026-41066 before
-  building an application image. The current tree does not call the affected
-  `iterparse()` or `ETCompatXMLParser()` defaults, so this advisory does not
-  block the app-disabled staging foundation apply.
 
 The pinned public and synthetic Preview provider mounts do not require the
 platform Agent API or `PlatformResolver`. Real-PHI/multi-tenant EHR authority is
