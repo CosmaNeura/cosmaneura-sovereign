@@ -2,9 +2,19 @@ variable "tags" {
   description = "Tags applied to all resources"
   type        = map(string)
   default = {
-    environment = "production"
-    service     = "cosmaneura-sovereign"
-    managed     = "terraform"
+    service = "cosmaneura-sovereign"
+    managed = "terraform"
+  }
+}
+
+variable "deployment_environment" {
+  description = "Explicit isolated deployment boundary; no environment is selected by default"
+  type        = string
+  nullable    = false
+
+  validation {
+    condition     = contains(["prod", "staging"], var.deployment_environment)
+    error_message = "deployment_environment must be exactly prod or staging."
   }
 }
 
@@ -144,10 +154,10 @@ variable "public_public_vars" {
 data "external" "procfile" {
   program = [
     "python3",
-    "${path.module}/scripts/read-procfile.py",
-    "${path.module}/../Procfile",
+    abspath("${path.module}/scripts/read-procfile.py"),
+    abspath("${path.module}/../Procfile"),
   ]
-  working_dir = "${path.module}/.."
+  working_dir = abspath("${path.module}/..")
 }
 
 # Only non-secret provider configuration enters Terraform state. The exporter
@@ -156,12 +166,13 @@ data "external" "provider_public_config" {
   count = var.live_apps_enabled ? 1 : 0
   program = [
     "bash",
-    "${path.module}/scripts/export-public-env.sh",
-    "${path.module}/../.env.production.backend",
+    abspath("${path.module}/scripts/export-public-env.sh"),
+    local.environment,
+    abspath("${path.module}/../.env.${local.deployment_context.env_file_suffix}.backend"),
     join(",", sort(tolist(var.sovereign_public_vars))),
     "provider",
   ]
-  working_dir = path.module
+  working_dir = abspath(path.module)
 }
 
 # The public configuration is independently filtered, so provider-only names
@@ -170,10 +181,11 @@ data "external" "public_config" {
   count = var.live_apps_enabled ? 1 : 0
   program = [
     "bash",
-    "${path.module}/scripts/export-public-env.sh",
-    "${path.module}/../.env.production.public",
+    abspath("${path.module}/scripts/export-public-env.sh"),
+    local.environment,
+    abspath("${path.module}/../.env.${local.deployment_context.env_file_suffix}.public"),
     join(",", sort(tolist(var.public_public_vars))),
     "public",
   ]
-  working_dir = path.module
+  working_dir = abspath(path.module)
 }

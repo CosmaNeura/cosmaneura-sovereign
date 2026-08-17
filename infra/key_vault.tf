@@ -13,14 +13,14 @@ resource "azurerm_user_assigned_identity" "provider_runtime" {
   name                = "${local.base_name}-runtime"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
-  tags                = merge(var.tags, { mount = "provider_assistant" })
+  tags                = merge(local.resource_tags, { mount = "provider_assistant" })
 }
 
 resource "azurerm_user_assigned_identity" "public_runtime" {
   name                = "${local.public_base_name}-runtime"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
-  tags                = merge(var.tags, { mount = "public" })
+  tags                = merge(local.resource_tags, { mount = "public" })
 }
 
 resource "azurerm_key_vault" "provider" {
@@ -38,7 +38,7 @@ resource "azurerm_key_vault" "provider" {
   # no secret is exposed without an explicit role assignment in the meantime.
   public_network_access_enabled = true
 
-  tags = merge(var.tags, { mount = "provider_assistant" })
+  tags = merge(local.resource_tags, { mount = "provider_assistant" })
 
   lifecycle {
     prevent_destroy = true
@@ -56,7 +56,7 @@ resource "azurerm_key_vault" "public" {
   soft_delete_retention_days    = 90
   public_network_access_enabled = true
 
-  tags = merge(var.tags, { mount = "public" })
+  tags = merge(local.resource_tags, { mount = "public" })
 
   lifecycle {
     prevent_destroy = true

@@ -16,7 +16,7 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
 - [ ] `cp .env.production.backend.example .env.production.backend`
 - [ ] `cp .env.production.public.example .env.production.public`
 - [ ] `cp infra/deployment.auto.tfvars.example infra/deployment.auto.tfvars`
-      (leave its three fail-closed values unchanged during foundation bootstrap).
+      (leave its three release gates fail-closed during foundation bootstrap).
 - [ ] Fill every key. Keep the listed Magisterium, CosmasCode, and provider-only
       Athena credentials as `op://` references; never put values in these files.
 - [ ] Generate `SOVEREIGN_RECORD_GRANT_SECRET` exactly with
@@ -24,7 +24,9 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
       encoding of 32 random bytes), store its source in 1Password, and seed it
       only into the provider vault. The platform host receives the same value
       through its own secret boundary; it must be absent from the public mount.
-- [ ] Run preflight: `./infra/scripts/preflight.sh`
+- [ ] Initialize and prove the production backend:
+      `./infra/scripts/init-environment.sh prod`.
+- [ ] Run preflight: `./infra/scripts/preflight.sh prod`
 
 ## 2. Clerk identity (the cross-service contract — DEPLOY_AZURE.md §2)
 - [ ] Create the Clerk JWT template named **`cosmaneura-sovereign`** with
@@ -39,7 +41,8 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
       it is not authorized for real PHI or a multi-tenant EHR rollout.
 
 ## 3. Bootstrap ACR and Key Vaults
-- [ ] `cd infra && tofu init`  (uses the existing azurerm state backend)
+- [ ] Do not run an unscoped `tofu init`; the environment initializer above
+      selects and verifies `sovereign-prod.tfstate`.
 - [ ] Resolve the Entra object ID of the logged-in bootstrap operator. For a
       human account: `az ad signed-in-user show --query id -o tsv`.
 - [ ] Target-apply the four temporary bootstrap assignments (their dependencies
@@ -57,7 +60,8 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
         -target=azurerm_role_assignment.sovereign_deid \
         -var=bootstrap_operator_object_id=<entra-object-id>
       ```
-- [ ] Run `BOOTSTRAP_OPERATOR_OBJECT_ID=<uuid>
+- [ ] Run `DEPLOYMENT_ENVIRONMENT=prod DEID_SERVICE_ID=<reviewed-resource-id>
+      BOOTSTRAP_OPERATOR_OBJECT_ID=<uuid>
       ./scripts/verify-bootstrap-role-assignments.sh`, then allow Azure
       data-plane propagation before continuing. The
       temporary operator assignments created here are `AcrPush` plus
@@ -73,14 +77,16 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
       stdout. The script generates a normalized Dockerfile/context with the
       checksum-pinned Nixpacks binary; it never uses a local Docker daemon:
       ```bash
-      INITIAL_IMAGE_REF=$(REGISTRY=cosmaneurasovereignprodregistry.azurecr.io \
+      INITIAL_IMAGE_REF=$(DEPLOYMENT_ENVIRONMENT=prod \
+        REGISTRY=cosmaneurasovereignprodregistry.azurecr.io \
         infra/scripts/build-bootstrap-image.sh)
       ```
 - [ ] Seed each exact, tagged vault:
       ```bash
-      infra/scripts/sync-key-vault-secrets.sh provider cosmasovprodprovider
-      infra/scripts/sync-key-vault-secrets.sh public cosmasovprodpublic
-      infra/scripts/verify-key-vault-boundaries.sh
+      infra/scripts/sync-key-vault-secrets.sh prod provider cosmasovprodprovider
+      infra/scripts/sync-key-vault-secrets.sh prod public cosmasovprodpublic
+      DEPLOYMENT_ENVIRONMENT=prod DEID_SERVICE_ID=<reviewed-resource-id> \
+        infra/scripts/verify-key-vault-boundaries.sh
       ```
 - [ ] Review the full plan, including any resource destruction. If an earlier
       stack contains `partner-data`, export `providers.json` before approving
@@ -100,7 +106,9 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
       `tofu plan`, then `tofu apply`. Omit `bootstrap_operator_object_id` so the
       temporary operator roles are removed in the same apply.
 - [ ] Confirm the final plan/state contains no bootstrap role assignments.
-- [ ] Run `./scripts/verify-live-app-boundaries.sh` and confirm each app has
+- [ ] Run the verifier with `DEPLOYMENT_ENVIRONMENT=prod`, the exact resource
+      group/app/registry variables, and `./scripts/verify-live-app-boundaries.sh`;
+      confirm each app has
       exactly its own UAI, vault references, and managed-identity registry bind.
 - [ ] Capture outputs: `tofu output` → `gha_identity_client_id`, `tenant_id`,
       `container_registry`, both app names, and both vault names.
@@ -130,7 +138,8 @@ Actions → Variables), so no cloud credentials are stored:
       `uv venv --python 3.13 .deploy-venv && uv pip install --python
       .deploy-venv --require-hashes --only-binary=:all: -r requirements.lock`.
 - [ ] For the reviewed operator rollout, export only the resource group, two app
-      names, immutable `IMAGE_REF`, revision suffix, `SMOKE_PYTHON`, and
+      names, exact registry server, `DEPLOYMENT_ENVIRONMENT=prod`, immutable
+      `IMAGE_REF`, revision suffix, `SMOKE_PYTHON`, and
       `SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED=true`; then run
       `SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS=true
       ./infra/scripts/deploy-dual.sh` from a private controlling terminal. It
@@ -151,9 +160,10 @@ Actions → Variables), so no cloud credentials are stored:
       `tools/smoke_labs.py` before commit. Missing/expired/wrong-role tokens,
       public capability leakage, live model failure, or Preview labs failure
       rolls **both** mounts back to their captured immutable digests.
-- [ ] In a non-production rehearsal, deploy a second immutable digest, force one
-      mount's smoke to fail, and retain evidence that `deploy-dual.sh` restored
-      both previous active digest revisions.
+- [ ] Follow [`STAGING_REHEARSAL.md`](./STAGING_REHEARSAL.md): deploy a second
+      immutable staging digest, pass both live and synthetic Preview smokes,
+      inject failure at the post-smoke gate, and retain evidence that
+      `deploy-dual.sh` restored both previous active digest revisions.
 - [ ] Preserve evidence of provider-role success plus missing/wrong-role rejection.
       Body persona/capability hints must not change the pinned mount.
 

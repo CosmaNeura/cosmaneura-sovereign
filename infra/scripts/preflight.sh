@@ -4,12 +4,17 @@
 # auth, that the env file is complete, and that the Terraform is valid. Safe to
 # run repeatedly; it changes nothing. Run from the repo root or infra/.
 #
-#   ./infra/scripts/preflight.sh
+#   ./infra/scripts/preflight.sh <prod|staging>
 set -uo pipefail
 
 # resolve repo root regardless of where we're called from
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+DEPLOYMENT_ENVIRONMENT="${1:?usage: preflight.sh <prod|staging>}"
+source "$HERE/deployment-context.sh"
+load_deployment_context || exit $?
+export DEPLOYMENT_ENVIRONMENT
+export TF_VAR_deployment_environment="$DEPLOYMENT_ENVIRONMENT"
 cd "$ROOT"
 
 pass=0 warn=0 fail=0
@@ -48,40 +53,63 @@ fi
 echo "== Config (provider + public) =="
 deployment_gate_status=""
 if deployment_gate_status="$(python3 "$HERE/validate-deployment-inputs.py" \
-    "$ROOT/infra/deployment.auto.tfvars")"; then
+    "$ROOT/infra/deployment.auto.tfvars" "$DEPLOYMENT_ENVIRONMENT")"; then
   ok "persistent Terraform deployment gates are internally consistent"
 else
   bad "infra/deployment.auto.tfvars is missing or unsafe (copy and validate the example)"
 fi
 if python3 "$HERE/validate-deployment-env.py" \
-    provider "$ROOT/.env.production.backend" >/dev/null; then
-  ok ".env.production.backend satisfies provider invariants"
+    "$DEPLOYMENT_ENVIRONMENT" provider \
+    "$ROOT/.env.${EXPECTED_ENV_FILE_SUFFIX}.backend" >/dev/null; then
+  ok ".env.${EXPECTED_ENV_FILE_SUFFIX}.backend satisfies provider invariants"
 else
-  bad ".env.production.backend is missing or unsafe (run the validator directly)"
+  bad ".env.${EXPECTED_ENV_FILE_SUFFIX}.backend is missing or unsafe (run the validator directly)"
 fi
 if python3 "$HERE/validate-deployment-env.py" \
-    public "$ROOT/.env.production.public" >/dev/null; then
-  ok ".env.production.public satisfies public invariants"
+    "$DEPLOYMENT_ENVIRONMENT" public \
+    "$ROOT/.env.${EXPECTED_ENV_FILE_SUFFIX}.public" >/dev/null; then
+  ok ".env.${EXPECTED_ENV_FILE_SUFFIX}.public satisfies public invariants"
 else
-  bad ".env.production.public is missing or unsafe (run the validator directly)"
+  bad ".env.${EXPECTED_ENV_FILE_SUFFIX}.public is missing or unsafe (run the validator directly)"
 fi
 
-if [[ "$deployment_gate_status" == *"(enabled)" ]]; then
+if python3 "$HERE/verify-backend-context.py" \
+    "$DEPLOYMENT_ENVIRONMENT" "$ROOT/infra" >/dev/null; then
+  ok "initialized backend is pinned to $EXPECTED_TFSTATE_KEY"
+else
+  bad "backend is not initialized for $DEPLOYMENT_ENVIRONMENT (run init-environment.sh)"
+fi
+
+if [[ "$deployment_gate_status" == *" enabled)" ]]; then
   echo "== Enabled deployment boundaries =="
-  if "$HERE/verify-key-vault-boundaries.sh" >/dev/null 2>&1; then
+  deid_service_id="$(python3 - "$ROOT/infra/deployment.auto.tfvars" <<'PY'
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text()
+match = re.search(r'^azure_deid_service_id\s*=\s*"([^"]+)"\s*$', text, re.MULTILINE)
+if not match:
+    raise SystemExit(1)
+print(match.group(1))
+PY
+)"
+  if DEID_SERVICE_ID="$deid_service_id" \
+    "$HERE/verify-key-vault-boundaries.sh" >/dev/null 2>&1; then
     ok "vault inventories and direct/inherited runtime roles are mount-exact"
   else
     bad "vault inventory or runtime role boundary verification failed"
   fi
   if az containerapp show \
-      --resource-group cosmaneura-sovereign-prod \
-      --name cosmaneura-sovereign-prod-app >/dev/null 2>&1 &&
+      --resource-group "$EXPECTED_RESOURCE_GROUP" \
+      --name "$EXPECTED_PROVIDER_APP" >/dev/null 2>&1 &&
     az containerapp show \
-      --resource-group cosmaneura-sovereign-prod \
-      --name cosmaneura-web-prod-app >/dev/null 2>&1; then
-    if RESOURCE_GROUP=cosmaneura-sovereign-prod \
-      PROVIDER_APP=cosmaneura-sovereign-prod-app \
-      PUBLIC_APP=cosmaneura-web-prod-app \
+      --resource-group "$EXPECTED_RESOURCE_GROUP" \
+      --name "$EXPECTED_PUBLIC_APP" >/dev/null 2>&1; then
+    if RESOURCE_GROUP="$EXPECTED_RESOURCE_GROUP" \
+      PROVIDER_APP="$EXPECTED_PROVIDER_APP" \
+      PUBLIC_APP="$EXPECTED_PUBLIC_APP" \
+      REGISTRY_SERVER="$EXPECTED_REGISTRY_SERVER" \
       "$HERE/verify-live-app-boundaries.sh" >/dev/null 2>&1; then
       ok "live app identities, vault references, and registry binds are mount-exact"
     else
@@ -96,11 +124,10 @@ echo "== Terraform =="
 if command -v tofu >/dev/null 2>&1; then
   ( cd infra && tofu fmt -check -recursive >/dev/null 2>&1 ) \
     && ok "tofu fmt clean" || warn "tofu fmt would reformat (run: tofu -chdir=infra fmt -recursive)"
-  if ( cd infra && tofu init -backend=false -lockfile=readonly >/dev/null 2>&1 \
-       && tofu validate >/dev/null 2>&1 ); then
+  if ( cd infra && tofu validate >/dev/null 2>&1 ); then
     ok "tofu validate passes"
   else
-    bad "tofu validate failed (run: cd infra && tofu init -backend=false -lockfile=readonly && tofu validate)"
+    bad "tofu validate failed after environment-specific initialization"
   fi
 fi
 

@@ -5,7 +5,24 @@
 resource "azurerm_resource_group" "main" {
   name     = "cosmaneura-sovereign-${local.environment}"
   location = "northcentralus"
-  tags     = var.tags
+  tags     = local.resource_tags
+
+  # Every targeted bootstrap path reaches the resource group. Making the state
+  # guard an explicit dependency prevents `-target` from pruning the cached
+  # backend/environment protection out of the plan graph.
+  depends_on = [terraform_data.state_environment_guard]
+}
+
+# The backend key is selected from the same explicit environment input. Once a
+# state is initialized, changing environments forces replacement of this guard,
+# which prevent_destroy rejects. This closes the cached-backend failure mode in
+# addition to the init/preflight backend inspection.
+resource "terraform_data" "state_environment_guard" {
+  triggers_replace = local.environment
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 ########################################
@@ -20,7 +37,7 @@ resource "azurerm_log_analytics_workspace" "main" {
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   retention_in_days   = 30
-  tags                = var.tags
+  tags                = local.resource_tags
 }
 
 # Consumer health data has a different legal/retention regime from provider
@@ -30,7 +47,7 @@ resource "azurerm_log_analytics_workspace" "public" {
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   retention_in_days   = 30
-  tags                = merge(var.tags, { mount = "public" })
+  tags                = merge(local.resource_tags, { mount = "public" })
 }
 
 ########################################
@@ -43,7 +60,7 @@ resource "azurerm_container_registry" "main" {
   location            = azurerm_resource_group.main.location
   sku                 = "Basic"
   admin_enabled       = false
-  tags                = var.tags
+  tags                = local.resource_tags
 }
 
 ########################################
@@ -55,7 +72,7 @@ resource "azurerm_container_app_environment" "main" {
   resource_group_name        = azurerm_resource_group.main.name
   location                   = azurerm_resource_group.main.location
   log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
-  tags                       = var.tags
+  tags                       = local.resource_tags
 }
 
 resource "azurerm_container_app_environment" "public" {
@@ -63,7 +80,7 @@ resource "azurerm_container_app_environment" "public" {
   resource_group_name        = azurerm_resource_group.main.name
   location                   = azurerm_resource_group.main.location
   log_analytics_workspace_id = azurerm_log_analytics_workspace.public.id
-  tags                       = merge(var.tags, { mount = "public" })
+  tags                       = merge(local.resource_tags, { mount = "public" })
 }
 
 ########################################
@@ -203,7 +220,7 @@ resource "azurerm_container_app" "sovereign" {
     azurerm_role_assignment.sovereign_deid,
   ]
 
-  tags = var.tags
+  tags = local.resource_tags
 }
 
 ########################################
@@ -348,7 +365,7 @@ resource "azurerm_container_app" "public" {
     azurerm_role_assignment.public_key_vault_secrets,
   ]
 
-  tags = merge(var.tags, { mount = "public" })
+  tags = merge(local.resource_tags, { mount = "public" })
 }
 
 ########################################
@@ -367,10 +384,9 @@ resource "azurerm_federated_identity_credential" "ghactions" {
   resource_group_name = azurerm_resource_group.main.name
   audience            = ["api://AzureADTokenExchange"]
   issuer              = "https://token.actions.githubusercontent.com"
-  # The deploy job uses the protected `production` GitHub Environment, so its
-  # OIDC subject is environment-scoped rather than branch-scoped. Protect that
-  # environment so only main may deploy.
-  subject = "repo:${var.github_repository}:environment:production"
+  # Each deployment boundary has its own protected GitHub Environment and OIDC
+  # subject. A staging token therefore cannot operate the production identity.
+  subject = "repo:${var.github_repository}:environment:${local.deployment_context.github_environment}"
 }
 
 # Push images to ACR.

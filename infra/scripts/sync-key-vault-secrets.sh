@@ -3,15 +3,19 @@
 set -euo pipefail
 umask 077
 
-MOUNT="${1:?usage: sync-key-vault-secrets.sh <provider|public> <vault-name>}"
-VAULT_NAME="${2:?usage: sync-key-vault-secrets.sh <provider|public> <vault-name>}"
+DEPLOYMENT_ENVIRONMENT="${1:?usage: sync-key-vault-secrets.sh <prod|staging> <provider|public> <vault-name>}"
+MOUNT="${2:?usage: sync-key-vault-secrets.sh <prod|staging> <provider|public> <vault-name>}"
+VAULT_NAME="${3:?usage: sync-key-vault-secrets.sh <prod|staging> <provider|public> <vault-name>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HERE="$ROOT/infra/scripts"
+source "$HERE/deployment-context.sh"
+load_deployment_context
 
 case "$MOUNT" in
   provider)
-    EXPECTED_VAULT="cosmasovprodprovider"
+    EXPECTED_VAULT="$EXPECTED_PROVIDER_VAULT"
     EXPECTED_TAG="provider_assistant"
-    ENV_FILE="$ROOT/.env.production.backend"
+    ENV_FILE="$ROOT/.env.${EXPECTED_ENV_FILE_SUFFIX}.backend"
     SECRET_NAMES=(
       MAGISTERIUM_API_KEY
       AZURE_OPENAI_API_KEY
@@ -21,9 +25,9 @@ case "$MOUNT" in
     )
     ;;
   public)
-    EXPECTED_VAULT="cosmasovprodpublic"
+    EXPECTED_VAULT="$EXPECTED_PUBLIC_VAULT"
     EXPECTED_TAG="public"
-    ENV_FILE="$ROOT/.env.production.public"
+    ENV_FILE="$ROOT/.env.${EXPECTED_ENV_FILE_SUFFIX}.public"
     SECRET_NAMES=(MAGISTERIUM_API_KEY AZURE_OPENAI_API_KEY)
     ;;
   *)
@@ -49,7 +53,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 python3 "$ROOT/infra/scripts/validate-deployment-env.py" \
-  "$MOUNT" "$ENV_FILE" >/dev/null
+  "$DEPLOYMENT_ENVIRONMENT" "$MOUNT" "$ENV_FILE" >/dev/null
 
 actual_tag="$(az keyvault show \
   --name "$VAULT_NAME" --query 'tags.mount' --output tsv)"

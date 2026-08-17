@@ -39,6 +39,21 @@ PUBLIC_PUBLIC = {
 }
 PUBLIC_SECRETS = {"MAGISTERIUM_API_KEY", "AZURE_OPENAI_API_KEY"}
 
+SECRET_ITEMS = {
+    "provider": {
+        "MAGISTERIUM_API_KEY": "magisterium-api/credential",
+        "AZURE_OPENAI_API_KEY": "CosmasCode/credential",
+        "ATHENA_CLIENT_ID": "athenahealth-preview/client-id",
+        "ATHENA_CLIENT_SECRET": "athenahealth-preview/client-secret",
+        "SOVEREIGN_RECORD_GRANT_SECRET": "sovereign-record-grant/credential",
+    },
+    "public": {
+        "MAGISTERIUM_API_KEY": "magisterium-public/credential",
+        "AZURE_OPENAI_API_KEY": "CosmasCode-public/credential",
+    },
+}
+ONEPASSWORD_VAULTS = {"prod": "Production", "staging": "Staging"}
+
 FIXED = {
     "provider": {
         "MOCK_MODE": "false",
@@ -169,7 +184,9 @@ def _cors(value: str) -> None:
             raise ConfigError("CORS_ALLOW_ORIGINS must contain exact HTTPS origins")
 
 
-def validate(mount: str, values: dict[str, str]) -> None:
+def validate(environment: str, mount: str, values: dict[str, str]) -> None:
+    if environment not in ONEPASSWORD_VAULTS:
+        raise ConfigError("environment must be prod or staging")
     if mount == "provider":
         public_keys, secret_keys = PROVIDER_PUBLIC, PROVIDER_SECRETS
     elif mount == "public":
@@ -187,6 +204,13 @@ def validate(mount: str, values: dict[str, str]) -> None:
     for name in secret_keys:
         if not values[name].startswith("op://") or len(values[name]) <= len("op://"):
             raise ConfigError(f"{name} must be a non-empty op:// reference")
+    vault = ONEPASSWORD_VAULTS[environment]
+    for name, item in SECRET_ITEMS[mount].items():
+        expected = f"op://{vault}/{item}"
+        if values[name] != expected:
+            raise ConfigError(
+                f"{name} must use the exact {environment} {mount} 1Password reference"
+            )
 
     for name, expected in FIXED[mount].items():
         if values[name] != expected:
@@ -232,12 +256,15 @@ def validate(mount: str, values: dict[str, str]) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: validate-deployment-env.py <provider|public> <env-file>", file=sys.stderr)
+    if len(argv) != 4:
+        print(
+            "usage: validate-deployment-env.py <prod|staging> <provider|public> <env-file>",
+            file=sys.stderr,
+        )
         return 2
-    mount, path = argv[1], Path(argv[2])
+    environment, mount, path = argv[1], argv[2], Path(argv[3])
     try:
-        validate(mount, parse_env(path))
+        validate(environment, mount, parse_env(path))
     except (ConfigError, OSError) as error:
         print(f"deployment config invalid: {error}", file=sys.stderr)
         return 1

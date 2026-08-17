@@ -9,9 +9,17 @@
 ########################################
 
 variable "azure_deid_service_id" {
-  description = "Resource ID of the Azure Health Data Services de-id service"
+  description = "Explicit resource ID of the reviewed Azure Health Data Services de-id service"
   type        = string
-  default     = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.HealthDataAIServices/deidServices/AnonymizerAPI"
+  nullable    = false
+
+  validation {
+    condition = can(regex(
+      "^/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]+/providers/Microsoft\\.HealthDataAIServices/deidServices/[^/]+$",
+      var.azure_deid_service_id,
+    ))
+    error_message = "azure_deid_service_id must be an explicit DeID service resource ID."
+  }
 }
 
 resource "azurerm_role_assignment" "sovereign_deid" {

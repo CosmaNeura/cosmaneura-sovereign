@@ -2,9 +2,10 @@
 # Emit only explicitly allowlisted, non-secret configuration for data.external.
 set -euo pipefail
 
-FILE="${1:?usage: export-public-env.sh <env-file> <comma-separated-keys> <provider|public>}"
-KEYS="${2:?usage: export-public-env.sh <env-file> <comma-separated-keys> <provider|public>}"
-MOUNT="${3:?usage: export-public-env.sh <env-file> <comma-separated-keys> <provider|public>}"
+ENVIRONMENT="${1:?usage: export-public-env.sh <prod|staging> <env-file> <comma-separated-keys> <provider|public>}"
+FILE="${2:?usage: export-public-env.sh <prod|staging> <env-file> <comma-separated-keys> <provider|public>}"
+KEYS="${3:?usage: export-public-env.sh <prod|staging> <env-file> <comma-separated-keys> <provider|public>}"
+MOUNT="${4:?usage: export-public-env.sh <prod|staging> <env-file> <comma-separated-keys> <provider|public>}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ ! -f "$FILE" ]]; then
@@ -15,7 +16,8 @@ fi
 # Terraform must enforce the same complete mount contract as preflight; an
 # operator cannot bypass fixed Preview/auth/BAA/public-isolation invariants by
 # skipping the runbook and calling `tofu apply` directly.
-python3 "$HERE/validate-deployment-env.py" "$MOUNT" "$FILE" >/dev/null
+python3 "$HERE/validate-deployment-env.py" \
+  "$ENVIRONMENT" "$MOUNT" "$FILE" >/dev/null
 
 python3 - "$FILE" "$KEYS" <<'PY'
 import json

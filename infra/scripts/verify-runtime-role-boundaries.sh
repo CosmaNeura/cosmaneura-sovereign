@@ -2,13 +2,24 @@
 # Prove each runtime identity has only its intended relevant data-plane roles.
 set -euo pipefail
 
-RESOURCE_GROUP="${RESOURCE_GROUP:-cosmaneura-sovereign-prod}"
-ACR_NAME="${ACR_NAME:-cosmaneurasovereignprodregistry}"
-PROVIDER_IDENTITY="${PROVIDER_IDENTITY:-cosmaneura-sovereign-prod-runtime}"
-PUBLIC_IDENTITY="${PUBLIC_IDENTITY:-cosmaneura-web-prod-runtime}"
-PROVIDER_VAULT="${PROVIDER_VAULT:-cosmasovprodprovider}"
-PUBLIC_VAULT="${PUBLIC_VAULT:-cosmasovprodpublic}"
-DEID_SERVICE_ID="${DEID_SERVICE_ID:-/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.HealthDataAIServices/deidServices/AnonymizerAPI}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/deployment-context.sh"
+load_deployment_context
+
+RESOURCE_GROUP="${RESOURCE_GROUP:-$EXPECTED_RESOURCE_GROUP}"
+ACR_NAME="${ACR_NAME:-$EXPECTED_ACR_NAME}"
+PROVIDER_IDENTITY="${PROVIDER_IDENTITY:-$EXPECTED_PROVIDER_IDENTITY}"
+PUBLIC_IDENTITY="${PUBLIC_IDENTITY:-$EXPECTED_PUBLIC_IDENTITY}"
+PROVIDER_VAULT="${PROVIDER_VAULT:-$EXPECTED_PROVIDER_VAULT}"
+PUBLIC_VAULT="${PUBLIC_VAULT:-$EXPECTED_PUBLIC_VAULT}"
+: "${DEID_SERVICE_ID:?DEID_SERVICE_ID is required}"
+
+require_deployment_value RESOURCE_GROUP "$RESOURCE_GROUP" "$EXPECTED_RESOURCE_GROUP"
+require_deployment_value ACR_NAME "$ACR_NAME" "$EXPECTED_ACR_NAME"
+require_deployment_value PROVIDER_IDENTITY "$PROVIDER_IDENTITY" "$EXPECTED_PROVIDER_IDENTITY"
+require_deployment_value PUBLIC_IDENTITY "$PUBLIC_IDENTITY" "$EXPECTED_PUBLIC_IDENTITY"
+require_deployment_value PROVIDER_VAULT "$PROVIDER_VAULT" "$EXPECTED_PROVIDER_VAULT"
+require_deployment_value PUBLIC_VAULT "$PUBLIC_VAULT" "$EXPECTED_PUBLIC_VAULT"
 
 command -v az >/dev/null || {
   echo "az is required" >&2
@@ -40,6 +51,34 @@ list_direct_roles() {
   az role assignment list \
     --assignee-object-id "$1" --all --fill-principal-name false \
     --query '[].{role:roleDefinitionName,scope:scope}' --output json
+}
+
+assert_direct_inventory() {
+  local assignments="$1" expected="$2" label="$3"
+  python3 - "$assignments" "$expected" "$label" <<'PY'
+import json
+import sys
+
+items = json.loads(sys.argv[1])
+if not isinstance(items, list) or any(
+    not isinstance(item, dict)
+    or not isinstance(item.get("role"), str)
+    or not isinstance(item.get("scope"), str)
+    for item in items
+):
+    raise SystemExit(f"could not prove direct role inventory: {sys.argv[3]}")
+actual = sorted(
+    (item["role"], item["scope"].rstrip("/").casefold()) for item in items
+)
+expected = sorted(
+    (role, scope.rstrip("/").casefold())
+    for line in sys.argv[2].splitlines()
+    if line
+    for role, scope in [line.split("\t", 1)]
+)
+if actual != expected:
+    raise SystemExit(f"unexpected direct role assignment: {sys.argv[3]}")
+PY
 }
 
 assert_scoped_roles() {
@@ -115,6 +154,18 @@ assert_no_group_memberships "$public_principal"
 
 provider_assignments="$(list_direct_roles "$provider_principal")"
 public_assignments="$(list_direct_roles "$public_principal")"
+
+provider_expected_roles="$(printf '%s\t%s\n' \
+  "AcrPull" "$acr_scope" \
+  "Key Vault Secrets User" "$provider_vault_scope" \
+  "DeID Realtime Data User" "$DEID_SERVICE_ID")"
+public_expected_roles="$(printf '%s\t%s\n' \
+  "AcrPull" "$acr_scope" \
+  "Key Vault Secrets User" "$public_vault_scope")"
+assert_direct_inventory \
+  "$provider_assignments" "$provider_expected_roles" "provider runtime identity"
+assert_direct_inventory \
+  "$public_assignments" "$public_expected_roles" "public runtime identity"
 
 assert_scoped_roles \
   "$provider_principal" "$provider_assignments" "$acr_scope" "AcrPull" "provider ACR"

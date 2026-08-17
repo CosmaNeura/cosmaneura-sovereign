@@ -3,6 +3,8 @@ __pycache__/
 .env
 .env.production.backend
 .env.production.public
+.env.staging.backend
+.env.staging.public
 # local demo secrets — never commit
 .env*.local
 .venv/

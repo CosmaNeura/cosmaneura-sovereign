@@ -3,9 +3,13 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/deployment-context.sh"
+load_deployment_context
 
-PROVIDER_VAULT="${PROVIDER_VAULT:-cosmasovprodprovider}"
-PUBLIC_VAULT="${PUBLIC_VAULT:-cosmasovprodpublic}"
+PROVIDER_VAULT="${PROVIDER_VAULT:-$EXPECTED_PROVIDER_VAULT}"
+PUBLIC_VAULT="${PUBLIC_VAULT:-$EXPECTED_PUBLIC_VAULT}"
+require_deployment_value PROVIDER_VAULT "$PROVIDER_VAULT" "$EXPECTED_PROVIDER_VAULT"
+require_deployment_value PUBLIC_VAULT "$PUBLIC_VAULT" "$EXPECTED_PUBLIC_VAULT"
 
 command -v az >/dev/null || {
   echo "az is required" >&2
@@ -77,5 +81,6 @@ fi
 
 verify_vault "$PROVIDER_VAULT" provider_assistant "$provider_expected"
 verify_vault "$PUBLIC_VAULT" public "$public_expected"
-"$HERE/verify-runtime-role-boundaries.sh"
+DEPLOYMENT_ENVIRONMENT="$DEPLOYMENT_ENVIRONMENT" \
+  "$HERE/verify-runtime-role-boundaries.sh"
 echo "both Key Vault inventories match their exact mount allowlists" >&2

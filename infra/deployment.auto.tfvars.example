@@ -1,9 +1,11 @@
 # Copy to deployment.auto.tfvars before the first full plan. This file is
 # intentionally ignored so an operator, not a source-code merge, controls when
 # externally reachable apps may exist.
-live_apps_enabled      = false
+deployment_environment  = "prod"
+azure_deid_service_id   = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.HealthDataAIServices/deidServices/AnonymizerAPI"
+live_apps_enabled       = false
 key_vault_secrets_ready = false
-initial_image_ref       = ""
+initial_image_ref        = ""
 
 # For one reviewed paired activation, set both booleans to true and persist the
 # exact registry/repository@sha256:... fallback digest. Refresh that digest to

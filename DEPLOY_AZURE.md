@@ -160,14 +160,14 @@ Analytics shared keys. Bootstrap in four explicit steps:
    assignments are visible and allow Azure data-plane propagation before
    continuing; the operator's scoped ACR push/task and vault-write roles are
    bootstrap-only.
-2. Run `REGISTRY=<name>.azurecr.io
+2. Run `DEPLOYMENT_ENVIRONMENT=<prod|staging> REGISTRY=<name>.azurecr.io
    infra/scripts/build-bootstrap-image.sh` and capture the returned immutable
    `@sha256` reference. It checksum-verifies Nixpacks, generates and normalizes
    the locked Dockerfile/context, then queues a remote ACR build; no local
    Docker daemon or `:latest` tag is used.
 3. Copy the two production env examples, retain their `op://` references, and
-   run `infra/scripts/sync-key-vault-secrets.sh provider <vault>` and then
-   `... public <vault>`. The script uses temporary mode-0600 files and never
+   run `infra/scripts/sync-key-vault-secrets.sh prod provider <vault>` and then
+   `... prod public <vault>`. The script uses temporary mode-0600 files and never
    places a value on the command line or in Terraform state. Run
    `verify-key-vault-boundaries.sh` afterward; it permits only the exact
    mount-specific secret-name inventories and fails if Athena metadata exists in
@@ -207,6 +207,10 @@ immediately before labs. The prompts are silent and remain inside the paired
 rollback window; Clerk-token reads time out after 120 seconds and the grant read
 after 45 seconds so an abandoned terminal triggers paired rollback. A future
 smoke-time mint exchange may replace this manual step.
+
+The isolated non-production proof path, including the intentional post-smoke
+failure and paired restoration evidence, is
+[`STAGING_REHEARSAL.md`](./STAGING_REHEARSAL.md).
 
 ---
 

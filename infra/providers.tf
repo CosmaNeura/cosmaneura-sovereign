@@ -13,8 +13,22 @@
 # Terraform ignoring the live image, etc.
 
 locals {
-  environment           = "prod"
+  environment           = var.deployment_environment
   azure_subscription_id = "bab2a709-1fcb-4c87-a9fc-802f7477ec13"
+
+  deployment_contexts = {
+    prod = {
+      env_file_suffix    = "production"
+      github_environment = "production"
+      tfstate_key        = "sovereign-prod.tfstate"
+    }
+    staging = {
+      env_file_suffix    = "staging"
+      github_environment = "staging"
+      tfstate_key        = "sovereign-staging.tfstate"
+    }
+  }
+  deployment_context = local.deployment_contexts[local.environment]
 
   # Terraform state. We REUSE the main stack's tfstate storage account (already
   # bootstrapped in cosmaneura/infra) but under a distinct key, so the Sovereign
@@ -23,13 +37,14 @@ locals {
     storage_account = "cosmaneuratfstate"
     resource_group  = "cosmaneura-tfstate"
     container       = "cosmaneura-tfstate"
-    key             = "sovereign-${local.environment}.tfstate"
+    key             = local.deployment_context.tfstate_key
   }
 
   base_name        = azurerm_resource_group.main.name
   public_base_name = "cosmaneura-web-${local.environment}"
   # Azure requires alphanumeric-only names in several places (ACR, etc.).
   base_name_alphanumeric = replace(local.base_name, "/[^a-zA-Z0-9]/", "")
+  resource_tags          = merge(var.tags, { environment = local.environment })
 }
 
 terraform {

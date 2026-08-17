@@ -2,12 +2,24 @@
 # Deploy one immutable image digest to both mounts, or roll both back.
 set -euo pipefail
 
+: "${DEPLOYMENT_ENVIRONMENT:?DEPLOYMENT_ENVIRONMENT is required}"
 : "${RESOURCE_GROUP:?RESOURCE_GROUP is required}"
 : "${PROVIDER_APP:?PROVIDER_APP is required}"
 : "${PUBLIC_APP:?PUBLIC_APP is required}"
 : "${IMAGE_REF:?IMAGE_REF is required}"
 : "${REVISION_SUFFIX:?REVISION_SUFFIX is required}"
 : "${SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED:?SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED is required}"
+
+SOVEREIGN_REHEARSAL_FORCE_ROLLBACK="${SOVEREIGN_REHEARSAL_FORCE_ROLLBACK:-false}"
+if [[ "$SOVEREIGN_REHEARSAL_FORCE_ROLLBACK" == "true" ]]; then
+  if [[ "$DEPLOYMENT_ENVIRONMENT" != "staging" ]]; then
+    echo "forced rollback rehearsal is allowed only in staging" >&2
+    exit 2
+  fi
+elif [[ "$SOVEREIGN_REHEARSAL_FORCE_ROLLBACK" != "false" ]]; then
+  echo "SOVEREIGN_REHEARSAL_FORCE_ROLLBACK must be true or false" >&2
+  exit 2
+fi
 
 SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS="${SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS:-false}"
 if [[ "$SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS" == "true" ]]; then
@@ -33,6 +45,15 @@ record_smoke_grant="${SOVEREIGN_SYNTHETIC_RECORD_GRANT:-}"
 unset SOVEREIGN_PROVIDER_TOKEN SOVEREIGN_NON_PROVIDER_TOKEN
 unset SOVEREIGN_SYNTHETIC_RECORD_GRANT
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/deployment-context.sh"
+load_deployment_context
+: "${REGISTRY_SERVER:?REGISTRY_SERVER is required}"
+require_deployment_value RESOURCE_GROUP "$RESOURCE_GROUP" "$EXPECTED_RESOURCE_GROUP"
+require_deployment_value PROVIDER_APP "$PROVIDER_APP" "$EXPECTED_PROVIDER_APP"
+require_deployment_value PUBLIC_APP "$PUBLIC_APP" "$EXPECTED_PUBLIC_APP"
+require_deployment_value REGISTRY_SERVER "$REGISTRY_SERVER" "$EXPECTED_REGISTRY_SERVER"
+
 if [[ "$SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED" != "true" ]]; then
   echo "SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED must be exactly true" >&2
   exit 2
@@ -40,7 +61,6 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SMOKE_PYTHON="${SMOKE_PYTHON:-python3}"
-REGISTRY_SERVER="${REGISTRY_SERVER:-cosmaneurasovereignprodregistry.azurecr.io}"
 IMAGE_REPO="${IMAGE_REPO:-cosmaneura/sovereign}"
 if [[ ! "$REGISTRY_SERVER" =~ ^[a-z0-9]{5,50}\.azurecr\.io$ ]]; then
   echo "REGISTRY_SERVER must be a lowercase Azure Container Registry host" >&2
@@ -279,6 +299,13 @@ if ! update_app "$PROVIDER_APP" "$IMAGE_REF" "${REVISION_SUFFIX}-p" ||
    ! "$ROOT/infra/scripts/verify-live-app-boundaries.sh" ||
    ! functional_smoke; then
   exit 1
+fi
+
+if [[ "$SOVEREIGN_REHEARSAL_FORCE_ROLLBACK" == "true" ]]; then
+  echo "staging live smokes passed; forcing the reviewed paired rollback" >&2
+  # EX_TEMPFAIL is reserved here as the wrapper's proof that failure was
+  # injected only after both revisions and all functional smokes succeeded.
+  exit 75
 fi
 
 deployment_finished=1

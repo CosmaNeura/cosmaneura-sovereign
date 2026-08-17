@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the three persistent, non-secret live-deployment Terraform inputs."""
+"""Validate the persistent, non-secret live-deployment Terraform inputs."""
 from __future__ import annotations
 
 import re
@@ -8,13 +8,15 @@ from pathlib import Path
 
 
 EXPECTED = {
+    "deployment_environment",
+    "azure_deid_service_id",
     "live_apps_enabled",
     "key_vault_secrets_ready",
     "initial_image_ref",
 }
-IMAGE_RE = re.compile(
-    r'^"cosmaneurasovereignprodregistry\.azurecr\.io/'
-    r'cosmaneura/sovereign@sha256:[0-9a-f]{64}"$'
+DEID_RE = re.compile(
+    r'^"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]+/'
+    r'providers/Microsoft\.HealthDataAIServices/deidServices/[^/]+"$'
 )
 
 
@@ -48,7 +50,18 @@ def parse(path: Path) -> dict[str, str]:
     return values
 
 
-def validate(values: dict[str, str]) -> str:
+def validate(values: dict[str, str], expected_environment: str | None = None) -> str:
+    environment_literal = values["deployment_environment"]
+    if environment_literal not in {'"prod"', '"staging"'}:
+        raise InputError("deployment_environment must be exactly prod or staging")
+    environment = environment_literal.strip('"')
+    if expected_environment is not None and environment != expected_environment:
+        raise InputError(
+            f"deployment_environment does not match requested {expected_environment} boundary"
+        )
+    if not DEID_RE.fullmatch(values["azure_deid_service_id"]):
+        raise InputError("azure_deid_service_id must be an explicit DeID resource ID")
+
     enabled = values["live_apps_enabled"]
     ready = values["key_vault_secrets_ready"]
     image = values["initial_image_ref"]
@@ -59,22 +72,34 @@ def validate(values: dict[str, str]) -> str:
             raise InputError(
                 "disabled live apps must keep secrets-ready false and image empty"
             )
-        return "disabled"
+        return f"{environment} disabled"
     if ready != "true":
         raise InputError("live apps require key_vault_secrets_ready=true")
-    if not IMAGE_RE.fullmatch(image):
+    registry = f"cosmaneurasovereign{environment}registry.azurecr.io"
+    image_re = re.compile(
+        rf'^"{re.escape(registry)}/'
+        r'cosmaneura/sovereign@sha256:[0-9a-f]{64}"$'
+    )
+    if not image_re.fullmatch(image):
         raise InputError(
-            "live apps require the exact production ACR repository at an immutable digest"
+            f"live apps require the exact {environment} ACR repository at an immutable digest"
         )
-    return "enabled"
+    return f"{environment} enabled"
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: validate-deployment-inputs.py <deployment.auto.tfvars>", file=sys.stderr)
+    if len(argv) not in {2, 3}:
+        print(
+            "usage: validate-deployment-inputs.py <deployment.auto.tfvars> [prod|staging]",
+            file=sys.stderr,
+        )
+        return 2
+    expected_environment = argv[2] if len(argv) == 3 else None
+    if expected_environment not in {None, "prod", "staging"}:
+        print("expected environment must be prod or staging", file=sys.stderr)
         return 2
     try:
-        status = validate(parse(Path(argv[1])))
+        status = validate(parse(Path(argv[1])), expected_environment)
     except (InputError, OSError) as error:
         print(f"deployment inputs invalid: {error}", file=sys.stderr)
         return 1

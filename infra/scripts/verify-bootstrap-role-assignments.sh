@@ -4,13 +4,22 @@ set -euo pipefail
 
 : "${BOOTSTRAP_OPERATOR_OBJECT_ID:?BOOTSTRAP_OPERATOR_OBJECT_ID is required}"
 
-RESOURCE_GROUP="${RESOURCE_GROUP:-cosmaneura-sovereign-prod}"
-ACR_NAME="${ACR_NAME:-cosmaneurasovereignprodregistry}"
-PROVIDER_IDENTITY="${PROVIDER_IDENTITY:-cosmaneura-sovereign-prod-runtime}"
-PUBLIC_IDENTITY="${PUBLIC_IDENTITY:-cosmaneura-web-prod-runtime}"
-PROVIDER_VAULT="${PROVIDER_VAULT:-cosmasovprodprovider}"
-PUBLIC_VAULT="${PUBLIC_VAULT:-cosmasovprodpublic}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/deployment-context.sh"
+load_deployment_context
+
+RESOURCE_GROUP="${RESOURCE_GROUP:-$EXPECTED_RESOURCE_GROUP}"
+ACR_NAME="${ACR_NAME:-$EXPECTED_ACR_NAME}"
+PROVIDER_IDENTITY="${PROVIDER_IDENTITY:-$EXPECTED_PROVIDER_IDENTITY}"
+PUBLIC_IDENTITY="${PUBLIC_IDENTITY:-$EXPECTED_PUBLIC_IDENTITY}"
+PROVIDER_VAULT="${PROVIDER_VAULT:-$EXPECTED_PROVIDER_VAULT}"
+PUBLIC_VAULT="${PUBLIC_VAULT:-$EXPECTED_PUBLIC_VAULT}"
+require_deployment_value RESOURCE_GROUP "$RESOURCE_GROUP" "$EXPECTED_RESOURCE_GROUP"
+require_deployment_value ACR_NAME "$ACR_NAME" "$EXPECTED_ACR_NAME"
+require_deployment_value PROVIDER_IDENTITY "$PROVIDER_IDENTITY" "$EXPECTED_PROVIDER_IDENTITY"
+require_deployment_value PUBLIC_IDENTITY "$PUBLIC_IDENTITY" "$EXPECTED_PUBLIC_IDENTITY"
+require_deployment_value PROVIDER_VAULT "$PROVIDER_VAULT" "$EXPECTED_PROVIDER_VAULT"
+require_deployment_value PUBLIC_VAULT "$PUBLIC_VAULT" "$EXPECTED_PUBLIC_VAULT"
 
 for command in az; do
   command -v "$command" >/dev/null || {
@@ -39,6 +48,8 @@ require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$acr_scope" "AcrPush"
 require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$acr_scope" "Container Registry Tasks Contributor"
 require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$provider_vault_scope" "Key Vault Secrets Officer"
 require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$public_vault_scope" "Key Vault Secrets Officer"
-"$HERE/verify-runtime-role-boundaries.sh"
+DEPLOYMENT_ENVIRONMENT="$DEPLOYMENT_ENVIRONMENT" \
+DEID_SERVICE_ID="${DEID_SERVICE_ID:?DEID_SERVICE_ID is required}" \
+  "$HERE/verify-runtime-role-boundaries.sh"
 
 echo "all bootstrap role assignments are visible; allow Azure data-plane propagation before continuing" >&2

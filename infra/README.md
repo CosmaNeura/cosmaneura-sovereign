@@ -1,6 +1,6 @@
 # infra/ — Sovereign on Azure Container Apps
 
-Standalone OpenTofu root that deploys the Sovereign as an **isolated**
+Standalone, explicitly environment-selected OpenTofu root that deploys the Sovereign as an **isolated**
 microservice: its own resource group and registry plus separate provider/public
 Container App Environments, identities, Key Vaults, and Log Analytics workspaces.
 It is separate from the main app (`../../cosmaneura/infra`). Rationale
@@ -17,16 +17,20 @@ after bootstrap.
 
 | Resource | Name |
 |---|---|
-| Resource group | `cosmaneura-sovereign-prod` |
-| Provider/public Log Analytics | `cosmaneura-sovereign-prod-logs` / `cosmaneura-web-prod-logs` |
-| Container registry (ACR) | `cosmaneurasovereignprodregistry` |
-| Provider/public environments | `cosmaneura-sovereign-prod-app-environment` / `cosmaneura-web-prod-app-environment` |
-| Provider/public apps | `cosmaneura-sovereign-prod-app` / `cosmaneura-web-prod-app` |
-| Provider/public Key Vaults | `cosmasovprodprovider` / `cosmasovprodpublic` |
-| GitHub OIDC identity + role assignments | `cosmaneura-sovereign-prod-gha-identity` |
+| Resource group | `cosmaneura-sovereign-<prod\|staging>` |
+| Provider/public Log Analytics | `cosmaneura-sovereign-<env>-logs` / `cosmaneura-web-<env>-logs` |
+| Container registry (ACR) | `cosmaneurasovereign<env>registry` |
+| Provider/public environments | `cosmaneura-sovereign-<env>-app-environment` / `cosmaneura-web-<env>-app-environment` |
+| Provider/public apps | `cosmaneura-sovereign-<env>-app` / `cosmaneura-web-<env>-app` |
+| Provider/public Key Vaults | `cosmasov<env>provider` / `cosmasov<env>public` |
+| GitHub OIDC identity + role assignments | `cosmaneura-sovereign-<env>-gha-identity` |
 
-State lives in the **existing** `cosmaneuratfstate` storage account under key
-`sovereign-prod.tfstate`, so no new backend bootstrap is needed.
+State lives in the **existing** `cosmaneuratfstate` storage account under an
+environment-exact key: `sovereign-prod.tfstate` or
+`sovereign-staging.tfstate`. There is no default environment. Always initialize
+with `./scripts/init-environment.sh <prod|staging>`; the script and preflight
+prove the backend key, and a prevent-destroy state guard rejects switching an
+initialized state to the other environment.
 
 ## Prerequisites
 
@@ -35,12 +39,14 @@ State lives in the **existing** `cosmaneuratfstate` storage account under key
   one supported Nixpacks 1.41.0 release asset, verifies its published SHA-256,
   normalizes its Dockerfile/context, and queues `az acr build`. Local Docker and
   `yq` are not required.
-- Copy both production env examples. Non-secret allowlisted values are literals;
+- Copy the two env examples for the selected boundary. Non-secret allowlisted values are literals;
   runtime secret sources remain `op://` references for the Key Vault sync.
   The canonical 44-character Fernet record-grant key is provider-only and must
   never appear in the public env, vault, app, Terraform inputs, or command
   arguments.
-- Copy `deployment.auto.tfvars.example` to ignored `deployment.auto.tfvars` and
+- Copy `deployment.auto.tfvars.example` (production) or
+  `deployment.staging.auto.tfvars.example` to ignored
+  `deployment.auto.tfvars` and
   leave its fail-closed values unchanged while bootstrapping foundations.
 
 ## Deploy
@@ -52,10 +58,11 @@ State lives in the **existing** `cosmaneuratfstate` storage account under key
    ACR, vaults, and both runtime identities; the apps cannot be created yet.
    Confirm all assignments are visible and allow Azure data-plane propagation
    before continuing.
-2. Build the first digest: `REGISTRY=<name>.azurecr.io
+2. Build the first digest: `DEPLOYMENT_ENVIRONMENT=<prod|staging>
+   REGISTRY=<name>.azurecr.io
    ./scripts/build-bootstrap-image.sh`. Capture its single stdout line.
 3. Seed the exact provider and public vaults with
-   `./scripts/sync-key-vault-secrets.sh <mount> <vault-name>`, then run
+   `./scripts/sync-key-vault-secrets.sh <prod|staging> <mount> <vault-name>`, then run
    `./scripts/verify-key-vault-boundaries.sh`. It requires the exact closed
    inventory and proves the public vault has no Athena credential metadata.
 4. After BAA, Clerk, exact role/secret boundaries, and synthetic-record gates
@@ -94,3 +101,6 @@ run from a reviewed private operator terminal.
 
 These pinned public/provider processes do not call the platform Agent API.
 Real-PHI and multi-tenant EHR authority remain prohibited and out of scope.
+
+The full non-production live-smoke and forced paired-rollback procedure is in
+[`../STAGING_REHEARSAL.md`](../STAGING_REHEARSAL.md).

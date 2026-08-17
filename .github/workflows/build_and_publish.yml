@@ -70,6 +70,10 @@ jobs:
   infrastructure:
     name: OpenTofu
     runs-on: ubuntu-latest
+    env:
+      # CI validates production configuration explicitly; the Terraform root
+      # itself has no default deployment boundary.
+      TF_VAR_deployment_environment: prod
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -99,10 +103,12 @@ jobs:
       contents: read
       id-token: write # required for Azure OIDC federation (no stored creds)
     env:
+      DEPLOYMENT_ENVIRONMENT: prod
       RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'cosmaneura-sovereign-prod' }}
       PROVIDER_APP: ${{ vars.AZURE_PROVIDER_CONTAINER_APP || 'cosmaneura-sovereign-prod-app' }}
       PUBLIC_APP: ${{ vars.AZURE_PUBLIC_CONTAINER_APP || 'cosmaneura-web-prod-app' }}
       REGISTRY: ${{ vars.CONTAINER_REGISTRY_HOST }} # e.g. cosmaneurasovereignprodregistry.azurecr.io
+      REGISTRY_SERVER: ${{ vars.CONTAINER_REGISTRY_HOST }}
       IMAGE_REPO: cosmaneura/sovereign
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

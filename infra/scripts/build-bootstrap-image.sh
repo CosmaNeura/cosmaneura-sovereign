@@ -2,9 +2,14 @@
 # Build and push the first immutable image before Terraform creates either app.
 set -euo pipefail
 
+: "${DEPLOYMENT_ENVIRONMENT:?DEPLOYMENT_ENVIRONMENT is required}"
 : "${REGISTRY:?REGISTRY is required (for example, name.azurecr.io)}"
 IMAGE_REPO="${IMAGE_REPO:-cosmaneura/sovereign}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HERE="$ROOT/infra/scripts"
+source "$HERE/deployment-context.sh"
+load_deployment_context
+require_deployment_value REGISTRY "$REGISTRY" "$EXPECTED_REGISTRY_SERVER"
 
 for command in az curl git python3 tar; do
   command -v "$command" >/dev/null || {

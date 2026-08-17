@@ -14,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "infra" / "scripts" / "deploy-dual.sh"
+REHEARSE = ROOT / "infra" / "scripts" / "rehearse-staging-rollback.sh"
 
 
 def _make_executable(path: Path, source: str) -> None:
@@ -78,15 +79,19 @@ elif args[:2] == ["containerapp", "show"]:
         print("provider.example" if name == os.environ["PROVIDER_APP"] else "public.example")
     elif "identity:identity" in query:
         provider = name == os.environ["PROVIDER_APP"]
+        environment = os.environ["DEPLOYMENT_ENVIRONMENT"]
         identity_name = (
-            "cosmaneura-sovereign-prod-runtime"
-            if provider else "cosmaneura-web-prod-runtime"
+            f"cosmaneura-sovereign-{{environment}}-runtime"
+            if provider else f"cosmaneura-web-{{environment}}-runtime"
         )
         environment_name = (
-            "cosmaneura-sovereign-prod-app-environment"
-            if provider else "cosmaneura-web-prod-app-environment"
+            f"cosmaneura-sovereign-{{environment}}-app-environment"
+            if provider else f"cosmaneura-web-{{environment}}-app-environment"
         )
-        vault = "cosmasovprodprovider" if provider else "cosmasovprodpublic"
+        vault = (
+            f"cosmasov{{environment}}provider"
+            if provider else f"cosmasov{{environment}}public"
+        )
         runtime_identity_id = identity_id(identity_name)
         secret_names = ["azure-openai-api-key", "magisterium-api-key"]
         if provider:
@@ -112,8 +117,8 @@ elif args[:2] == ["containerapp", "show"]:
             }} for secret in secret_names],
             "containers": [{{
                 "name": (
-                    "cosmaneura-sovereign-prod-app-web"
-                    if provider else "cosmaneura-web-prod-web"
+                    f"cosmaneura-sovereign-{{environment}}-app-web"
+                    if provider else f"cosmaneura-web-{{environment}}-web"
                 ),
                 "env": [{{
                     "name": secret.upper().replace("-", "_"),
@@ -192,15 +197,16 @@ def _deploy_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     env = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        "RESOURCE_GROUP": "rg-test",
-        "PROVIDER_APP": "provider-app",
-        "PUBLIC_APP": "public-app",
-        "REGISTRY_SERVER": "testregistry.azurecr.io",
+        "DEPLOYMENT_ENVIRONMENT": "staging",
+        "RESOURCE_GROUP": "cosmaneura-sovereign-staging",
+        "PROVIDER_APP": "cosmaneura-sovereign-staging-app",
+        "PUBLIC_APP": "cosmaneura-web-staging-app",
+        "REGISTRY_SERVER": "cosmaneurasovereignstagingregistry.azurecr.io",
         "IMAGE_REPO": "repo",
-        "IMAGE_REF": f"testregistry.azurecr.io/repo@{digest}",
+        "IMAGE_REF": f"cosmaneurasovereignstagingregistry.azurecr.io/repo@{digest}",
         "REVISION_SUFFIX": "r-12345-1",
-        "OLD_PROVIDER": "testregistry.azurecr.io/repo@sha256:" + "a" * 64,
-        "OLD_PUBLIC": "testregistry.azurecr.io/repo@sha256:" + "b" * 64,
+        "OLD_PROVIDER": "cosmaneurasovereignstagingregistry.azurecr.io/repo@sha256:" + "a" * 64,
+        "OLD_PUBLIC": "cosmaneurasovereignstagingregistry.azurecr.io/repo@sha256:" + "b" * 64,
         "FAKE_LOG": str(log),
         "SMOKE_LOG": str(tmp_path / "smoke.log"),
         "SMOKE_PYTHON": str(bin_dir / "smoke-python"),
@@ -218,8 +224,8 @@ def test_dual_deploy_uses_one_digest_for_both_mounts(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     lines = log.read_text().splitlines()
     assert lines == [
-        f"provider-app {env['IMAGE_REF']} r-12345-1-p",
-        f"public-app {env['IMAGE_REF']} r-12345-1-u",
+        f"{env['PROVIDER_APP']} {env['IMAGE_REF']} r-12345-1-p",
+        f"{env['PUBLIC_APP']} {env['IMAGE_REF']} r-12345-1-u",
     ]
 
 
@@ -230,8 +236,8 @@ def test_failure_rolls_both_mounts_back_to_immutable_images(tmp_path: Path) -> N
     assert result.returncode == 1
     lines = log.read_text().splitlines()
     assert lines[-2:] == [
-        f"provider-app {env['OLD_PROVIDER']} rb-r-12345-1-p",
-        f"public-app {env['OLD_PUBLIC']} rb-r-12345-1-u",
+        f"{env['PROVIDER_APP']} {env['OLD_PROVIDER']} rb-r-12345-1-p",
+        f"{env['PUBLIC_APP']} {env['OLD_PUBLIC']} rb-r-12345-1-u",
     ]
 
 
@@ -245,9 +251,71 @@ def test_functional_smoke_failure_rolls_both_mounts_back(tmp_path: Path) -> None
         str(ROOT / "tools" / "smoke_labs.py"),
     ]
     assert log.read_text().splitlines()[-2:] == [
-        f"provider-app {env['OLD_PROVIDER']} rb-r-12345-1-p",
-        f"public-app {env['OLD_PUBLIC']} rb-r-12345-1-u",
+        f"{env['PROVIDER_APP']} {env['OLD_PROVIDER']} rb-r-12345-1-p",
+        f"{env['PUBLIC_APP']} {env['OLD_PUBLIC']} rb-r-12345-1-u",
     ]
+
+
+def test_staging_rehearsal_forces_rollback_only_after_live_smokes(
+    tmp_path: Path,
+) -> None:
+    env, log = _deploy_env(tmp_path)
+    env["OLD_PUBLIC"] = env["OLD_PROVIDER"]
+    env["SOVEREIGN_REHEARSAL_FORCE_ROLLBACK"] = "true"
+    result = subprocess.run([DEPLOY], env=env, text=True, capture_output=True)
+    assert result.returncode == 75, result.stderr
+    assert (tmp_path / "smoke.log").read_text().splitlines() == [
+        str(ROOT / "tools" / "smoke_live.py"),
+        str(ROOT / "tools" / "smoke_labs.py"),
+    ]
+    assert log.read_text().splitlines()[-2:] == [
+        f"{env['PROVIDER_APP']} {env['OLD_PROVIDER']} rb-r-12345-1-p",
+        f"{env['PUBLIC_APP']} {env['OLD_PUBLIC']} rb-r-12345-1-u",
+    ]
+
+
+def test_staging_rehearsal_wrapper_retains_secret_free_evidence(
+    tmp_path: Path,
+) -> None:
+    env, log = _deploy_env(tmp_path)
+    env["IMAGE_REPO"] = "cosmaneura/sovereign"
+    env["IMAGE_REF"] = env["IMAGE_REF"].replace(
+        "/repo@", "/cosmaneura/sovereign@"
+    )
+    env["OLD_PROVIDER"] = env["OLD_PROVIDER"].replace(
+        "/repo@", "/cosmaneura/sovereign@"
+    )
+    env["OLD_PUBLIC"] = env["OLD_PROVIDER"]
+    evidence = tmp_path / "evidence" / "paired-rollback.json"
+    env["REHEARSAL_EVIDENCE_PATH"] = str(evidence)
+    result = subprocess.run([REHEARSE], env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(evidence.read_text())
+    assert payload["environment"] == "staging"
+    assert payload["result"] == "passed"
+    assert payload["candidate_image"] == env["IMAGE_REF"]
+    assert payload["before"]["paired_image"] == env["OLD_PROVIDER"]
+    assert payload["after"]["paired_image"] == env["OLD_PROVIDER"]
+    serialized = evidence.read_text()
+    assert env["SOVEREIGN_PROVIDER_TOKEN"] not in serialized
+    assert env["SOVEREIGN_NON_PROVIDER_TOKEN"] not in serialized
+    assert env["SOVEREIGN_SYNTHETIC_RECORD_GRANT"] not in serialized
+    assert log.read_text().splitlines()[-2:] == [
+        f"{env['PROVIDER_APP']} {env['OLD_PROVIDER']} rb-r-12345-1-p",
+        f"{env['PUBLIC_APP']} {env['OLD_PUBLIC']} rb-r-12345-1-u",
+    ]
+
+
+def test_forced_rollback_is_refused_outside_staging_before_mutation(
+    tmp_path: Path,
+) -> None:
+    env, log = _deploy_env(tmp_path)
+    env["DEPLOYMENT_ENVIRONMENT"] = "prod"
+    env["SOVEREIGN_REHEARSAL_FORCE_ROLLBACK"] = "true"
+    result = subprocess.run([DEPLOY], env=env, text=True, capture_output=True)
+    assert result.returncode == 2
+    assert not log.exists()
+    assert "allowed only in staging" in result.stderr
 
 
 def test_deploy_refuses_a_mutable_previous_image(tmp_path: Path) -> None:
@@ -323,7 +391,9 @@ def test_terraform_keeps_runtime_application_secrets_out_of_state() -> None:
     assert 'resource "azurerm_role_assignment" "bootstrap_acr_push"' in terraform
     assert 'resource "azurerm_role_assignment" "bootstrap_acr_tasks"' in terraform
     assert "bootstrap_operator_object_id == null ? 0 : 1" in terraform
-    assert terraform.count("prevent_destroy = true") == 4
+    assert terraform.count("prevent_destroy = true") == 5
+    assert 'resource "terraform_data" "state_environment_guard"' in terraform
+    assert "triggers_replace = local.environment" in terraform
     assert "SOVEREIGN_RECORD_GRANT_SECRET" in variables
     assert "SOVEREIGN_RECORD_GRANT_SECRET" not in public_secret_block
     assert "ATHENA_CLIENT_ID" not in public_secret_block
@@ -336,7 +406,7 @@ def test_public_config_export_never_resolves_secret_references(tmp_path: Path) -
     script = ROOT / "infra" / "scripts" / "export-public-env.sh"
 
     ok = subprocess.run(
-        [script, source, "A,B", "public"], text=True, capture_output=True
+        [script, "prod", source, "A,B", "public"], text=True, capture_output=True
     )
     assert ok.returncode != 0
     assert "missing deployment keys" in ok.stderr
@@ -344,7 +414,7 @@ def test_public_config_export_never_resolves_secret_references(tmp_path: Path) -
     complete = tmp_path / "public.env"
     complete.write_text(_deployment_env_text("public"))
     refused = subprocess.run(
-        [script, complete, "MAGISTERIUM_API_KEY", "public"],
+        [script, "prod", complete, "MAGISTERIUM_API_KEY", "public"],
         text=True,
         capture_output=True,
     )
@@ -352,7 +422,7 @@ def test_public_config_export_never_resolves_secret_references(tmp_path: Path) -
     assert "secret reference forbidden" in refused.stderr
 
     ok = subprocess.run(
-        [script, complete, "MOCK_MODE,FAST_MODEL", "public"],
+        [script, "prod", complete, "MOCK_MODE,FAST_MODEL", "public"],
         text=True,
         capture_output=True,
         check=True,
@@ -373,8 +443,9 @@ def test_secret_sync_uses_files_not_cli_values() -> None:
     assert r"[A-Za-z0-9_-]{43}=" in script
     assert "base64.urlsafe_b64encode(decoded).decode() != value" in script
     assert "public)" in script
-    assert 'EXPECTED_VAULT="cosmasovprodprovider"' in script
-    assert 'EXPECTED_VAULT="cosmasovprodpublic"' in script
+    assert 'EXPECTED_VAULT="$EXPECTED_PROVIDER_VAULT"' in script
+    assert 'EXPECTED_VAULT="$EXPECTED_PUBLIC_VAULT"' in script
+    assert "DEPLOYMENT_ENVIRONMENT" in script
     assert "tags.mount" in script
     assert "unexpected secret metadata is present in the selected vault" in script
     assert "validate-deployment-env.py" in script
@@ -406,6 +477,8 @@ def test_bootstrap_role_check_covers_operator_and_both_runtime_identities() -> N
         ROOT / "infra" / "scripts" / "verify-runtime-role-boundaries.sh"
     ).read_text()
     assert boundaries.count("assert_scoped_roles ") == 8
+    assert boundaries.count("assert_direct_inventory ") == 2
+    assert "unexpected direct role assignment" in boundaries
     assert boundaries.count("list_direct_roles ") == 2
     assert "--include-inherited" in boundaries
     assert '--scope "$scope" --all' not in boundaries
@@ -444,6 +517,7 @@ def test_workflow_resolves_digest_and_calls_paired_deployer() -> None:
     workflow = (ROOT / ".github" / "workflows" / "build_and_publish.yml").read_text()
     assert "AZURE_PROVIDER_CONTAINER_APP" in workflow
     assert "AZURE_PUBLIC_CONTAINER_APP" in workflow
+    assert "REGISTRY_SERVER: ${{ vars.CONTAINER_REGISTRY_HOST }}" in workflow
     assert "infra/scripts/build-bootstrap-image.sh" in workflow
     assert 'echo "IMAGE_REF=$IMAGE_REF"' in workflow
     assert "infra/scripts/deploy-dual.sh" in workflow
@@ -472,7 +546,7 @@ def test_workflow_resolves_digest_and_calls_paired_deployer() -> None:
     assert "uv venv --python 3.13 .deploy-venv" not in workflow
 
     terraform = (ROOT / "infra" / "main.tf").read_text()
-    assert 'subject = "repo:${var.github_repository}:environment:production"' in terraform
+    assert 'environment:${local.deployment_context.github_environment}' in terraform
     assert "ref:refs/heads" not in terraform
     assert "environment: production" in workflow
     assert "permissions:\n  contents: read" in workflow
@@ -515,6 +589,7 @@ def _run_env_validator(mount: str, path: Path) -> subprocess.CompletedProcess[st
         [
             sys.executable,
             ROOT / "infra" / "scripts" / "validate-deployment-env.py",
+            "prod",
             mount,
             path,
         ],
@@ -576,10 +651,17 @@ def test_persistent_deployment_inputs_are_fail_closed(tmp_path: Path) -> None:
 
     digest = "a" * 64
     path.write_text(
-        "live_apps_enabled = true\n"
-        "key_vault_secrets_ready = true\n"
-        'initial_image_ref = "cosmaneurasovereignprodregistry.azurecr.io/'
-        f'cosmaneura/sovereign@sha256:{digest}"\n'
+        path.read_text()
+        .replace("live_apps_enabled       = false", "live_apps_enabled       = true")
+        .replace(
+            "key_vault_secrets_ready = false",
+            "key_vault_secrets_ready = true",
+        )
+        .replace(
+            'initial_image_ref        = ""',
+            'initial_image_ref        = "cosmaneurasovereignprodregistry.azurecr.io/'
+            f'cosmaneura/sovereign@sha256:{digest}"',
+        )
     )
     result = subprocess.run(
         [sys.executable, validator, path], text=True, capture_output=True
@@ -607,6 +689,8 @@ def test_procfile_external_parser_preserves_exact_web_command() -> None:
     variables = (ROOT / "infra" / "variables.tf").read_text()
     preflight = (ROOT / "infra" / "scripts" / "preflight.sh").read_text()
     assert "scripts/read-procfile.py" in variables
+    assert 'abspath("${path.module}/scripts/read-procfile.py")' in variables
+    assert 'abspath("${path.module}/../Procfile")' in variables
     assert '"yq"' not in variables
     assert " yq " not in preflight
     assert " docker " not in preflight
