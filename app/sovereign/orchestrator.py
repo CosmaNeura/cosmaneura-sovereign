@@ -54,9 +54,8 @@ from app.compliance.audit import AuditLogger
 from app.compliance.baa import require_baa_covered_llm
 from app.compliance.phi import deidentify
 from app.config import ComplianceProfile, Persona, Settings, get_settings
-from app.schemas import (AgentResult, ChatRequest, ChatResponse, Citation,
-                         DigestRequest, DigestResponse, DoctrinalSensitivity,
-                         Intent)
+from app.schemas import (ChatRequest, ChatResponse, Citation, DigestRequest,
+                         DigestResponse, DoctrinalSensitivity, Intent)
 from app.security.auth import Principal
 from app.security.mount import (MountResolveRequest, MountResolver,
                                 MountResolutionError, PinnedResolver)

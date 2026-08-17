@@ -306,7 +306,7 @@ consolidation — 15 minutes:
 
 1. In ai.azure.com, under the **CosmasCode** resource/project, deploy two
    models with these EXACT deployment names (they're already wired in config):
-   `gpt-5.6-sol` (the newest reasoning-tier GPT) and `gpt-5.4-mini`.
+   `gpt-5.6-sol` (the newest reasoning-tier GPT) and `gpt-5.4-nano`.
    If Foundry rejects those names, accept its defaults and update
    REASONING_MODEL / FAST_MODEL in the env to match verbatim.
 2. portal.azure.com → **CosmasCode** → Keys and Endpoint → **Regenerate
@@ -320,7 +320,7 @@ consolidation — 15 minutes:
    budget (~$10k, 50%/90% email alerts) exists on that subscription.
 
 - Endpoint (wired in config): `https://cosmascode.services.ai.azure.com/openai/v1`
-- Deployments (wired in config): `gpt-5.6-sol` · `gpt-5.4-mini`
+- Deployments (wired in config): `gpt-5.6-sol` · `gpt-5.4-nano`
 - Key: 1Password item `CosmasCode` — never transmitted outside 1Password
 - `tools/smoke_live.py` validates all of the above; a 404 there means a
   deployment-name mismatch and says so in plain language

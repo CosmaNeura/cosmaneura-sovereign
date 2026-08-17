@@ -18,7 +18,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.compliance import safety
 from app.clients.labs import SANDBOX_LABEL
-from app.config import (AuthMode, MountProfile, Persona, get_settings,
+from app.config import (MountProfile, Persona, get_settings,
                         validate_deployment_configuration)
 from app.schemas import (ChatRequest, ChatResponse, DigestRequest,
                          DigestResponse, Intent)
