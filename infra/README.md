@@ -82,8 +82,9 @@ run from a reviewed private operator terminal.
 
 - **GitHub vars.** Wire `AZURE_CLIENT_ID` = `gha_identity_client_id` output,
   `AZURE_TENANT_ID` = `tenant_id` output, registry host = ACR login server.
-- **GitHub repo subject.** `github_repository` / `github_branch` (variables.tf)
-  must match the real repo and branch, or OIDC token exchange fails.
+- **GitHub OIDC subject.** `github_repository` must match the real repo. The
+  federated credential is scoped to the `production` GitHub Environment; that
+  Environment must exist and restrict deployment branches to `main`.
 - **Custom domain.** Bind `sovereign.cosmaneura.com` via
   `azurerm_container_app_custom_domain` + a managed cert (mirror
   `../../cosmaneura/infra/domains.tf`); needs the DNS records created first.

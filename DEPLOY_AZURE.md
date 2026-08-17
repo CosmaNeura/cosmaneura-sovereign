@@ -204,7 +204,9 @@ such secrets and fails before mutation. The reviewed operator path runs
 `deploy-dual.sh` from a private terminal; it requests the two fresh Clerk JWTs
 after both revisions are healthy, then requests the newly minted record grant
 immediately before labs. The prompts are silent and remain inside the paired
-rollback window. A future smoke-time mint exchange may replace this manual step.
+rollback window; Clerk-token reads time out after 120 seconds and the grant read
+after 45 seconds so an abandoned terminal triggers paired rollback. A future
+smoke-time mint exchange may replace this manual step.
 
 ---
 

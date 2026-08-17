@@ -54,7 +54,25 @@ def current_deployment(app):
                 image, suffix = logged_image, logged_suffix
     return image, suffix
 
-if args[:2] == ["containerapp", "show"]:
+def identity_id(identity_name):
+    return (
+        f"/subscriptions/test/resourceGroups/{{os.environ['RESOURCE_GROUP']}}"
+        "/providers/Microsoft.ManagedIdentity/userAssignedIdentities/"
+        f"{{identity_name}}"
+    )
+
+def environment_id(environment_name):
+    return (
+        f"/subscriptions/test/resourceGroups/{{os.environ['RESOURCE_GROUP']}}"
+        "/providers/Microsoft.App/managedEnvironments/"
+        f"{{environment_name}}"
+    )
+
+if args[:2] == ["identity", "show"]:
+    print(identity_id(name))
+elif args[:3] == ["containerapp", "env", "show"]:
+    print(environment_id(name))
+elif args[:2] == ["containerapp", "show"]:
     query = args[args.index("--query") + 1]
     if "ingress.fqdn" in query:
         print("provider.example" if name == os.environ["PROVIDER_APP"] else "public.example")
@@ -64,12 +82,12 @@ if args[:2] == ["containerapp", "show"]:
             "cosmaneura-sovereign-prod-runtime"
             if provider else "cosmaneura-web-prod-runtime"
         )
-        vault = "cosmasovprodprovider" if provider else "cosmasovprodpublic"
-        identity_id = (
-            f"/subscriptions/test/resourceGroups/{{os.environ['RESOURCE_GROUP']}}"
-            "/providers/Microsoft.ManagedIdentity/userAssignedIdentities/"
-            f"{{identity_name}}"
+        environment_name = (
+            "cosmaneura-sovereign-prod-app-environment"
+            if provider else "cosmaneura-web-prod-app-environment"
         )
+        vault = "cosmasovprodprovider" if provider else "cosmasovprodpublic"
+        runtime_identity_id = identity_id(identity_name)
         secret_names = ["azure-openai-api-key", "magisterium-api-key"]
         if provider:
             secret_names += [
@@ -78,23 +96,30 @@ if args[:2] == ["containerapp", "show"]:
                 "sovereign-record-grant-secret",
             ]
         print(json.dumps({{
+            "environment_id": environment_id(environment_name),
             "identity": {{
                 "type": "UserAssigned",
-                "userAssignedIdentities": {{identity_id: {{}}}},
+                "userAssignedIdentities": {{runtime_identity_id: {{}}}},
             }},
             "registries": [{{
                 "server": os.environ["REGISTRY_SERVER"],
-                "identity": identity_id,
+                "identity": runtime_identity_id,
             }}],
             "secrets": [{{
                 "name": secret,
                 "key_vault_url": f"https://{{vault}}.vault.azure.net/secrets/{{secret}}",
-                "identity": identity_id,
+                "identity": runtime_identity_id,
             }} for secret in secret_names],
-            "env": [{{
-                "name": secret.upper().replace("-", "_"),
-                "secret_ref": secret,
-            }} for secret in secret_names],
+            "containers": [{{
+                "name": (
+                    "cosmaneura-sovereign-prod-app-web"
+                    if provider else "cosmaneura-web-prod-web"
+                ),
+                "env": [{{
+                    "name": secret.upper().replace("-", "_"),
+                    "secret_ref": secret,
+                }} for secret in secret_names],
+            }}],
         }}))
     else:
         raise SystemExit(3)
@@ -360,6 +385,9 @@ def test_secret_sync_uses_files_not_cli_values() -> None:
     assert "exact mount allowlists" in boundary
     assert boundary.count("athena-client-") == 2
     assert "az keyvault secret list" in boundary
+    assert "properties.enableRbacAuthorization" in boundary
+    assert "properties.accessPolicies" in boundary
+    assert "RBAC-only authorization" in boundary
     assert "verify-runtime-role-boundaries.sh" in boundary
 
 
@@ -371,16 +399,21 @@ def test_bootstrap_role_check_covers_operator_and_both_runtime_identities() -> N
     assert '"AcrPush"' in script
     assert '"Container Registry Tasks Contributor"' in script
     assert script.count('"Key Vault Secrets Officer"') == 2
+    assert '--scope "$scope" --all' not in script
     assert "verify-runtime-role-boundaries.sh" in script
 
     boundaries = (
         ROOT / "infra" / "scripts" / "verify-runtime-role-boundaries.sh"
     ).read_text()
-    assert boundaries.count("assert_effective_roles ") == 8
+    assert boundaries.count("assert_scoped_roles ") == 8
+    assert boundaries.count("list_direct_roles ") == 2
     assert "--include-inherited" in boundaries
+    assert '--scope "$scope" --all' not in boundaries
+    assert 'startswith(target + "/")' in boundaries
+    assert "for item in inherited" in boundaries
     assert boundaries.count('"Key Vault Secrets User"') >= 2
     assert '"DeID Realtime Data User"' in boundaries
-    assert "custom-role dataAction bypasses" in boundaries
+    assert "Any custom role" in boundaries
     assert "transitiveMemberOf?%24select=id" in boundaries
     assert boundaries.count("assert_no_group_memberships ") == 2
     assert "provider_principal" in boundaries
@@ -411,8 +444,8 @@ def test_workflow_resolves_digest_and_calls_paired_deployer() -> None:
     workflow = (ROOT / ".github" / "workflows" / "build_and_publish.yml").read_text()
     assert "AZURE_PROVIDER_CONTAINER_APP" in workflow
     assert "AZURE_PUBLIC_CONTAINER_APP" in workflow
-    assert "az acr manifest show-metadata" in workflow
-    assert 'echo "IMAGE_REF=$IMAGE@$DIGEST"' in workflow
+    assert "infra/scripts/build-bootstrap-image.sh" in workflow
+    assert 'echo "IMAGE_REF=$IMAGE_REF"' in workflow
     assert "infra/scripts/deploy-dual.sh" in workflow
     assert 'docker tag "$IMAGE:$SHA" "$IMAGE:latest"' not in workflow
     assert "SOVEREIGN_DEPLOY_ENABLED == 'true'" in workflow
@@ -432,6 +465,22 @@ def test_workflow_resolves_digest_and_calls_paired_deployer() -> None:
     assert "secrets.SOVEREIGN_NON_PROVIDER_TOKEN" not in workflow
     assert "secrets.SOVEREIGN_SYNTHETIC_RECORD_GRANT" not in workflow
     assert "/dev/tty" in deployer
+    assert "read -r -s -t 120" in deployer
+    assert "read -r -s -t 45" in deployer
+    assert '"$RUNNER_TEMP/deploy-venv"' in workflow
+    assert "SMOKE_PYTHON: ${{ runner.temp }}/deploy-venv/bin/python" in workflow
+    assert "uv venv --python 3.13 .deploy-venv" not in workflow
+
+    terraform = (ROOT / "infra" / "main.tf").read_text()
+    assert 'subject = "repo:${var.github_repository}:environment:production"' in terraform
+    assert "ref:refs/heads" not in terraform
+    assert "environment: production" in workflow
+    assert "permissions:\n  contents: read" in workflow
+    assert "docker push" not in workflow
+    assert "nixpacks build ." not in workflow
+
+    dockerignore = (ROOT / ".dockerignore").read_text().splitlines()
+    assert ".deploy-venv" in dockerignore
 
     live_boundaries = (
         ROOT / "infra" / "scripts" / "verify-live-app-boundaries.sh"
@@ -439,6 +488,12 @@ def test_workflow_resolves_digest_and_calls_paired_deployer() -> None:
     assert "exactly one user-assigned runtime identity" in live_boundaries
     assert "app secret inventory is not the exact mount allowlist" in live_boundaries
     assert "app registry binding does not use its runtime identity" in live_boundaries
+    assert "az identity show" in live_boundaries
+    assert "az containerapp env show" in live_boundaries
+    assert "properties.environmentId" in live_boundaries
+    assert "properties.managedEnvironmentId" in live_boundaries
+    assert "app is attached to the wrong mount environment" in live_boundaries
+    assert "app must have exactly one expected mount container" in live_boundaries
 
 
 def _deployment_env_text(mount: str) -> str:
@@ -595,6 +650,21 @@ def test_nixpacks_remote_context_is_validated_and_normalized(tmp_path: Path) -> 
     (generated / "build.sh").write_text(shlex.join(command))
 
     helper = ROOT / "infra" / "scripts" / "finalize-nixpacks-context.py"
+    original_dockerfile = dockerfile.read_text()
+    dockerfile.write_text(
+        original_dockerfile.replace(
+            "nixpacks:ubuntu-1745885067", "nixpacks:ubuntu-unreviewed"
+        )
+    )
+    rejected = subprocess.run(
+        [sys.executable, helper, source, image, revision, "1700000000"],
+        text=True,
+        capture_output=True,
+    )
+    assert rejected.returncode == 1
+    assert "base image drifted" in rejected.stderr
+    dockerfile.write_text(original_dockerfile)
+
     result = subprocess.run(
         [sys.executable, helper, source, image, revision, "1700000000"],
         text=True,
@@ -604,6 +674,11 @@ def test_nixpacks_remote_context_is_validated_and_normalized(tmp_path: Path) -> 
     assert not (generated / "build.sh").exists()
     assert (
         f'LABEL org.opencontainers.image.revision="{revision}"'
+        in dockerfile.read_text()
+    )
+    assert (
+        "FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067@sha256:"
+        "d45c89d80e13d7ad0fd555b5130f22a866d9dd10e861f589932303ef2314c7de"
         in dockerfile.read_text()
     )
     assert int(dockerfile.stat().st_mtime) == 1_700_000_000

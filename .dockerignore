@@ -3,6 +3,7 @@
 .env
 .env.*
 .venv
+.deploy-venv
 __pycache__
 .pytest_cache
 .ruff_cache

@@ -115,8 +115,10 @@ Actions → Variables), so no cloud credentials are stored:
       `cosmaneurasovereignprodregistry.azurecr.io`)
 - [ ] (optional, defaults exist) `AZURE_RESOURCE_GROUP`,
       `AZURE_PROVIDER_CONTAINER_APP`, `AZURE_PUBLIC_CONTAINER_APP`
-- [ ] Confirm `github_repository` / `github_branch` in `infra/variables.tf`
-      match the real repo/branch (federated-credential subject), else OIDC fails.
+- [ ] Confirm `github_repository` matches the real repo. Create the GitHub
+      Environment named exactly `production` and restrict its deployment
+      branches to `main`; the Azure federated credential trusts that exact
+      environment-scoped OIDC subject.
 - [ ] Do **not** store Clerk JWTs or record grants in GitHub. They are too
       short-lived to survive checkout/build/rollout and exceed the minimum
       secret scope. Keep `SOVEREIGN_DEPLOY_ENABLED=false`; the unattended job
@@ -135,7 +137,9 @@ Actions → Variables), so no cloud credentials are stored:
       asks silently for fresh correct-role/wrong-role Clerk JWTs after both
       revisions are healthy, runs the live smoke, then asks for the newly minted
       60-second host grant immediately before labs. Any read/smoke failure rolls
-      both apps back; no credential enters argv, history, or logs.
+      both apps back; no credential enters argv, history, or logs. Have both
+      Clerk tokens ready before starting: those prompts time out after 120
+      seconds, and the fresh record-grant prompt times out after 45 seconds.
 - [ ] Check both `/healthz` endpoints: public must report mount `public`, provider
       must report `provider_assistant`, and both must report `mock_mode=false`.
 - [ ] Keep `SOVEREIGN_DEPLOY_ENABLED` false until the Azure/BAA, exact secret and

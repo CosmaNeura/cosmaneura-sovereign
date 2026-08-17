@@ -9,6 +9,10 @@ set -euo pipefail
 
 PROVIDER_IDENTITY="${PROVIDER_IDENTITY:-cosmaneura-sovereign-prod-runtime}"
 PUBLIC_IDENTITY="${PUBLIC_IDENTITY:-cosmaneura-web-prod-runtime}"
+PROVIDER_ENVIRONMENT="${PROVIDER_ENVIRONMENT:-cosmaneura-sovereign-prod-app-environment}"
+PUBLIC_ENVIRONMENT="${PUBLIC_ENVIRONMENT:-cosmaneura-web-prod-app-environment}"
+PROVIDER_CONTAINER="${PROVIDER_CONTAINER:-cosmaneura-sovereign-prod-app-web}"
+PUBLIC_CONTAINER="${PUBLIC_CONTAINER:-cosmaneura-web-prod-web}"
 PROVIDER_VAULT="${PROVIDER_VAULT:-cosmasovprodprovider}"
 PUBLIC_VAULT="${PUBLIC_VAULT:-cosmasovprodpublic}"
 REGISTRY_SERVER="${REGISTRY_SERVER:-cosmaneurasovereignprodregistry.azurecr.io}"
@@ -21,35 +25,47 @@ command -v az >/dev/null || {
 app_boundary_json() {
   az containerapp show \
     --name "$1" --resource-group "$RESOURCE_GROUP" \
-    --query '{identity:identity,registries:properties.configuration.registries[].{server:server,identity:identity},secrets:properties.configuration.secrets[].{name:name,key_vault_url:keyVaultUrl,identity:identity},env:properties.template.containers[0].env[].{name:name,secret_ref:secretRef}}' \
+    --query '{environment_id:properties.environmentId,managed_environment_id:properties.managedEnvironmentId,identity:identity,registries:properties.configuration.registries[].{server:server,identity:identity},secrets:properties.configuration.secrets[].{name:name,key_vault_url:keyVaultUrl,identity:identity},containers:properties.template.containers[].{name:name,env:env[].{name:name,secret_ref:secretRef}}}' \
     --output json
 }
 
 verify_app() {
-  local app="$1" identity_name="$2" vault_name="$3" secret_names="$4" snapshot
+  local app="$1" identity_name="$2" environment_name="$3" container_name="$4"
+  local vault_name="$5" secret_names="$6"
+  local expected_identity_id expected_environment_id snapshot
+  expected_identity_id="$(az identity show \
+    --name "$identity_name" --resource-group "$RESOURCE_GROUP" \
+    --query id --output tsv)"
+  expected_environment_id="$(az containerapp env show \
+    --name "$environment_name" --resource-group "$RESOURCE_GROUP" \
+    --query id --output tsv)"
+  [[ -n "$expected_identity_id" && -n "$expected_environment_id" ]] || {
+    echo "could not resolve the exact runtime identity or app environment" >&2
+    return 1
+  }
   snapshot="$(app_boundary_json "$app")"
   python3 - \
-    "$snapshot" "$RESOURCE_GROUP" "$identity_name" "$vault_name" \
-    "$REGISTRY_SERVER" "$secret_names" <<'PY'
+    "$snapshot" "$expected_identity_id" "$expected_environment_id" \
+    "$container_name" "$vault_name" "$REGISTRY_SERVER" "$secret_names" <<'PY'
 import json
 import sys
 
 payload = json.loads(sys.argv[1])
-resource_group, identity_name, vault_name, registry = sys.argv[2:6]
-secret_names = sorted(name for name in sys.argv[6].splitlines() if name)
-expected_suffix = (
-    f"/resourcegroups/{resource_group.casefold()}"
-    f"/providers/microsoft.managedidentity/userassignedidentities/"
-    f"{identity_name.casefold()}"
-)
+expected_identity_id, expected_environment_id, container_name, vault_name, registry = sys.argv[2:7]
+secret_names = sorted(name for name in sys.argv[7].splitlines() if name)
 
 identity = payload.get("identity") or {}
 identity_ids = list((identity.get("userAssignedIdentities") or {}).keys())
 if identity.get("type") != "UserAssigned" or len(identity_ids) != 1:
     raise SystemExit("app must have exactly one user-assigned runtime identity")
 runtime_id = identity_ids[0]
-if not runtime_id.casefold().endswith(expected_suffix):
+if runtime_id.casefold() != expected_identity_id.casefold():
     raise SystemExit("app has the wrong mount runtime identity")
+actual_environment_id = (
+    payload.get("environment_id") or payload.get("managed_environment_id") or ""
+)
+if actual_environment_id.casefold() != expected_environment_id.casefold():
+    raise SystemExit("app is attached to the wrong mount environment")
 
 registries = payload.get("registries") or []
 if len(registries) != 1:
@@ -72,9 +88,23 @@ for item in secrets:
     ):
         raise SystemExit("app secret reference crossed its identity or vault boundary")
 
+containers = payload.get("containers") or []
+if (
+    len(containers) != 1
+    or not isinstance(containers[0], dict)
+    or containers[0].get("name") != container_name
+):
+    raise SystemExit("app must have exactly one expected mount container")
+container_env = containers[0].get("env") or []
+env_names = [item.get("name") for item in container_env]
+if (
+    any(not isinstance(name, str) or not name for name in env_names)
+    or len(env_names) != len(set(env_names))
+):
+    raise SystemExit("app container has invalid or duplicate environment names")
 secret_env = {
     item.get("name"): item.get("secret_ref")
-    for item in (payload.get("env") or [])
+    for item in container_env
     if item.get("secret_ref") is not None
 }
 expected_env = {name.upper().replace("-", "_"): name for name in secret_names}
@@ -90,6 +120,9 @@ provider_secrets="$(printf '%s\n' \
 public_secrets="$(printf '%s\n' azure-openai-api-key magisterium-api-key | LC_ALL=C sort)"
 
 verify_app \
-  "$PROVIDER_APP" "$PROVIDER_IDENTITY" "$PROVIDER_VAULT" "$provider_secrets"
-verify_app "$PUBLIC_APP" "$PUBLIC_IDENTITY" "$PUBLIC_VAULT" "$public_secrets"
+  "$PROVIDER_APP" "$PROVIDER_IDENTITY" "$PROVIDER_ENVIRONMENT" \
+  "$PROVIDER_CONTAINER" "$PROVIDER_VAULT" "$provider_secrets"
+verify_app \
+  "$PUBLIC_APP" "$PUBLIC_IDENTITY" "$PUBLIC_ENVIRONMENT" \
+  "$PUBLIC_CONTAINER" "$PUBLIC_VAULT" "$public_secrets"
 echo "live apps retain exact mount-specific identity and secret bindings" >&2

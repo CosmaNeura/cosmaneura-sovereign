@@ -367,14 +367,24 @@ resource "azurerm_federated_identity_credential" "ghactions" {
   resource_group_name = azurerm_resource_group.main.name
   audience            = ["api://AzureADTokenExchange"]
   issuer              = "https://token.actions.githubusercontent.com"
-  # Casing must match the GitHub repo exactly or token exchange fails.
-  subject = "repo:${var.github_repository}:ref:refs/heads/${var.github_branch}"
+  # The deploy job uses the protected `production` GitHub Environment, so its
+  # OIDC subject is environment-scoped rather than branch-scoped. Protect that
+  # environment so only main may deploy.
+  subject = "repo:${var.github_repository}:environment:production"
 }
 
 # Push images to ACR.
 resource "azurerm_role_assignment" "github_acr_push" {
   scope                = azurerm_container_registry.main.id
   role_definition_name = "AcrPush"
+  principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
+}
+
+# The shared checksum-pinned build path uses ACR remote builds instead of a
+# privileged runner Docker daemon.
+resource "azurerm_role_assignment" "github_acr_tasks" {
+  scope                = azurerm_container_registry.main.id
+  role_definition_name = "Container Registry Tasks Contributor"
   principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
 }
 

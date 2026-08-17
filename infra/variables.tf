@@ -8,17 +8,12 @@ variable "tags" {
   }
 }
 
-# GitHub repo (OWNER/REPO) and branch allowed to deploy via OIDC federation.
+# GitHub repo (OWNER/REPO) allowed to deploy through the protected production
+# Environment's OIDC subject.
 variable "github_repository" {
   description = "GitHub repo authorized to push images / deploy, as OWNER/REPO"
   type        = string
   default     = "CosmaNeura/cosmaneura-sovereign"
-}
-
-variable "github_branch" {
-  description = "Branch whose workflow runs may deploy"
-  type        = string
-  default     = "main"
 }
 
 variable "key_vault_secrets_ready" {

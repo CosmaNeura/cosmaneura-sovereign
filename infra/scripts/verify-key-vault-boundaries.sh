@@ -14,13 +14,24 @@ command -v az >/dev/null || {
 
 verify_vault() {
   local vault="$1" expected_tag="$2" expected_names="$3"
-  local actual_tag inventory
-  actual_tag="$(az keyvault show \
-    --name "$vault" --query 'tags.mount' --output tsv)"
-  [[ "$actual_tag" == "$expected_tag" ]] || {
-    echo "vault mount tag is invalid" >&2
-    exit 1
-  }
+  local metadata inventory
+  metadata="$(az keyvault show \
+    --name "$vault" \
+    --query '{mount:tags.mount,rbac:properties.enableRbacAuthorization,access_policies:properties.accessPolicies}' \
+    --output json)"
+  python3 - "$metadata" "$expected_tag" <<'PY'
+import json
+import sys
+
+metadata = json.loads(sys.argv[1])
+if (
+    not isinstance(metadata, dict)
+    or metadata.get("mount") != sys.argv[2]
+    or metadata.get("rbac") is not True
+    or metadata.get("access_policies") != []
+):
+    raise SystemExit("vault must use exact mount tagging and RBAC-only authorization")
+PY
   inventory="$(az keyvault secret list \
     --vault-name "$vault" \
     --query '[].{name:name,enabled:attributes.enabled,expires:attributes.expires}' \

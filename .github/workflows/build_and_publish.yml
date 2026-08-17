@@ -18,6 +18,10 @@ concurrency:
   # with the safety-critical deployment job.
   cancel-in-progress: false
 
+# PR-controlled checks must never inherit a repository-default write token.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Quality & tests
@@ -111,25 +115,11 @@ jobs:
           python-version: "3.13"
       - name: Install locked smoke dependencies
         run: |
-          uv venv --python 3.13 .deploy-venv
-          uv pip install --python .deploy-venv \
+          uv venv --python 3.13 "$RUNNER_TEMP/deploy-venv"
+          uv pip install --python "$RUNNER_TEMP/deploy-venv" \
             --require-hashes --only-binary=:all: \
             -r requirements.lock
-          uv pip check --python .deploy-venv
-
-      - name: Install Nixpacks 1.41.0
-        run: |
-          archive="$RUNNER_TEMP/nixpacks-v1.41.0.tar.gz"
-          install_dir="$RUNNER_TEMP/nixpacks-v1.41.0"
-          curl --fail --location --silent --show-error \
-            --output "$archive" \
-            https://github.com/railwayapp/nixpacks/releases/download/v1.41.0/nixpacks-v1.41.0-x86_64-unknown-linux-gnu.tar.gz
-          echo "194bcad8c379f78a309eee1a88b2e6b2abc59f354efe7ecd7b4bbaf21de99a06  $archive" \
-            | sha256sum --check --strict
-          mkdir -p "$install_dir"
-          tar -xzf "$archive" -C "$install_dir"
-          echo "$install_dir" >> "$GITHUB_PATH"
-          "$install_dir/nixpacks" --version
+          uv pip check --python "$RUNNER_TEMP/deploy-venv"
 
       # OIDC login — uses the federated identity created in infra/main.tf.
       - uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3
@@ -138,34 +128,16 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: ACR login
-        run: az acr login --name "${REGISTRY%%.*}"
-
-      - name: Build & push image
+      - name: Build and push checksum-pinned immutable image
         run: |
-          IMAGE="$REGISTRY/$IMAGE_REPO"
-          SHA="${{ github.sha }}"
-          nixpacks build . \
-            --name "$IMAGE:$SHA" \
-            --platform linux/amd64 \
-            --label org.opencontainers.image.revision="$SHA" \
-            --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}"
-          docker push "$IMAGE:$SHA"
-
-          DIGEST="$(az acr manifest show-metadata \
-            --registry "${REGISTRY%%.*}" \
-            --name "$IMAGE_REPO:$SHA" \
-            --query digest --output tsv)"
-          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "ACR did not return an immutable image digest" >&2
-            exit 1
-          fi
-          echo "IMAGE_REF=$IMAGE@$DIGEST" >> "$GITHUB_ENV"
+          IMAGE_REF="$(REGISTRY="$REGISTRY" IMAGE_REPO="$IMAGE_REPO" \
+            infra/scripts/build-bootstrap-image.sh)"
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
 
       - name: Deploy both mounts with paired rollback
         env:
           REVISION_SUFFIX: r-${{ github.run_id }}-${{ github.run_attempt }}
-          SMOKE_PYTHON: .deploy-venv/bin/python
+          SMOKE_PYTHON: ${{ runner.temp }}/deploy-venv/bin/python
           SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED: ${{ vars.SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED }}
           # Intentionally no Clerk JWTs or record grant here: all are
           # short-lived and must never be persisted as workflow secrets. This

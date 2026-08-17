@@ -26,7 +26,7 @@ require_role() {
   local principal="$1" scope="$2" role="$3"
   local count
   count="$(az role assignment list \
-    --assignee "$principal" --scope "$scope" --all \
+    --assignee "$principal" --scope "$scope" \
     --query "[?roleDefinitionName=='$role'] | length(@)" --output tsv)"
   if [[ ! "$count" =~ ^[1-9][0-9]*$ ]]; then
     echo "missing required scoped role assignment: $role" >&2

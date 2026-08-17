@@ -20,6 +20,11 @@ EXPECTED_BUILD_ARGS = {
     "PYTHONHASHSEED": "random",
     "PYTHONUNBUFFERED": "1",
 }
+EXPECTED_BASE_IMAGE = "ghcr.io/railwayapp/nixpacks:ubuntu-1745885067"
+PINNED_BASE_IMAGE = (
+    EXPECTED_BASE_IMAGE
+    + "@sha256:d45c89d80e13d7ad0fd555b5130f22a866d9dd10e861f589932303ef2314c7de"
+)
 
 
 def _parse_build_script(
@@ -84,6 +89,17 @@ def finalize(source: Path, expected_image: str, revision: str, epoch: int) -> No
     _parse_build_script(source, build_script, expected_image, revision)
 
     content = dockerfile.read_text()
+    lines = content.splitlines()
+    from_indexes = [
+        index for index, line in enumerate(lines) if line.startswith("FROM ")
+    ]
+    if (
+        len(from_indexes) != 1
+        or lines[from_indexes[0]] != f"FROM {EXPECTED_BASE_IMAGE}"
+    ):
+        raise ValueError("generated Dockerfile base image drifted")
+    lines[from_indexes[0]] = f"FROM {PINNED_BASE_IMAGE}"
+    content = "\n".join(lines) + ("\n" if content.endswith("\n") else "")
     locked_install = (
         "python -m pip install --require-hashes --only-binary=:all: "
         "-r requirements.lock"

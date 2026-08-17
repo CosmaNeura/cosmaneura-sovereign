@@ -33,28 +33,63 @@ if [[ -z "$acr_scope" || -z "$provider_vault_scope" || -z "$public_vault_scope" 
   exit 1
 fi
 
-assert_effective_roles() {
-  local principal="$1" scope="$2" expected="$3" label="$4" assignments
-  # Reject every unexpected direct OR inherited assignment, not only known
-  # built-in role names. That also closes custom-role dataAction bypasses.
-  assignments="$(az role assignment list \
-    --assignee-object-id "$principal" --scope "$scope" --all --include-inherited \
+list_direct_roles() {
+  # Fetch every direct assignment in the current subscription once per UAI.
+  # Scope-local queries omit secret-level descendants; the validator below
+  # deliberately treats both ancestors and descendants as relevant.
+  az role assignment list \
+    --assignee-object-id "$1" --all --fill-principal-name false \
+    --query '[].{role:roleDefinitionName,scope:scope}' --output json
+}
+
+assert_scoped_roles() {
+  local principal="$1" direct_assignments="$2" scope="$3" expected="$4" label="$5"
+  local inherited_assignments
+  # Require expected built-ins at the exact resource scope. Any custom role or
+  # assignment at a parent/child scope fails closed. Azure resolves management
+  # group and other ancestors for the target query; the subscription-wide list
+  # separately catches per-secret descendants omitted by that query.
+  inherited_assignments="$(az role assignment list \
+    --assignee-object-id "$principal" --scope "$scope" --include-inherited \
     --fill-principal-name false \
     --query '[].{role:roleDefinitionName,scope:scope}' --output json)"
-  python3 - "$assignments" "$expected" "$label" <<'PY'
+  python3 - \
+    "$inherited_assignments" "$direct_assignments" "$scope" "$expected" "$label" <<'PY'
 import json
 import sys
 
-items = json.loads(sys.argv[1])
-if not isinstance(items, list) or any(
-    not isinstance(item, dict) or not isinstance(item.get("role"), str)
-    for item in items
-):
-    raise SystemExit(f"could not prove role boundary: {sys.argv[3]}")
-actual = sorted(item["role"] for item in items)
-expected = sorted(role for role in sys.argv[2].splitlines() if role)
+inherited = json.loads(sys.argv[1])
+direct = json.loads(sys.argv[2])
+
+def valid(items: object) -> bool:
+    return isinstance(items, list) and not any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("role"), str)
+        or not isinstance(item.get("scope"), str)
+        for item in items
+    )
+
+if not valid(inherited) or not valid(direct):
+    raise SystemExit(f"could not prove role boundary: {sys.argv[5]}")
+
+target = sys.argv[3].rstrip("/").casefold()
+
+actual = sorted(
+    {
+        (item["role"], item["scope"].rstrip("/").casefold())
+        for item in inherited
+    }
+    | {
+        (item["role"], item["scope"].rstrip("/").casefold())
+        for item in direct
+        if item["scope"].rstrip("/").casefold().startswith(target + "/")
+    }
+)
+expected = sorted(
+    (role, target) for role in sys.argv[4].splitlines() if role
+)
 if actual != expected:
-    raise SystemExit(f"unexpected direct or inherited role boundary: {sys.argv[3]}")
+    raise SystemExit(f"unexpected ancestor, resource, or descendant role boundary: {sys.argv[5]}")
 PY
 }
 
@@ -78,22 +113,33 @@ PY
 assert_no_group_memberships "$provider_principal"
 assert_no_group_memberships "$public_principal"
 
-assert_effective_roles "$provider_principal" "$acr_scope" "AcrPull" "provider ACR"
-assert_effective_roles "$public_principal" "$acr_scope" "AcrPull" "public ACR"
-assert_effective_roles \
-  "$provider_principal" "$provider_vault_scope" "Key Vault Secrets User" \
+provider_assignments="$(list_direct_roles "$provider_principal")"
+public_assignments="$(list_direct_roles "$public_principal")"
+
+assert_scoped_roles \
+  "$provider_principal" "$provider_assignments" "$acr_scope" "AcrPull" "provider ACR"
+assert_scoped_roles \
+  "$public_principal" "$public_assignments" "$acr_scope" "AcrPull" "public ACR"
+assert_scoped_roles \
+  "$provider_principal" "$provider_assignments" \
+  "$provider_vault_scope" "Key Vault Secrets User" \
   "provider identity/provider vault"
-assert_effective_roles "$public_principal" "$provider_vault_scope" "" \
+assert_scoped_roles \
+  "$public_principal" "$public_assignments" "$provider_vault_scope" "" \
   "public identity/provider vault"
-assert_effective_roles \
-  "$public_principal" "$public_vault_scope" "Key Vault Secrets User" \
+assert_scoped_roles \
+  "$public_principal" "$public_assignments" \
+  "$public_vault_scope" "Key Vault Secrets User" \
   "public identity/public vault"
-assert_effective_roles "$provider_principal" "$public_vault_scope" "" \
+assert_scoped_roles \
+  "$provider_principal" "$provider_assignments" "$public_vault_scope" "" \
   "provider identity/public vault"
-assert_effective_roles \
-  "$provider_principal" "$DEID_SERVICE_ID" "DeID Realtime Data User" \
+assert_scoped_roles \
+  "$provider_principal" "$provider_assignments" \
+  "$DEID_SERVICE_ID" "DeID Realtime Data User" \
   "provider identity/DeID"
-assert_effective_roles "$public_principal" "$DEID_SERVICE_ID" "" \
+assert_scoped_roles \
+  "$public_principal" "$public_assignments" "$DEID_SERVICE_ID" "" \
   "public identity/DeID"
 
 echo "runtime identities satisfy exact mount-specific role boundaries" >&2

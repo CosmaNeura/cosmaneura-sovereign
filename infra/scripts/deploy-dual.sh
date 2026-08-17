@@ -192,10 +192,10 @@ functional_smoke() {
     # These credentials are intentionally requested only after the new
     # revisions are healthy. Reading from the controlling terminal keeps them
     # out of argv, shell history, workflow logs, and persistent secrets.
-    IFS= read -r -s -p "Fresh provider-role Clerk JWT: " \
+    IFS= read -r -s -t 120 -p "Fresh provider-role Clerk JWT: " \
       provider_smoke_token </dev/tty || return 1
     printf '\n' >/dev/tty
-    IFS= read -r -s -p "Fresh non-provider Clerk JWT: " \
+    IFS= read -r -s -t 120 -p "Fresh non-provider Clerk JWT: " \
       non_provider_smoke_token </dev/tty || return 1
     printf '\n' >/dev/tty
   fi
@@ -206,7 +206,7 @@ functional_smoke() {
   if [[ "$SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS" == "true" ]]; then
     # Mint/paste the 60-second record grant only after the live-model checks,
     # immediately before the one bounded EHR request.
-    IFS= read -r -s -p "Fresh synthetic record grant: " \
+    IFS= read -r -s -t 45 -p "Fresh synthetic record grant: " \
       record_smoke_grant </dev/tty || return 1
     printf '\n' >/dev/tty
   fi
