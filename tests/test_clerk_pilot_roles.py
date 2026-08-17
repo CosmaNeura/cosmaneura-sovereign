@@ -317,6 +317,39 @@ def test_reserved_admin_requires_and_accepts_explicit_break_glass() -> None:
     assert "DRY-RUN" in stdout
 
 
+def test_reserved_admin_secondary_email_cannot_bypass_guard() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(
+            200,
+            json=[
+                _user(
+                    "user_Dev1",
+                    "dev@cosmaneura.com",
+                    additional_emails=("dev-pilot-alias@cosmaneura.com",),
+                )
+            ],
+        )
+
+    result, stdout, stderr = _run(
+        [
+            "grant",
+            "--email",
+            "dev-pilot-alias@cosmaneura.com",
+            "--apply",
+        ],
+        httpx.MockTransport(handler),
+    )
+
+    assert result == 2
+    assert stdout == ""
+    assert methods == ["GET"]
+    assert "reserved admin" in stderr
+    assert "break-glass" in stderr
+
+
 def test_secret_can_arrive_on_stdin_and_is_never_rendered() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == f"Bearer {SECRET}"

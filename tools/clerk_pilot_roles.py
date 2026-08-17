@@ -44,6 +44,7 @@ class ClerkUser:
     user_id: str
     email: str
     public_metadata: dict[str, Any]
+    is_reserved_admin: bool
 
 
 @dataclass(frozen=True)
@@ -142,12 +143,13 @@ class ClerkApi:
             addresses = candidate.get("email_addresses")
             if not isinstance(addresses, list):
                 continue
-            exact_match = any(
-                isinstance(address, dict)
-                and isinstance(address.get("email_address"), str)
-                and address["email_address"].strip().casefold() == email
+            normalized_addresses = {
+                address["email_address"].strip().casefold()
                 for address in addresses
-            )
+                if isinstance(address, dict)
+                and isinstance(address.get("email_address"), str)
+            }
+            exact_match = email in normalized_addresses
             if not exact_match:
                 continue
             user_id = candidate.get("id")
@@ -164,6 +166,7 @@ class ClerkApi:
                 user_id=user_id,
                 email=email,
                 public_metadata=dict(metadata),
+                is_reserved_admin=RESERVED_ADMIN_EMAIL in normalized_addresses,
             )
 
         if len(matches) != 1:
@@ -260,11 +263,22 @@ def load_secret(
     return secret
 
 
-def build_plan(api: ClerkApi, operation: str, emails: Sequence[str]) -> list[PlanItem]:
+def build_plan(
+    api: ClerkApi,
+    operation: str,
+    emails: Sequence[str],
+    *,
+    allow_reserved_admin: bool,
+) -> list[PlanItem]:
     users = [api.resolve_exact_user(email) for email in emails]
     user_ids: set[str] = set()
     plan: list[PlanItem] = []
     for user in users:
+        if user.is_reserved_admin and not allow_reserved_admin:
+            raise OperatorError(
+                f"{RESERVED_ADMIN_EMAIL} is a reserved admin; "
+                "use --break-glass-reserved-admin only with explicit approval"
+            )
         if user.user_id in user_ids:
             raise OperatorError("two supplied emails resolve to the same Clerk user")
         user_ids.add(user.user_id)
@@ -287,9 +301,15 @@ def execute(
     operation: str,
     emails: Sequence[str],
     apply: bool,
+    allow_reserved_admin: bool,
     emit: Callable[[str], None],
 ) -> int:
-    plan = build_plan(api, operation, emails)
+    plan = build_plan(
+        api,
+        operation,
+        emails,
+        allow_reserved_admin=allow_reserved_admin,
+    )
     mode = "APPLY" if apply else "DRY-RUN"
     emit(f"{mode}: {operation} provider role for {len(plan)} Clerk user(s)")
     for item in plan:
@@ -380,6 +400,7 @@ def main(
                 operation=args.operation,
                 emails=emails,
                 apply=args.apply,
+                allow_reserved_admin=args.break_glass_reserved_admin,
                 emit=lambda line: print(line, file=stdout),
             )
     except OperatorError as error:
