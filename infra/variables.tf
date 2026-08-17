@@ -26,6 +26,13 @@ variable "github_repository" {
   default     = "CosmaNeura/cosmaneura-sovereign"
 }
 
+variable "github_deploy_enabled" {
+  description = "Optional override for GitHub OIDC deployment resources; defaults on in prod and off in staging"
+  type        = bool
+  default     = null
+  nullable    = true
+}
+
 variable "key_vault_secrets_ready" {
   description = "Operator assertion that both mount-specific vaults contain every required runtime secret"
   type        = bool

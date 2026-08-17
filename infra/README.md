@@ -23,7 +23,7 @@ after bootstrap.
 | Provider/public environments | `cosmaneura-sovereign-<env>-app-environment` / `cosmaneura-web-<env>-app-environment` |
 | Provider/public apps | `cosmaneura-sovereign-<env>-app` / `cosmaneura-web-<env>-app` |
 | Provider/public Key Vaults | `cosmasov<env>provider` / `cosmasov<env>public` |
-| GitHub OIDC identity + role assignments | `cosmaneura-sovereign-<env>-gha-identity` |
+| Optional GitHub OIDC identity + role assignments | `cosmaneura-sovereign-<env>-gha-identity` |
 
 State lives in the **existing** `cosmaneuratfstate` storage account under an
 environment-exact key: `sovereign-prod.tfstate` or
@@ -31,6 +31,21 @@ environment-exact key: `sovereign-prod.tfstate` or
 with `./scripts/init-environment.sh <prod|staging>`; the script and preflight
 prove the backend key, and a prevent-destroy state guard rejects switching an
 initialized state to the other environment.
+
+### Phase-2 state-recovery gate
+
+Do not apply the Log Analytics workspaces or Container App Environments until
+recovery protections for the shared state account have been approved. AzureRM
+records each workspace's primary and secondary shared keys in state even though
+they are marked sensitive in plan output. The shared account therefore needs a
+separately reviewed recovery policy (at minimum blob versioning and soft delete)
+before phase 2. This root deliberately does not mutate that shared, cross-stack
+backend as part of a staging apply.
+
+Both staging workspaces use the explicit `PerGB2018` SKU and a 0.1 GB/day cap,
+bounding the two mounts to about 6 GB per 30-day month before Azure's documented
+cap-enforcement lag. Production retains its existing unlimited quota until its
+availability and audit-retention budget is decided separately.
 
 ## Prerequisites
 
@@ -89,6 +104,10 @@ run from a reviewed private operator terminal.
 
 - **GitHub vars.** Wire `AZURE_CLIENT_ID` = `gha_identity_client_id` output,
   `AZURE_TENANT_ID` = `tenant_id` output, registry host = ACR login server.
+- **Staging GitHub gate.** `github_deploy_enabled` defaults to `false` for
+  staging and `true` for production compatibility. Leave staging disabled while
+  releases use the reviewed operator path; enabling it creates the identity,
+  federation, and every associated role as one reviewed unit.
 - **GitHub OIDC subject.** `github_repository` must match the real repo. The
   federated credential is scoped to the `production` GitHub Environment; that
   Environment must exist and restrict deployment branches to `main`.

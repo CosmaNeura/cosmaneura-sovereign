@@ -154,6 +154,14 @@ creates `azurerm_key_vault_secret` resources. The backend must still be treated
 as sensitive because AzureRM records provider-computed attributes such as Log
 Analytics shared keys. Bootstrap in four explicit steps:
 
+Phase 2 remains blocked until recovery protections for the shared state account
+are separately approved. Creating either workspace writes its sensitive shared
+keys into state; enable blob versioning and soft delete before that apply. This
+deployment root cannot safely change the backend account because other stacks
+share it. Staging also caps each `PerGB2018` workspace at 0.1 GB/day, while
+production keeps its existing unlimited quota pending a separate retention and
+availability decision.
+
 1. Target-apply the four conditional operator assignments plus both runtime
    identities' ACR/Key Vault roles and the provider DeID role. Their dependencies
    create the resource group, ACR, vaults, and identities. Confirm all nine
@@ -207,6 +215,12 @@ immediately before labs. The prompts are silent and remain inside the paired
 rollback window; Clerk-token reads time out after 120 seconds and the grant read
 after 45 seconds so an abandoned terminal triggers paired rollback. A future
 smoke-time mint exchange may replace this manual step.
+
+The Azure GitHub identity is independently controlled by
+`github_deploy_enabled`. Its environment default is `true` for backward-
+compatible production plans and `false` for staging. When disabled, Terraform
+creates neither the identity/federated credential nor any of its ACR,
+environment, or app roles.
 
 The isolated non-production proof path, including the intentional post-smoke
 failure and paired restoration evidence, is

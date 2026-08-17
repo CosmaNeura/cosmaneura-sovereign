@@ -10,6 +10,7 @@ from pathlib import Path
 EXPECTED = {
     "deployment_environment",
     "azure_deid_service_id",
+    "github_deploy_enabled",
     "live_apps_enabled",
     "key_vault_secrets_ready",
     "initial_image_ref",
@@ -62,9 +63,12 @@ def validate(values: dict[str, str], expected_environment: str | None = None) ->
     if not DEID_RE.fullmatch(values["azure_deid_service_id"]):
         raise InputError("azure_deid_service_id must be an explicit DeID resource ID")
 
+    github_deploy_enabled = values["github_deploy_enabled"]
     enabled = values["live_apps_enabled"]
     ready = values["key_vault_secrets_ready"]
     image = values["initial_image_ref"]
+    if github_deploy_enabled not in {"true", "false"}:
+        raise InputError("github_deploy_enabled must be literal true or false")
     if enabled not in {"true", "false"} or ready not in {"true", "false"}:
         raise InputError("deployment gate values must be literal true or false")
     if enabled == "false":

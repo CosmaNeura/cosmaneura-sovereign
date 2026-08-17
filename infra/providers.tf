@@ -18,17 +18,33 @@ locals {
 
   deployment_contexts = {
     prod = {
-      env_file_suffix    = "production"
-      github_environment = "production"
-      tfstate_key        = "sovereign-prod.tfstate"
+      env_file_suffix               = "production"
+      github_deploy_enabled_default = true
+      github_environment            = "production"
+      tfstate_key                   = "sovereign-prod.tfstate"
     }
     staging = {
-      env_file_suffix    = "staging"
-      github_environment = "staging"
-      tfstate_key        = "sovereign-staging.tfstate"
+      env_file_suffix               = "staging"
+      github_deploy_enabled_default = false
+      github_environment            = "staging"
+      tfstate_key                   = "sovereign-staging.tfstate"
     }
   }
   deployment_context = local.deployment_contexts[local.environment]
+
+  # Existing production roots keep their current deploy identity by default.
+  # Staging remains fail-closed unless an operator deliberately opts it into a
+  # reviewed GitHub deployment path.
+  github_deploy_enabled = (
+    var.github_deploy_enabled == null
+    ? local.deployment_context.github_deploy_enabled_default
+    : var.github_deploy_enabled
+  )
+
+  # Two 100 MB/day staging caps bound noisy-pilot ingestion to roughly 6 GB in
+  # a 30-day month. Production retains its existing unlimited policy until its
+  # audit-retention and availability budget is ratified separately.
+  log_analytics_daily_quota_gb = local.environment == "staging" ? 0.1 : -1
 
   # Terraform state. We REUSE the main stack's tfstate storage account (already
   # bootstrapped in cosmaneura/infra) but under a distinct key, so the Sovereign

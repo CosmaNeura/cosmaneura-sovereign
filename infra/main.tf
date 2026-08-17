@@ -43,8 +43,16 @@ resource "azurerm_log_analytics_workspace" "main" {
   name                = "${local.base_name}-logs"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
+  sku                 = "PerGB2018"
+  daily_quota_gb      = local.log_analytics_daily_quota_gb
   retention_in_days   = 30
   tags                = local.resource_tags
+
+  # Operational evidence and the environment's logging dependency must not be
+  # removable through a narrow target-destroy plan.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Consumer health data has a different legal/retention regime from provider
@@ -53,8 +61,14 @@ resource "azurerm_log_analytics_workspace" "public" {
   name                = "${local.public_base_name}-logs"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
+  sku                 = "PerGB2018"
+  daily_quota_gb      = local.log_analytics_daily_quota_gb
   retention_in_days   = 30
   tags                = merge(local.resource_tags, { mount = "public" })
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 ########################################
@@ -86,6 +100,11 @@ resource "azurerm_container_app_environment" "main" {
   location                   = azurerm_resource_group.main.location
   log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
   tags                       = local.resource_tags
+
+  # Deleting the environment can strand or remove every provider revision.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "azurerm_container_app_environment" "public" {
@@ -94,6 +113,10 @@ resource "azurerm_container_app_environment" "public" {
   location                   = azurerm_resource_group.main.location
   log_analytics_workspace_id = azurerm_log_analytics_workspace.public.id
   tags                       = merge(local.resource_tags, { mount = "public" })
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 ########################################
@@ -382,18 +405,20 @@ resource "azurerm_container_app" "public" {
 }
 
 ########################################
-# GitHub Actions deploy access (OIDC federation — no stored cloud creds)
+# Optional GitHub Actions deploy access (OIDC federation — no stored cloud creds)
 ########################################
 
 resource "azurerm_user_assigned_identity" "ghactions" {
+  count               = local.github_deploy_enabled ? 1 : 0
   name                = "${local.base_name}-gha-identity"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
 }
 
 resource "azurerm_federated_identity_credential" "ghactions" {
+  count               = local.github_deploy_enabled ? 1 : 0
   name                = "github-actions"
-  parent_id           = azurerm_user_assigned_identity.ghactions.id
+  parent_id           = azurerm_user_assigned_identity.ghactions[0].id
   resource_group_name = azurerm_resource_group.main.name
   audience            = ["api://AzureADTokenExchange"]
   issuer              = "https://token.actions.githubusercontent.com"
@@ -404,42 +429,79 @@ resource "azurerm_federated_identity_credential" "ghactions" {
 
 # Push images to ACR.
 resource "azurerm_role_assignment" "github_acr_push" {
+  count                = local.github_deploy_enabled ? 1 : 0
   scope                = azurerm_container_registry.main.id
   role_definition_name = "AcrPush"
-  principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
+  principal_id         = azurerm_user_assigned_identity.ghactions[0].principal_id
 }
 
 # The shared checksum-pinned build path uses ACR remote builds instead of a
 # privileged runner Docker daemon.
 resource "azurerm_role_assignment" "github_acr_tasks" {
+  count                = local.github_deploy_enabled ? 1 : 0
   scope                = azurerm_container_registry.main.id
   role_definition_name = "Container Registry Tasks Contributor"
-  principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
+  principal_id         = azurerm_user_assigned_identity.ghactions[0].principal_id
 }
 
 # Update revisions on the environment + the service.
 resource "azurerm_role_assignment" "github_env_operator" {
+  count                = local.github_deploy_enabled ? 1 : 0
   scope                = azurerm_container_app_environment.main.id
   role_definition_name = "Contributor"
-  principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
+  principal_id         = azurerm_user_assigned_identity.ghactions[0].principal_id
 }
 
 resource "azurerm_role_assignment" "github_app_operator" {
-  count                = var.live_apps_enabled ? 1 : 0
+  count                = var.live_apps_enabled && local.github_deploy_enabled ? 1 : 0
   scope                = azurerm_container_app.sovereign[0].id
   role_definition_name = "Contributor"
-  principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
+  principal_id         = azurerm_user_assigned_identity.ghactions[0].principal_id
 }
 
 resource "azurerm_role_assignment" "github_public_env_operator" {
+  count                = local.github_deploy_enabled ? 1 : 0
   scope                = azurerm_container_app_environment.public.id
   role_definition_name = "Contributor"
-  principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
+  principal_id         = azurerm_user_assigned_identity.ghactions[0].principal_id
 }
 
 resource "azurerm_role_assignment" "github_public_app_operator" {
-  count                = var.live_apps_enabled ? 1 : 0
+  count                = var.live_apps_enabled && local.github_deploy_enabled ? 1 : 0
   scope                = azurerm_container_app.public[0].id
   role_definition_name = "Contributor"
-  principal_id         = azurerm_user_assigned_identity.ghactions.principal_id
+  principal_id         = azurerm_user_assigned_identity.ghactions[0].principal_id
+}
+
+# Adding a conditional count changes these six legacy production addresses.
+# Record the one-time address migration so enabling the existing prod default
+# does not recreate its deploy principal, federation, or grants.
+moved {
+  from = azurerm_user_assigned_identity.ghactions
+  to   = azurerm_user_assigned_identity.ghactions[0]
+}
+
+moved {
+  from = azurerm_federated_identity_credential.ghactions
+  to   = azurerm_federated_identity_credential.ghactions[0]
+}
+
+moved {
+  from = azurerm_role_assignment.github_acr_push
+  to   = azurerm_role_assignment.github_acr_push[0]
+}
+
+moved {
+  from = azurerm_role_assignment.github_acr_tasks
+  to   = azurerm_role_assignment.github_acr_tasks[0]
+}
+
+moved {
+  from = azurerm_role_assignment.github_env_operator
+  to   = azurerm_role_assignment.github_env_operator[0]
+}
+
+moved {
+  from = azurerm_role_assignment.github_public_env_operator
+  to   = azurerm_role_assignment.github_public_env_operator[0]
 }
