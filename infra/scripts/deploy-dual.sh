@@ -173,8 +173,10 @@ verify_and_smoke() {
   local attempt
   for attempt in {1..24}; do
     if verify_revision "$app" "$image" "$suffix"; then
-      smoke_mount "$app" "$expected_mount"
-      return
+      if smoke_mount "$app" "$expected_mount"; then
+        return 0
+      fi
+      return 1
     fi
     sleep 5
   done
