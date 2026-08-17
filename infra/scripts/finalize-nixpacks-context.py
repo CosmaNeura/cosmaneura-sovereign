@@ -25,6 +25,22 @@ PINNED_BASE_IMAGE = (
     EXPECTED_BASE_IMAGE
     + "@sha256:d45c89d80e13d7ad0fd555b5130f22a866d9dd10e861f589932303ef2314c7de"
 )
+LOCKED_INSTALL = (
+    "python -m pip install --require-hashes --only-binary=:all: "
+    "-r requirements.lock"
+)
+
+
+def _normalize_pip_install(lines: list[str], revision: str) -> None:
+    mounted_install = (
+        f"RUN --mount=type=cache,id={revision}-/root/cache/pip,"
+        f"target=/root/.cache/pip {LOCKED_INSTALL}"
+    )
+    mount_lines = [line for line in lines if "--mount" in line]
+    pip_install_lines = [line for line in lines if "python -m pip install" in line]
+    if mount_lines != [mounted_install] or pip_install_lines != [mounted_install]:
+        raise ValueError("generated Dockerfile pip cache mount or command drifted")
+    lines[lines.index(mounted_install)] = f"RUN {LOCKED_INSTALL}"
 
 
 def _parse_build_script(
@@ -98,19 +114,17 @@ def finalize(source: Path, expected_image: str, revision: str, epoch: int) -> No
         or lines[from_indexes[0]] != f"FROM {EXPECTED_BASE_IMAGE}"
     ):
         raise ValueError("generated Dockerfile base image drifted")
+    if "requirements.txt" in content:
+        raise ValueError("generated Dockerfile does not install only the hash lock")
+    _normalize_pip_install(lines, revision)
     lines[from_indexes[0]] = f"FROM {PINNED_BASE_IMAGE}"
     content = "\n".join(lines) + ("\n" if content.endswith("\n") else "")
-    locked_install = (
-        "python -m pip install --require-hashes --only-binary=:all: "
-        "-r requirements.lock"
-    )
-    expected_cache = f"id={revision}-/root/cache/pip"
     if (
-        locked_install not in content
+        "--mount" in content
+        or content.splitlines().count(f"RUN {LOCKED_INSTALL}") != 1
         or "requirements.txt" in content
-        or expected_cache not in content
     ):
-        raise ValueError("generated Dockerfile does not install only the hash lock")
+        raise ValueError("normalized Dockerfile install command is unsafe")
     content = content.rstrip() + (
         f'\n\nLABEL org.opencontainers.image.revision="{revision}"\n'
     )

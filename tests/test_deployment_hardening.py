@@ -714,7 +714,8 @@ generated.mkdir()
 dockerfile = generated / "Dockerfile"
 dockerfile.write_text(
     "FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067\\n"
-    f"RUN --mount=type=cache,id={revision}-/root/cache/pip "
+    f"RUN --mount=type=cache,id={revision}-/root/cache/pip,"
+    "target=/root/.cache/pip "
     "python -m pip install --require-hashes --only-binary=:all: "
     "-r requirements.lock\\n"
 )
@@ -814,6 +815,17 @@ if args[:2] == ["acr", "build"]:
         raise SystemExit("Dockerfile does not resolve from the ACR working directory")
     if args[-1] != ".":
         raise SystemExit("ACR source is not the generated working directory")
+    content = pathlib.Path(dockerfile).read_text()
+    locked_install = (
+        "RUN python -m pip install --require-hashes --only-binary=:all: "
+        "-r requirements.lock"
+    )
+    if (
+        "--mount" in content
+        or content.splitlines().count(locked_install) != 1
+        or "requirements.txt" in content
+    ):
+        raise SystemExit("ACR received an unsafe normalized install command")
     pathlib.Path(os.environ["FAKE_ACR_LOG"]).write_text(json.dumps({
         "cwd": str(pathlib.Path.cwd()),
         "dockerfile": dockerfile,
@@ -1050,7 +1062,8 @@ def test_nixpacks_remote_context_is_validated_and_normalized(tmp_path: Path) -> 
     dockerfile = generated / "Dockerfile"
     dockerfile.write_text(
         "FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067\n"
-        f"RUN --mount=type=cache,id={revision}-/root/cache/pip "
+        f"RUN --mount=type=cache,id={revision}-/root/cache/pip,"
+        "target=/root/.cache/pip "
         "python -m pip install --require-hashes --only-binary=:all: "
         "-r requirements.lock\n"
     )
@@ -1094,6 +1107,34 @@ def test_nixpacks_remote_context_is_validated_and_normalized(tmp_path: Path) -> 
     assert "base image drifted" in rejected.stderr
     dockerfile.write_text(original_dockerfile)
 
+    dockerfile.write_text(
+        original_dockerfile.replace(
+            "target=/root/.cache/pip", "target=/tmp/unreviewed-pip-cache"
+        )
+    )
+    rejected = subprocess.run(
+        [sys.executable, helper, source, image, revision, "1700000000"],
+        text=True,
+        capture_output=True,
+    )
+    assert rejected.returncode == 1
+    assert "pip cache mount or command drifted" in rejected.stderr
+    dockerfile.write_text(original_dockerfile)
+
+    dockerfile.write_text(
+        original_dockerfile.replace(
+            "-r requirements.lock", "-r requirements.lock --no-deps"
+        )
+    )
+    rejected = subprocess.run(
+        [sys.executable, helper, source, image, revision, "1700000000"],
+        text=True,
+        capture_output=True,
+    )
+    assert rejected.returncode == 1
+    assert "pip cache mount or command drifted" in rejected.stderr
+    dockerfile.write_text(original_dockerfile)
+
     result = subprocess.run(
         [sys.executable, helper, source, image, revision, "1700000000"],
         text=True,
@@ -1101,14 +1142,23 @@ def test_nixpacks_remote_context_is_validated_and_normalized(tmp_path: Path) -> 
     )
     assert result.returncode == 0, result.stderr
     assert not (generated / "build.sh").exists()
+    normalized = dockerfile.read_text()
+    locked_install = (
+        "RUN python -m pip install --require-hashes --only-binary=:all: "
+        "-r requirements.lock"
+    )
+    assert "RUN --mount" not in normalized
+    assert "--mount" not in normalized
+    assert normalized.splitlines().count(locked_install) == 1
+    assert "requirements.txt" not in normalized
     assert (
         f'LABEL org.opencontainers.image.revision="{revision}"'
-        in dockerfile.read_text()
+        in normalized
     )
     assert (
         "FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067@sha256:"
         "d45c89d80e13d7ad0fd555b5130f22a866d9dd10e861f589932303ef2314c7de"
-        in dockerfile.read_text()
+        in normalized
     )
     assert int(dockerfile.stat().st_mtime) == 1_700_000_000
     assert int(source.stat().st_mtime) == 1_700_000_000
