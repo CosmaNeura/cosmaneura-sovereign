@@ -552,8 +552,8 @@ def test_deployment_env_validator_matches_runtime_cors_and_rate_bounds(
     source = _deployment_env_text("public")
     path.write_text(
         source.replace(
-            'CORS_ALLOW_ORIGINS=["https://cosmaneura.com"]',
-            'CORS_ALLOW_ORIGINS=["https://cosmaneura.com/"]',
+            'CORS_ALLOW_ORIGINS=["https://cosmaneura.com","https://www.cosmaneura.com"]',
+            'CORS_ALLOW_ORIGINS=["https://cosmaneura.com/","https://www.cosmaneura.com"]',
         )
     )
     assert _run_env_validator("public", path).returncode == 1
