@@ -7,6 +7,13 @@ resource "azurerm_resource_group" "main" {
   location = "northcentralus"
   tags     = local.resource_tags
 
+  # Azure cascades a resource-group deletion to every child resource. Protect
+  # the parent itself because a targeted destroy can omit the separate state
+  # guard and every child lifecycle block from OpenTofu's plan graph.
+  lifecycle {
+    prevent_destroy = true
+  }
+
   # Every targeted bootstrap path reaches the resource group. Making the state
   # guard an explicit dependency prevents `-target` from pruning the cached
   # backend/environment protection out of the plan graph.
@@ -61,6 +68,12 @@ resource "azurerm_container_registry" "main" {
   sku                 = "Basic"
   admin_enabled       = false
   tags                = local.resource_tags
+
+  # Immutable digests in this registry are the paired deployment's rollback
+  # roots. Require an explicit code review before Terraform can remove them.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 ########################################

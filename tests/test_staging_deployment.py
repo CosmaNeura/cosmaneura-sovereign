@@ -223,6 +223,23 @@ def test_terraform_root_has_no_implicit_environment_and_pins_state_guard() -> No
     assert "depends_on = [terraform_data.state_environment_guard]" in main
 
 
+def test_foundation_parent_and_rollback_registry_refuse_targeted_destroy() -> None:
+    main = (INFRA / "main.tf").read_text()
+    resource_group = main.split(
+        'resource "azurerm_resource_group" "main" {', 1
+    )[1].split('resource "terraform_data" "state_environment_guard"', 1)[0]
+    registry = main.split(
+        'resource "azurerm_container_registry" "main" {', 1
+    )[1].split('resource "azurerm_container_app_environment" "main"', 1)[0]
+
+    # The state guard is a dependency of the resource group. OpenTofu can omit
+    # dependencies from a targeted destroy, so each destructive root needs its
+    # own lifecycle protection in the selected plan graph.
+    for block in (resource_group, registry):
+        assert "lifecycle {" in block
+        assert "prevent_destroy = true" in block
+
+
 def test_all_new_staging_operator_scripts_are_executable_and_syntax_clean() -> None:
     scripts = [
         SCRIPTS / "init-environment.sh",
