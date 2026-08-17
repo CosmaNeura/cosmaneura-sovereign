@@ -91,9 +91,15 @@ and the live boundary verifier afterward.
 
 ## 3. Run live smokes and force the paired rollback
 
-Build a second clean immutable digest. It must differ from the paired baseline.
-Use a private controlling terminal so short-lived Clerk JWTs and the record
-grant are prompted after the new revisions are healthy rather than persisted:
+Build a second clean immutable digest from the exact checkout that will run the
+rehearsal. Commit every intended source change and remove every untracked file;
+the wrapper refuses a dirty tree. It must differ from the paired baseline. The
+operator needs pull access to the staging ACR so the wrapper can resolve the
+image config by digest and prove its `org.opencontainers.image.revision` label
+equals the checked-out `HEAD` before any Container App mutation or evidence
+write. Use a private controlling terminal so short-lived Clerk JWTs and the
+record grant are prompted after the new revisions are healthy rather than
+persisted:
 
 ```bash
 DEPLOYMENT_ENVIRONMENT=staging \
@@ -105,11 +111,13 @@ REHEARSAL_EVIDENCE_PATH='/absolute/private/path/paired-rollback.json' \
   ./infra/scripts/rehearse-staging-rollback.sh
 ```
 
-The script proves the baseline is one paired staging digest, deploys the second
-digest to both apps, runs both live-model mount smokes and the one bounded
-synthetic Preview lab read, injects failure only after those pass, and delegates
-rollback to `deploy-dual.sh`. It then proves both active healthy images equal
-the exact original baseline and re-runs the identity/vault/app boundary check.
+The script proves the source tree is clean, verifies the candidate manifest and
+image-config digests plus its exact source revision label, and proves the
+baseline is one paired staging digest. It then deploys the second digest to both
+apps, runs both live-model mount smokes and the one bounded synthetic Preview
+lab read, injects failure only after those pass, and delegates rollback to
+`deploy-dual.sh`. Finally it proves both active healthy images equal the exact
+original baseline and re-runs the identity/vault/app boundary check.
 
 The JSON evidence contains only resource-neutral revision/image identifiers,
 the source commit, timestamps, and the pass result. It never contains JWTs, a

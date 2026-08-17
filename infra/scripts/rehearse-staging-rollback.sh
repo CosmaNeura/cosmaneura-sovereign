@@ -45,6 +45,29 @@ if [[ -e "$REHEARSAL_EVIDENCE_PATH" ]]; then
   exit 2
 fi
 
+# Bind the rehearsal to one clean source tree and to an image whose immutable
+# config proves that exact commit. These checks must complete before the first
+# Container Apps inventory read, deployment mutation, or evidence write.
+if [[ -n "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" ]]; then
+  echo "rollback rehearsal requires a clean worktree with no untracked files" >&2
+  exit 2
+fi
+source_commit="$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')"
+if [[ ! "$source_commit" =~ ^[0-9a-f]{40,64}$ ]]; then
+  echo "could not resolve a full lowercase source commit" >&2
+  exit 2
+fi
+
+candidate_prefix="$REGISTRY_SERVER/cosmaneura/sovereign@"
+candidate_digest="${IMAGE_REF#"$candidate_prefix"}"
+if [[ "$IMAGE_REF" == "$candidate_digest" ||
+      ! "$candidate_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "candidate must be an immutable digest in the exact staging repository" >&2
+  exit 2
+fi
+python3 "$HERE/verify-acr-image-revision.py" \
+  "$REGISTRY_SERVER" "cosmaneura/sovereign" "$candidate_digest" "$source_commit"
+
 active_snapshot() {
   local revisions
   revisions="$(az containerapp revision list \
@@ -83,7 +106,7 @@ IFS=$'\t' read -r before_public_revision before_public_image \
   < <(active_snapshot "$PUBLIC_APP")
 
 expected_prefix="$REGISTRY_SERVER/cosmaneura/sovereign@sha256:"
-for image in "$before_provider_image" "$before_public_image" "$IMAGE_REF"; do
+for image in "$before_provider_image" "$before_public_image"; do
   digest="${image#"$expected_prefix"}"
   if [[ "$image" == "$digest" || ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
     echo "baseline and candidate must be immutable staging ACR digests" >&2
@@ -134,9 +157,8 @@ PUBLIC_APP="$PUBLIC_APP" \
 REGISTRY_SERVER="$REGISTRY_SERVER" \
 "$HERE/verify-live-app-boundaries.sh"
 
-commit="$(git -C "$ROOT" rev-parse HEAD)"
 python3 - \
-  "$REHEARSAL_EVIDENCE_PATH" "$commit" "$IMAGE_REF" \
+  "$REHEARSAL_EVIDENCE_PATH" "$source_commit" "$IMAGE_REF" \
   "$before_provider_revision" "$before_public_revision" \
   "$after_provider_revision" "$after_public_revision" \
   "$before_provider_image" <<'PY'

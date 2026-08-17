@@ -48,7 +48,7 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
 - [ ] Target-apply the four temporary bootstrap assignments (their dependencies
       create the RG, ACR, and both vaults):
       ```bash
-      tofu apply \
+      tofu -chdir=infra apply \
         -target=azurerm_role_assignment.bootstrap_acr_push \
         -target=azurerm_role_assignment.bootstrap_acr_tasks \
         -target=azurerm_role_assignment.bootstrap_provider_secrets \
@@ -62,14 +62,14 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
       ```
 - [ ] Run `DEPLOYMENT_ENVIRONMENT=prod DEID_SERVICE_ID=<reviewed-resource-id>
       BOOTSTRAP_OPERATOR_OBJECT_ID=<uuid>
-      ./scripts/verify-bootstrap-role-assignments.sh`, then allow Azure
+      ./infra/scripts/verify-bootstrap-role-assignments.sh`, then allow Azure
       data-plane propagation before continuing. The
       temporary operator assignments created here are `AcrPush` plus
       `Container Registry Tasks Contributor` on this ACR and the
       `Key Vault Secrets Officer` role on these two vaults; each
       runtime identity has its mount-specific pull/read role and provider alone
       has DeID access.
-- [ ] Confirm `tofu plan` creates no Container Apps while
+- [ ] Confirm `tofu -chdir=infra plan` creates no Container Apps while
       `live_apps_enabled=false`; foundation bootstrap must not expose ingress.
 
 ## 4. First immutable image and vault seed
@@ -103,14 +103,16 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
       changes. Losing it fails against `prevent_destroy`; it must never be
       reconstructed from an old bootstrap value.
 - [ ] Create both apps on the same rollback baseline with a reviewed full
-      `tofu plan`, then `tofu apply`. Omit `bootstrap_operator_object_id` so the
+      `tofu -chdir=infra plan`, then `tofu -chdir=infra apply`. Omit
+      `bootstrap_operator_object_id` so the
       temporary operator roles are removed in the same apply.
 - [ ] Confirm the final plan/state contains no bootstrap role assignments.
 - [ ] Run the verifier with `DEPLOYMENT_ENVIRONMENT=prod`, the exact resource
-      group/app/registry variables, and `./scripts/verify-live-app-boundaries.sh`;
+      group/app/registry variables, and
+      `./infra/scripts/verify-live-app-boundaries.sh`;
       confirm each app has
       exactly its own UAI, vault references, and managed-identity registry bind.
-- [ ] Capture outputs: `tofu output` → `gha_identity_client_id`, `tenant_id`,
+- [ ] Capture outputs: `tofu -chdir=infra output` → `gha_identity_client_id`, `tenant_id`,
       `container_registry`, both app names, and both vault names.
 
 ## 5. Wire the GitHub deployment foundation (keep deployment disabled)
@@ -179,10 +181,9 @@ Actions → Variables), so no cloud credentials are stored:
 - [ ] HIPAA counsel + clinical + doctrinal review (`SETUP_AND_HANDOFF.md §6`).
 - [ ] Gateway rate limiting; pen test / threat model.
 
-## Still not automated (follow-ups)
+## Remaining follow-up
 - Distinct public/provider custom domains (mirror `cosmaneura/infra/domains.tf`);
   never point both mount URLs at the same hostname.
-- A `staging` environment (clone the `prod` root with a `staging` key/RG).
 
 The pinned public and synthetic Preview provider mounts do not require the
 platform Agent API or `PlatformResolver`. Real-PHI/multi-tenant EHR authority is

@@ -238,3 +238,17 @@ def test_all_new_staging_operator_scripts_are_executable_and_syntax_clean() -> N
     assert "validate-deployment-inputs.py" in initializer
     assert '"$DEPLOYMENT_ENVIRONMENT" >/dev/null' in initializer
     assert "init -reconfigure" in initializer
+
+
+def test_deploy_checklist_commands_run_from_repository_root() -> None:
+    checklist = (ROOT / "DEPLOY_CHECKLIST.md").read_text()
+    assert "tofu -chdir=infra apply" in checklist
+    assert "tofu -chdir=infra plan" in checklist
+    assert "tofu -chdir=infra output" in checklist
+    assert "./infra/scripts/verify-bootstrap-role-assignments.sh" in checklist
+    assert "./infra/scripts/verify-live-app-boundaries.sh" in checklist
+    assert "\n      tofu apply" not in checklist
+    assert "`tofu plan`" not in checklist
+    assert "`tofu output`" not in checklist
+    assert "./scripts/" not in checklist
+    assert "clone the `prod` root with a `staging` key/RG" not in checklist

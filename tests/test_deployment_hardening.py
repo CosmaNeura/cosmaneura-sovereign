@@ -1,6 +1,8 @@
 """Deployment integrity regressions for the two physical mounts."""
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import json
 import os
 import shlex
@@ -15,6 +17,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "infra" / "scripts" / "deploy-dual.sh"
 REHEARSE = ROOT / "infra" / "scripts" / "rehearse-staging-rollback.sh"
+VERIFY_IMAGE_REVISION = (
+    ROOT / "infra" / "scripts" / "verify-acr-image-revision.py"
+)
 
 
 def _make_executable(path: Path, source: str) -> None:
@@ -35,6 +40,10 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+call_log = os.environ.get("FAKE_AZ_CALL_LOG")
+if call_log:
+    with pathlib.Path(call_log).open("a") as handle:
+        handle.write(" ".join(args) + "\\n")
 name = args[args.index("--name") + 1] if "--name" in args else ""
 if any(os.environ.get(name) for name in (
     "SOVEREIGN_PROVIDER_TOKEN",
@@ -188,6 +197,46 @@ if os.environ.get("FAIL_FUNCTIONAL") == "1" and sys.argv[-1].endswith("smoke_lab
     raise SystemExit(7)
 """,
     )
+    _make_executable(
+        bin_dir / "git",
+        f"""#!{sys.executable}
+import os
+import sys
+
+args = sys.argv[1:]
+if args[:1] == ["-C"]:
+    args = args[2:]
+if args == ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"]:
+    sys.stdout.write(os.environ.get("FAKE_GIT_STATUS", ""))
+elif args == ["rev-parse", "--verify", "HEAD^{{commit}}"]:
+    print(os.environ["SOURCE_COMMIT"])
+else:
+    raise SystemExit(5)
+""",
+    )
+    _make_executable(
+        bin_dir / "python3",
+        f"""#!{sys.executable}
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if args and pathlib.Path(args[0]).name == "verify-acr-image-revision.py":
+    expected = [
+        os.environ["REGISTRY_SERVER"],
+        "cosmaneura/sovereign",
+        os.environ["IMAGE_REF"].split("@", 1)[1],
+        os.environ["SOURCE_COMMIT"],
+    ]
+    pathlib.Path(os.environ["PROVENANCE_LOG"]).write_text(" ".join(args[1:]) + "\\n")
+    if args[1:] != expected or os.environ.get("FAIL_PROVENANCE") == "1":
+        raise SystemExit(1)
+    print("candidate OCI revision label matches the clean checked-out HEAD")
+else:
+    os.execv({sys.executable!r}, [{sys.executable!r}, *args])
+""",
+    )
     return bin_dir, log
 
 
@@ -208,6 +257,9 @@ def _deploy_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
         "OLD_PROVIDER": "cosmaneurasovereignstagingregistry.azurecr.io/repo@sha256:" + "a" * 64,
         "OLD_PUBLIC": "cosmaneurasovereignstagingregistry.azurecr.io/repo@sha256:" + "b" * 64,
         "FAKE_LOG": str(log),
+        "FAKE_AZ_CALL_LOG": str(tmp_path / "az-calls.log"),
+        "PROVENANCE_LOG": str(tmp_path / "provenance.log"),
+        "SOURCE_COMMIT": "d" * 40,
         "SMOKE_LOG": str(tmp_path / "smoke.log"),
         "SMOKE_PYTHON": str(bin_dir / "smoke-python"),
         "SOVEREIGN_PROVIDER_TOKEN": "provider.header.signature",
@@ -216,6 +268,20 @@ def _deploy_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
         "SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED": "true",
     }
     return env, log
+
+
+def _configure_rehearsal(env: dict[str, str], tmp_path: Path) -> Path:
+    env["IMAGE_REPO"] = "cosmaneura/sovereign"
+    env["IMAGE_REF"] = env["IMAGE_REF"].replace(
+        "/repo@", "/cosmaneura/sovereign@"
+    )
+    env["OLD_PROVIDER"] = env["OLD_PROVIDER"].replace(
+        "/repo@", "/cosmaneura/sovereign@"
+    )
+    env["OLD_PUBLIC"] = env["OLD_PROVIDER"]
+    evidence = tmp_path / "evidence" / "paired-rollback.json"
+    env["REHEARSAL_EVIDENCE_PATH"] = str(evidence)
+    return evidence
 
 
 def test_dual_deploy_uses_one_digest_for_both_mounts(tmp_path: Path) -> None:
@@ -278,21 +344,13 @@ def test_staging_rehearsal_wrapper_retains_secret_free_evidence(
     tmp_path: Path,
 ) -> None:
     env, log = _deploy_env(tmp_path)
-    env["IMAGE_REPO"] = "cosmaneura/sovereign"
-    env["IMAGE_REF"] = env["IMAGE_REF"].replace(
-        "/repo@", "/cosmaneura/sovereign@"
-    )
-    env["OLD_PROVIDER"] = env["OLD_PROVIDER"].replace(
-        "/repo@", "/cosmaneura/sovereign@"
-    )
-    env["OLD_PUBLIC"] = env["OLD_PROVIDER"]
-    evidence = tmp_path / "evidence" / "paired-rollback.json"
-    env["REHEARSAL_EVIDENCE_PATH"] = str(evidence)
+    evidence = _configure_rehearsal(env, tmp_path)
     result = subprocess.run([REHEARSE], env=env, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     payload = json.loads(evidence.read_text())
     assert payload["environment"] == "staging"
     assert payload["result"] == "passed"
+    assert payload["source_commit"] == env["SOURCE_COMMIT"]
     assert payload["candidate_image"] == env["IMAGE_REF"]
     assert payload["before"]["paired_image"] == env["OLD_PROVIDER"]
     assert payload["after"]["paired_image"] == env["OLD_PROVIDER"]
@@ -300,10 +358,118 @@ def test_staging_rehearsal_wrapper_retains_secret_free_evidence(
     assert env["SOVEREIGN_PROVIDER_TOKEN"] not in serialized
     assert env["SOVEREIGN_NON_PROVIDER_TOKEN"] not in serialized
     assert env["SOVEREIGN_SYNTHETIC_RECORD_GRANT"] not in serialized
+    assert (tmp_path / "provenance.log").read_text().split() == [
+        env["REGISTRY_SERVER"],
+        "cosmaneura/sovereign",
+        env["IMAGE_REF"].split("@", 1)[1],
+        env["SOURCE_COMMIT"],
+    ]
     assert log.read_text().splitlines()[-2:] == [
         f"{env['PROVIDER_APP']} {env['OLD_PROVIDER']} rb-r-12345-1-p",
         f"{env['PUBLIC_APP']} {env['OLD_PUBLIC']} rb-r-12345-1-u",
     ]
+
+
+def test_staging_rehearsal_refuses_dirty_or_untracked_tree_before_cloud_access(
+    tmp_path: Path,
+) -> None:
+    env, log = _deploy_env(tmp_path)
+    evidence = _configure_rehearsal(env, tmp_path)
+    env["FAKE_GIT_STATUS"] = "?? operator-notes.txt\n"
+
+    result = subprocess.run([REHEARSE], env=env, text=True, capture_output=True)
+
+    assert result.returncode == 2
+    assert "requires a clean worktree" in result.stderr
+    assert not log.exists()
+    assert not Path(env["FAKE_AZ_CALL_LOG"]).exists()
+    assert not Path(env["PROVENANCE_LOG"]).exists()
+    assert not evidence.exists()
+
+
+def test_staging_rehearsal_refuses_unproven_candidate_before_mutation_or_evidence(
+    tmp_path: Path,
+) -> None:
+    env, log = _deploy_env(tmp_path)
+    evidence = _configure_rehearsal(env, tmp_path)
+    env["FAIL_PROVENANCE"] = "1"
+
+    result = subprocess.run([REHEARSE], env=env, text=True, capture_output=True)
+
+    assert result.returncode == 1
+    assert not log.exists()
+    assert not Path(env["FAKE_AZ_CALL_LOG"]).exists()
+    assert Path(env["PROVENANCE_LOG"]).exists()
+    assert not evidence.exists()
+
+
+def _load_image_revision_helper():
+    spec = importlib.util.spec_from_file_location(
+        "verify_acr_image_revision", VERIFY_IMAGE_REVISION
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _json_bytes(payload: object) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _image_documents(revision: str) -> tuple[str, dict[str, bytes]]:
+    config = _json_bytes(
+        {"config": {"Labels": {"org.opencontainers.image.revision": revision}}}
+    )
+    config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
+    manifest = _json_bytes(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": config_digest,
+                "size": len(config),
+            },
+            "layers": [],
+        }
+    )
+    image_digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+    repository = "cosmaneura/sovereign"
+    return image_digest, {
+        f"/v2/{repository}/manifests/{image_digest}": manifest,
+        f"/v2/{repository}/blobs/{config_digest}": config,
+    }
+
+
+def test_acr_provenance_helper_requires_exact_head_label_and_digests() -> None:
+    helper = _load_image_revision_helper()
+    source_commit = "d" * 40
+    image_digest, documents = _image_documents(source_commit)
+
+    def fetch(path: str, _accept: str, _limit: int) -> bytes:
+        return documents[path]
+
+    helper.verify_image_revision(
+        "cosmaneura/sovereign", image_digest, source_commit, fetch
+    )
+
+    with pytest.raises(
+        helper.RevisionVerificationError,
+        match="revision label does not equal",
+    ):
+        helper.verify_image_revision(
+            "cosmaneura/sovereign", image_digest, "e" * 40, fetch
+        )
+
+    documents[f"/v2/cosmaneura/sovereign/manifests/{image_digest}"] += b"\n"
+    with pytest.raises(
+        helper.RevisionVerificationError,
+        match="manifest content does not match",
+    ):
+        helper.verify_image_revision(
+            "cosmaneura/sovereign", image_digest, source_commit, fetch
+        )
 
 
 def test_forced_rollback_is_refused_outside_staging_before_mutation(
