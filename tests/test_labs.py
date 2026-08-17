@@ -13,6 +13,7 @@ from app.clients.athena import LabReport, LabValue
 from app.clients.labs import (LabsClient, LabsNotAuthorized, LabsUnavailable)
 from app.config import ComplianceProfile, Persona, Settings
 from app.schemas import ChatRequest, Intent
+from app.security.auth import Principal
 from app.sovereign.orchestrator import Sovereign
 
 
@@ -21,9 +22,31 @@ def _run(coro):
 
 
 def _enabled(**kw):
-    base = dict(feature_athena_labs=True, allow_provider_persona=True)
+    base = dict(
+        feature_athena_labs=True,
+        mount_surface="provider_assistant",
+        mount_auth_tier="provider",
+        mount_capabilities=[
+            "education:answer",
+            "values:answer",
+            "referrals:search",
+            "ethics:consult",
+            "visit-prep:run",
+            "plan-workbench:run",
+            "ehr:labs:read",
+            "journey-digest:write",
+        ],
+    )
     base.update(kw)
     return Settings(**base)
+
+
+def _provider_principal():
+    return Principal(
+        subject="provider-labs-test-actor",
+        persona=Persona.PROVIDER,
+        roles=["provider"],
+    )
 
 
 class _FakeSource:
@@ -147,7 +170,8 @@ def test_lab_review_routes_and_returns_structured_payload():
     resp = _run(sov.handle(ChatRequest(
         persona=Persona.PROVIDER,
         message="anything concerning in her lab results?",
-        metadata={"patient_ref": "a-195900.E-60178"})))
+        metadata={"patient_ref": "a-195900.E-60178"}),
+        principal=_provider_principal()))
     assert resp.intent == Intent.LAB_REVIEW
     assert resp.structured.get("feature") == "lab_review"
     summary = resp.structured["abnormal_summary"]["summary"]
@@ -164,7 +188,8 @@ def test_lab_review_without_patient_asks_for_the_record():
     sov = Sovereign(_enabled(mock_mode=True))
     resp = _run(sov.handle(ChatRequest(
         persona=Persona.PROVIDER,
-        message="what were the lab results out of range?")))
+        message="what were the lab results out of range?"),
+        principal=_provider_principal()))
     assert resp.intent == Intent.LAB_REVIEW
     assert resp.structured.get("status") == "no_patient"
 
@@ -181,10 +206,11 @@ def test_lab_review_requires_baa_attestation():
 
 
 def test_disabled_feature_answers_gracefully_in_pipeline():
-    sov = Sovereign(Settings(allow_provider_persona=True))   # flag off
+    sov = Sovereign(_enabled(feature_athena_labs=False))
     resp = _run(sov.handle(ChatRequest(
         persona=Persona.PROVIDER, message="anything abnormal in her labs?",
-        metadata={"patient_ref": "a-1.E-1"})))
+        metadata={"patient_ref": "a-1.E-1"}),
+        principal=_provider_principal()))
     assert resp.structured.get("status") == "disabled"
 
 

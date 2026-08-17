@@ -1,10 +1,9 @@
 """
 HTTP surface for the Sovereign.
 
-Two logical products, one codebase. The persona in the request body selects the
-compliance profile (patient = SOC 2 only; provider = SOC 2 + HIPAA). In real
-deployments you would also bind persona to authn (e.g. a provider JWT) rather
-than trusting the body alone — see SETUP_AND_HANDOFF.md.
+Two logical products, one codebase. A server-resolved deployment mount selects
+the compliance profile and capabilities. The legacy request persona is never
+an authority input.
 """
 from __future__ import annotations
 
@@ -20,6 +19,7 @@ from app.compliance import safety
 from app.config import AuthMode, Persona, get_settings
 from app.schemas import ChatRequest, ChatResponse, DigestRequest, DigestResponse
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
+from app.security.mount import MountResolutionError
 from app.sovereign.orchestrator import Sovereign
 
 app = FastAPI(title="CosmaNeura Sovereign", version="0.1.0")
@@ -36,6 +36,13 @@ async def get_principal(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
 ) -> Optional[Principal]:
     """Verify the bearer token (if required by AUTH_MODE) and return a Principal."""
+    return _principal_from_credentials(creds)
+
+
+def _principal_from_credentials(
+    creds: Optional[HTTPAuthorizationCredentials],
+) -> Optional[Principal]:
+    """Resolve actor identity after any pre-auth emergency short-circuit."""
     token = creds.credentials if creds else None
     try:
         return resolve_principal(token, _verifier, _settings)
@@ -43,6 +50,17 @@ async def get_principal(
         # 401 with a generic reason — never echo token contents or library detail.
         raise HTTPException(status_code=401, detail="Not authenticated.",
                             headers={"WWW-Authenticate": "Bearer"})
+
+
+def _mount_http_exception(error: MountResolutionError) -> HTTPException:
+    """Normalize resolver failures without exposing internal policy details."""
+    status_code = error.status_code if error.status_code in {401, 403} else 503
+    headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
+    return HTTPException(
+        status_code=status_code,
+        detail="Assistant surface is not available.",
+        headers=headers,
+    )
 
 
 # CORS: deny by default. A browser-facing deployment must set
@@ -85,9 +103,19 @@ async def healthz() -> dict:
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest,
-               principal: Optional[Principal] = Depends(get_principal)) -> ChatResponse:
-    return await _sovereign.handle(request, principal=principal)
+async def chat(
+    request: ChatRequest,
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> ChatResponse:
+    # The only pre-context exception is deterministic acute-emergency guidance.
+    # Do not let missing/invalid auth suppress 911/988 instructions.
+    if safety.detect_emergency(request.message):
+        return await _sovereign.handle(request)
+    principal = _principal_from_credentials(creds)
+    try:
+        return await _sovereign.handle(request, principal=principal)
+    except MountResolutionError as error:
+        raise _mount_http_exception(error) from None
 
 
 # The AI speaks first (see INTERACTION_DESIGN.md). Deterministic, config-served
@@ -163,12 +191,14 @@ async def welcome(persona: Persona = Persona.PATIENT) -> dict:
 # per session at note-write time; the returned digest is stored per patient
 # and later sent to /chat as one compact metadata.journey_digest field. This
 # is how multi-visit context scales without shipping N transcripts per chat
-# message. Same auth + persona gates as /chat; BAA tripwire inside.
+# message. Same actor + mount capability gates as /chat; BAA tripwire inside.
 @app.post("/digest", response_model=DigestResponse)
 async def digest(request: DigestRequest,
                  principal=Depends(get_principal)) -> DigestResponse:
     try:
         return await _sovereign.digest(request, principal=principal)
+    except MountResolutionError as error:
+        raise _mount_http_exception(error) from None
     except PermissionError:
         raise HTTPException(status_code=403,
                             detail="This deployment is not configured to "

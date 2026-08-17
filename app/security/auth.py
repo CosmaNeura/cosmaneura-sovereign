@@ -2,16 +2,14 @@
 Authentication: turn a bearer token into a trusted Principal.
 
 This is the control that closes the biggest open gap from the security reviews:
-persona must be *proven by a verified identity*, not *claimed in the request
-body*. The HTTP layer extracts the token, this module verifies it, and the
-orchestrator derives the compliance persona from the verified claims --
-overriding whatever the body said.
+The HTTP layer extracts and verifies actor identity. Mount context, not the
+Principal's role/persona or any request-body field, is the authorization axis;
+the orchestrator uses only the verified subject to bind the actor.
 
 Three modes (config: AUTH_MODE):
 
-  * disabled   -- no token required. Persona falls back to the request body and
-                  is still subject to ALLOW_PROVIDER_PERSONA. For local dev and
-                  patient-only deployments that accept no PHI. NOT for provider.
+  * disabled   -- no actor token required. Safe only for anonymous public
+                  pinned mounts and local development. NOT for provider.
   * dev_hs256  -- tokens signed with a shared secret (HS256). Lets a developer
                   mint test tokens without an identity provider, and lets the
                   test suite run offline. NOT for production.
@@ -164,7 +162,7 @@ def resolve_principal(
     """
     Apply mode policy to a (possibly absent) token.
 
-    * disabled -> None (caller falls back to body persona, dev only).
+    * disabled -> None (the pinned public mount remains authoritative).
     * dev/oidc -> a token is REQUIRED; returns a verified Principal or raises.
     """
     s = settings or get_settings()
