@@ -19,11 +19,11 @@ Provide the Clerk Backend API secret in one of two ways:
 - `CLERK_SECRET_KEY` in the protected process environment; or
 - a non-interactive stdin pipe with `--secret-stdin`.
 
-For 1Password, prefer a direct pipe. Replace the item reference with the
-reviewed production item; the value is captured by the tool and is not printed:
+For 1Password, prefer a direct pipe from the reviewed production Backend API
+item; the value is captured by the tool and is not printed:
 
 ```bash
-op read 'op://Production/Clerk/credential' |
+op read 'op://Production/clerk-production-api/secret_key' |
   python tools/clerk_pilot_roles.py grant \
     --secret-stdin \
     --email john@cosmaneura.com
@@ -38,7 +38,7 @@ rejects simultaneous environment and stdin secret sources.
 Run the dry run first and review the complete email/action list:
 
 ```bash
-op read 'op://Production/Clerk/credential' |
+op read 'op://Production/clerk-production-api/secret_key' |
   python tools/clerk_pilot_roles.py grant \
     --secret-stdin \
     --email john@cosmaneura.com
@@ -47,7 +47,7 @@ op read 'op://Production/Clerk/credential' |
 Then repeat the exact reviewed list with `--apply`:
 
 ```bash
-op read 'op://Production/Clerk/credential' |
+op read 'op://Production/clerk-production-api/secret_key' |
   python tools/clerk_pilot_roles.py grant \
     --secret-stdin \
     --email john@cosmaneura.com \
@@ -58,7 +58,7 @@ For a later controlled batch, repeat `--email` once per approved pilot user.
 All users are resolved and validated before the first update:
 
 ```bash
-op read 'op://Production/Clerk/credential' |
+op read 'op://Production/clerk-production-api/secret_key' |
   python tools/clerk_pilot_roles.py grant \
     --secret-stdin \
     --email first-approved@cosmaneura.com \
@@ -76,12 +76,12 @@ Revocation removes only a current `sovereign_role=provider`; it refuses to
 delete or overwrite any other role value. Dry-run, review, and then apply:
 
 ```bash
-op read 'op://Production/Clerk/credential' |
+op read 'op://Production/clerk-production-api/secret_key' |
   python tools/clerk_pilot_roles.py revoke \
     --secret-stdin \
     --email john@cosmaneura.com
 
-op read 'op://Production/Clerk/credential' |
+op read 'op://Production/clerk-production-api/secret_key' |
   python tools/clerk_pilot_roles.py revoke \
     --secret-stdin \
     --email john@cosmaneura.com \
