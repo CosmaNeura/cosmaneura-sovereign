@@ -557,7 +557,7 @@ def test_terraform_keeps_runtime_application_secrets_out_of_state() -> None:
     assert 'resource "azurerm_role_assignment" "bootstrap_acr_push"' in terraform
     assert 'resource "azurerm_role_assignment" "bootstrap_acr_tasks"' in terraform
     assert "bootstrap_operator_object_id == null ? 0 : 1" in terraform
-    assert terraform.count("prevent_destroy = true") == 5
+    assert terraform.count("prevent_destroy = true") == 7
     assert 'resource "terraform_data" "state_environment_guard"' in terraform
     assert "triggers_replace = local.environment" in terraform
     assert "SOVEREIGN_RECORD_GRANT_SECRET" in variables
