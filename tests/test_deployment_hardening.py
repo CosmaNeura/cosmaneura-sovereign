@@ -679,6 +679,185 @@ def test_bootstrap_build_emits_only_an_immutable_digest() -> None:
     assert "az acr login" not in script
 
 
+def test_bootstrap_build_resolves_dockerfile_from_generated_context(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    operator_dir = tmp_path / "operator"
+    operator_dir.mkdir()
+    revision = "a" * 40
+    epoch = 1_700_000_000
+    digest = "sha256:" + "b" * 64
+    acr_log = tmp_path / "acr-build.json"
+
+    nixpacks_payload = tmp_path / "nixpacks"
+    _make_executable(
+        nixpacks_payload,
+        f"#!{sys.executable}\n"
+        + """import pathlib
+import shlex
+import sys
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("nixpacks 1.41.0")
+    raise SystemExit(0)
+if len(args) < 2 or args[0] != "build":
+    raise SystemExit(2)
+
+source = pathlib.Path(args[1])
+image = args[args.index("--name") + 1]
+revision = args[args.index("--cache-key") + 1]
+generated = source / ".nixpacks"
+generated.mkdir()
+dockerfile = generated / "Dockerfile"
+dockerfile.write_text(
+    "FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067\\n"
+    f"RUN --mount=type=cache,id={revision}-/root/cache/pip "
+    "python -m pip install --require-hashes --only-binary=:all: "
+    "-r requirements.lock\\n"
+)
+build_args = [
+    "NIXPACKS_METADATA=python",
+    "NIXPACKS_PYTHON_VERSION=3.13",
+    "PIP_DEFAULT_TIMEOUT=100",
+    "PIP_DISABLE_PIP_VERSION_CHECK=1",
+    "PIP_NO_CACHE_DIR=1",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "PYTHONFAULTHANDLER=1",
+    "PYTHONHASHSEED=random",
+    "PYTHONUNBUFFERED=1",
+]
+command = [
+    "docker", "build", str(source),
+    "-f", str(dockerfile),
+    "-t", image,
+]
+for argument in build_args:
+    command.extend(["--build-arg", argument])
+command.extend([
+    "--label", f"org.opencontainers.image.revision={revision}",
+    "--platform", "linux/amd64",
+])
+(generated / "build.sh").write_text(shlex.join(command))
+""",
+    )
+
+    _make_executable(
+        bin_dir / "git",
+        f"#!{sys.executable}\n"
+        + """import io
+import os
+import sys
+import tarfile
+
+args = sys.argv[1:]
+if args[:1] == ["-C"]:
+    args = args[2:]
+if args == ["status", "--porcelain", "--untracked-files=all"]:
+    pass
+elif args == ["rev-parse", "HEAD"]:
+    print(os.environ["SOURCE_COMMIT"])
+elif args == ["show", "-s", "--format=%ct", "HEAD"]:
+    print(os.environ["SOURCE_EPOCH"])
+elif args == ["archive", "--format=tar", "HEAD"]:
+    payload = b"placeholder lock for generated Dockerfile context\\n"
+    info = tarfile.TarInfo("requirements.lock")
+    info.size = len(payload)
+    info.mtime = int(os.environ["SOURCE_EPOCH"])
+    with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+        archive.addfile(info, io.BytesIO(payload))
+else:
+    raise SystemExit(3)
+""",
+    )
+    _make_executable(
+        bin_dir / "curl",
+        f"#!{sys.executable}\n"
+        + """import os
+import pathlib
+import sys
+import tarfile
+
+args = sys.argv[1:]
+output = pathlib.Path(args[args.index("--output") + 1])
+with tarfile.open(output, "w:gz") as archive:
+    archive.add(os.environ["FAKE_NIXPACKS"], arcname="nixpacks")
+""",
+    )
+    _make_executable(
+        bin_dir / "python3",
+        f"#!{sys.executable}\n"
+        + f"""import os
+import sys
+
+if sys.argv[1:2] == ["-"]:
+    raise SystemExit(0)
+os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
+""",
+    )
+    _make_executable(
+        bin_dir / "az",
+        f"#!{sys.executable}\n"
+        + """import json
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if args[:2] == ["acr", "build"]:
+    dockerfile = args[args.index("--file") + 1]
+    if pathlib.Path.cwd() == pathlib.Path(os.environ["OPERATOR_CWD"]):
+        raise SystemExit("ACR build still runs from the operator directory")
+    if dockerfile != ".nixpacks/Dockerfile" or not pathlib.Path(dockerfile).is_file():
+        raise SystemExit("Dockerfile does not resolve from the ACR working directory")
+    if args[-1] != ".":
+        raise SystemExit("ACR source is not the generated working directory")
+    pathlib.Path(os.environ["FAKE_ACR_LOG"]).write_text(json.dumps({
+        "cwd": str(pathlib.Path.cwd()),
+        "dockerfile": dockerfile,
+        "source": args[-1],
+    }))
+elif args[:3] == ["acr", "manifest", "show-metadata"]:
+    print(os.environ["IMAGE_DIGEST"])
+else:
+    raise SystemExit(4)
+""",
+    )
+
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "DEPLOYMENT_ENVIRONMENT": "staging",
+        "REGISTRY": "cosmaneurasovereignstagingregistry.azurecr.io",
+        "IMAGE_REPO": "cosmaneura/sovereign",
+        "SOURCE_COMMIT": revision,
+        "SOURCE_EPOCH": str(epoch),
+        "FAKE_NIXPACKS": str(nixpacks_payload),
+        "FAKE_ACR_LOG": str(acr_log),
+        "OPERATOR_CWD": str(operator_dir),
+        "IMAGE_DIGEST": digest,
+    }
+    result = subprocess.run(
+        [ROOT / "infra" / "scripts" / "build-bootstrap-image.sh"],
+        cwd=operator_dir,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == (
+        "cosmaneurasovereignstagingregistry.azurecr.io/"
+        f"cosmaneura/sovereign@{digest}"
+    )
+    invocation = json.loads(acr_log.read_text())
+    assert invocation["dockerfile"] == ".nixpacks/Dockerfile"
+    assert invocation["source"] == "."
+    assert Path(invocation["cwd"]).name == "source"
+
+
 def test_workflow_resolves_digest_and_calls_paired_deployer() -> None:
     workflow = (ROOT / ".github" / "workflows" / "build_and_publish.yml").read_text()
     assert "AZURE_PROVIDER_CONTAINER_APP" in workflow
