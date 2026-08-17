@@ -42,6 +42,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SMOKE_PYTHON="${SMOKE_PYTHON:-python3}"
 REGISTRY_SERVER="${REGISTRY_SERVER:-cosmaneurasovereignprodregistry.azurecr.io}"
 IMAGE_REPO="${IMAGE_REPO:-cosmaneura/sovereign}"
+if [[ ! "$REGISTRY_SERVER" =~ ^[a-z0-9]{5,50}\.azurecr\.io$ ]]; then
+  echo "REGISTRY_SERVER must be a lowercase Azure Container Registry host" >&2
+  exit 2
+fi
+if [[ ! "$IMAGE_REPO" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$ ]]; then
+  echo "IMAGE_REPO is invalid" >&2
+  exit 2
+fi
 command -v "$SMOKE_PYTHON" >/dev/null || {
   echo "SMOKE_PYTHON must name an executable Python with locked runtime dependencies" >&2
   exit 2

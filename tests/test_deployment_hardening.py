@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "infra" / "scripts" / "deploy-dual.sh"
@@ -81,7 +83,7 @@ if args[:2] == ["containerapp", "show"]:
                 "userAssignedIdentities": {{identity_id: {{}}}},
             }},
             "registries": [{{
-                "server": "cosmaneurasovereignprodregistry.azurecr.io",
+                "server": os.environ["REGISTRY_SERVER"],
                 "identity": identity_id,
             }}],
             "secrets": [{{
@@ -168,12 +170,12 @@ def _deploy_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
         "RESOURCE_GROUP": "rg-test",
         "PROVIDER_APP": "provider-app",
         "PUBLIC_APP": "public-app",
-        "REGISTRY_SERVER": "registry.example",
+        "REGISTRY_SERVER": "testregistry.azurecr.io",
         "IMAGE_REPO": "repo",
-        "IMAGE_REF": f"registry.example/repo@{digest}",
+        "IMAGE_REF": f"testregistry.azurecr.io/repo@{digest}",
         "REVISION_SUFFIX": "r-12345-1",
-        "OLD_PROVIDER": "registry.example/repo@sha256:" + "a" * 64,
-        "OLD_PUBLIC": "registry.example/repo@sha256:" + "b" * 64,
+        "OLD_PROVIDER": "testregistry.azurecr.io/repo@sha256:" + "a" * 64,
+        "OLD_PUBLIC": "testregistry.azurecr.io/repo@sha256:" + "b" * 64,
         "FAKE_LOG": str(log),
         "SMOKE_LOG": str(tmp_path / "smoke.log"),
         "SMOKE_PYTHON": str(bin_dir / "smoke-python"),
@@ -225,11 +227,30 @@ def test_functional_smoke_failure_rolls_both_mounts_back(tmp_path: Path) -> None
 
 def test_deploy_refuses_a_mutable_previous_image(tmp_path: Path) -> None:
     env, log = _deploy_env(tmp_path)
-    env["OLD_PROVIDER"] = "registry.example/repo:latest"
+    env["OLD_PROVIDER"] = "testregistry.azurecr.io/repo:latest"
     result = subprocess.run([DEPLOY], env=env, text=True, capture_output=True)
     assert result.returncode == 1
     assert not log.exists()
     assert "immutable previous image" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("REGISTRY_SERVER", "registry.example", "REGISTRY_SERVER"),
+        ("REGISTRY_SERVER", "TestRegistry.azurecr.io", "REGISTRY_SERVER"),
+        ("IMAGE_REPO", "../other/repo", "IMAGE_REPO"),
+    ],
+)
+def test_deploy_refuses_invalid_registry_scope_before_mutation(
+    tmp_path: Path, name: str, value: str, message: str
+) -> None:
+    env, log = _deploy_env(tmp_path)
+    env[name] = value
+    result = subprocess.run([DEPLOY], env=env, text=True, capture_output=True)
+    assert result.returncode == 2
+    assert not log.exists()
+    assert message in result.stderr
 
 
 def test_deploy_refuses_missing_functional_smoke_inputs_before_mutation(
