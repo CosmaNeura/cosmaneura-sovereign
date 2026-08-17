@@ -34,7 +34,9 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
       `roles: ["{{user.public_metadata.sovereign_role}}"]`.
 - [ ] Set `AUTH_ROLE_CLAIM=roles` and `AUTH_PROVIDER_ROLE=provider`. An admin
       must set `user.public_metadata.sovereign_role` to `provider` only for the
-      controlled pilot users. Never hard-code `provider` into every session.
+      controlled pilot users. Use the dry-run-first, exact-email workflow in
+      [`CLERK_PILOT_ROLES.md`](./CLERK_PILOT_ROLES.md); never hard-code
+      `provider` into every session.
 - [ ] Set `OIDC_ISSUER` / `OIDC_JWKS_URL` to your Clerk instance values.
 - [ ] Restrict issuance of the provider-role template to the one controlled Preview
       pilot tenant. The pinned resolver does not prove Clerk org membership;
