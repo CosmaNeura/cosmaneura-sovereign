@@ -3,11 +3,9 @@
 Token endpoint: {base}/oauth2/v1/token  (Okta-backed)
 Access tokens last ~60 minutes; we cache and refresh 60s early.
 
-Scopes:
-  - FHIR reads (Certified APIs, auto-approved): system/Patient.read,
-    system/DiagnosticReport.read, system/Observation.read, system/Binary.read
-  - Proprietary athenaOne APIs: athena/service/Athenanet.MDP.*
-Request only the scopes your Developer Console app was granted.
+The governed labs client requests only DiagnosticReport.read and
+Observation.read. Patient search, documents, and proprietary APIs are outside
+the ``labs.read`` operation.
 """
 from __future__ import annotations
 
@@ -17,12 +15,14 @@ import requests
 
 from .config import Settings
 
-FHIR_READ_SCOPES = [
-    "system/Patient.read",
+FHIR_LABS_READ_SCOPES = [
     "system/DiagnosticReport.read",
     "system/Observation.read",
-    "system/Binary.read",
 ]
+# Compatibility alias for older imports. The value is deliberately the narrow
+# labs-only scope set: patient search and report-document retrieval are not part
+# of the governed ``labs.read`` operation.
+FHIR_READ_SCOPES = FHIR_LABS_READ_SCOPES
 PROPRIETARY_SCOPE = "athena/service/Athenanet.MDP.*"
 
 

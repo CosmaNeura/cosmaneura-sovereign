@@ -199,9 +199,8 @@ class Settings(BaseSettings):
     athena_env: str = "preview"            # preview | production
     athena_practice_id: str = "195900"     # athenahealth shared sandbox practice
     athena_department_id: str = "1"
-    # Patient lookup by NAME lets a model reach any patient in the practice,
-    # which would bypass the host app's own authorization. Sandbox only unless
-    # a deployment deliberately opts in.
+    # Retained so an old deployment fails loudly. Name search is not part of
+    # the governed labs.read operation and is forbidden at every tier.
     labs_allow_patient_search: bool = False
 
     # --- Partner directory (MyCatholicDoctor + resource partners) ----------
@@ -380,6 +379,30 @@ def validate_deployment_configuration(settings: Settings) -> None:
             + ", ".join(ehr_configuration)
             + "."
         )
+    if settings.labs_allow_patient_search:
+        raise DeploymentConfigurationError(
+            "LABS_ALLOW_PATIENT_SEARCH must be false; patient name search is "
+            "not part of the governed labs.read operation at any tier."
+        )
+    if settings.feature_athena_labs and settings.athena_practice_id != "195900":
+        raise DeploymentConfigurationError(
+            "Sandbox labs require ATHENA_PRACTICE_ID=195900."
+        )
+    if settings.feature_athena_labs and not settings.mock_mode:
+        missing_labs = [
+            name
+            for name, value in (
+                ("ATHENA_CLIENT_ID", settings.athena_client_id),
+                ("ATHENA_CLIENT_SECRET", settings.athena_client_secret),
+            )
+            if not _has_value(value)
+        ]
+        if missing_labs:
+            raise DeploymentConfigurationError(
+                "Non-mock sandbox labs are missing required credentials: "
+                + ", ".join(missing_labs)
+                + "."
+            )
 
     if settings.mount_profile == MountProfile.PUBLIC:
         forbidden: list[str] = []

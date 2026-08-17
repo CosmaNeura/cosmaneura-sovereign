@@ -24,10 +24,11 @@ Everything here is SYNCHRONOUS (`requests`). It must only be called through
 from __future__ import annotations
 
 from .adapter import LabSource
-from .auth import FHIR_READ_SCOPES, TokenProvider
+from .auth import FHIR_LABS_READ_SCOPES, FHIR_READ_SCOPES, TokenProvider
 from .config import Settings
 from .fhir_source import AthenaFhirLabSource
 from .models import LabReport, LabValue
 
-__all__ = ["LabSource", "TokenProvider", "FHIR_READ_SCOPES", "Settings",
+__all__ = ["LabSource", "TokenProvider", "FHIR_LABS_READ_SCOPES",
+           "FHIR_READ_SCOPES", "Settings",
            "AthenaFhirLabSource", "LabReport", "LabValue"]

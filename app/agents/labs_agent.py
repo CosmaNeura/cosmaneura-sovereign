@@ -5,27 +5,22 @@ Brief: answer a clinician's questions about a patient's lab data from the
 connected EMR — what is out of range, how an analyte has trended — and hand
 the UI a structured payload it can chart.
 
-Where it came from: the athenahealth integration bundle, which shipped four
-tools (`find_patient`, `get_lab_results`, `get_analyte_trend`,
-`summarize_abnormal_labs`) plus a reference OpenAI function-calling loop.
-The tools are wired in via `app/clients/labs.py`. The reference *loop* is
-deliberately NOT used — see the note at the bottom of this docstring.
+The governed tool is one bounded ``labs.read`` operation. Summary and trend
+views are derived from that single response rather than issuing further reads.
 
 Clinical rules (kept verbatim in spirit from the bundle's system prompt):
   * Never invent or extrapolate a lab value. Every number stated must appear
     in the retrieved data.
   * Always give units, reference range, and the source's abnormal flag.
-  * Confirm ambiguous patient matches rather than guessing.
+  * Never search for or guess a patient; use only the host-open record.
   * Summarize and organize; treatment decisions stay with the clinician.
 
 PHI posture:
   * Lab values are PHI. Provider persona only, behind the BAA tripwire; the
     values go to the BAA-covered LLM and nowhere else.
-  * The patient reference comes from the HOST (metadata.patient_ref), because
-    only the host knows which patients this clinician may see. Name search is
-    sandbox-only (see LabsClient.find_patient).
-  * Every retrieval is audited by the orchestrator's chain; the agent returns
-    an access record (actor + hashed patient ref) rather than raw identifiers.
+  * The record reference comes from the host-open synthetic Preview record.
+    Patient name search is not part of this tool at any tier.
+  * The tool writes intent and outcome audit events around the outbound read.
 
 Why not the bundle's chat loop: it drives its own OpenAI function-calling
 conversation with its own system prompt. Run inside this service that would
@@ -37,8 +32,21 @@ from __future__ import annotations
 
 import hashlib
 
+from pydantic import ValidationError
+
 from app.agents.base import BaseAgent
-from app.clients.labs import LabsClient, LabsNotAuthorized, LabsUnavailable
+from app.clients.labs import (
+    SANDBOX_LABEL,
+    LabsClient,
+    LabsNotAuthorized,
+    LabsProductionUnavailable,
+    LabsReadAccess,
+    LabsReadRequest,
+    LabsTier,
+    LabsUnavailable,
+    abnormal_summary,
+    analyte_trend,
+)
 from app.config import ComplianceProfile
 from app.schemas import AgentResult, ChatRequest, Citation
 
@@ -69,7 +77,14 @@ class LabReviewAgent(BaseAgent):
         super().__init__(*args, **kwargs)
         self.labs = LabsClient(self.s)
 
-    async def run(self, request: ChatRequest, profile: ComplianceProfile) -> AgentResult:
+    async def run(
+        self,
+        request: ChatRequest,
+        profile: ComplianceProfile,
+        *,
+        labs_request: LabsReadRequest | None = None,
+        labs_access: LabsReadAccess | None = None,
+    ) -> AgentResult:
         self.require_baa_covered_llm(profile)
 
         if not self.labs.enabled:
@@ -80,39 +95,44 @@ class LabReviewAgent(BaseAgent):
                 data={"feature": "lab_review", "status": "disabled"},
             )
 
-        patient_ref = (request.metadata.get("patient_ref") or "").strip()
-        resolved_by = "host"
-        try:
-            if not patient_ref:
-                # No host-supplied patient: only the sandbox may resolve one by
-                # name, and only then does a model-chosen id become possible.
-                name = (request.metadata.get("patient_name")
-                        or _guess_name(request.message))
-                if not name:
-                    return AgentResult(
-                        agent=self.name,
-                        content=("Open the patient's record and ask again — I "
-                                 "look up labs for the record you have open, "
-                                 "not by name."),
-                        data={"feature": "lab_review", "status": "no_patient"},
-                    )
-                found = await self.labs.find_patient(name)
-                matches = found.get("matches", [])
-                if len(matches) != 1:
-                    return AgentResult(
-                        agent=self.name,
-                        content=(f"I found {len(matches)} patients matching "
-                                 f"“{name}”. Which one did you mean?"),
-                        data={"feature": "lab_review", "status": "ambiguous",
-                              "matches": matches},
-                    )
-                patient_ref = matches[0].get("id", "")
-                resolved_by = "search"
+        if labs_request is None or labs_access is None:
+            return AgentResult(
+                agent=self.name,
+                content=("Open the synthetic sandbox record and ask again — I "
+                         "review labs only for the record already open in the host."),
+                data={"feature": "lab_review", "status": "no_patient"},
+            )
 
-            summary = await self.labs.abnormal_summary(patient_ref)
-            analyte = request.metadata.get("analyte") or _guess_analyte(request.message)
-            trend = (await self.labs.analyte_trend(patient_ref, analyte)
-                     if analyte else None)
+        analyte_value = request.metadata.get("analyte") or _guess_analyte(request.message)
+        analyte = str(analyte_value).strip() if analyte_value else None
+        if analyte and (len(analyte) > 80 or any(ord(c) < 32 for c in analyte)):
+            return AgentResult(
+                agent=self.name,
+                content="The requested analyte could not be used. Please name one lab test.",
+                data={"feature": "lab_review", "status": "invalid_analyte"},
+            )
+        if analyte and not labs_request.analytes:
+            try:
+                labs_request = LabsReadRequest.model_validate({
+                    **labs_request.model_dump(),
+                    "analytes": (analyte,),
+                })
+            except ValidationError:
+                return AgentResult(
+                    agent=self.name,
+                    content="The requested analyte could not be used. Please name one lab test.",
+                    data={"feature": "lab_review", "status": "invalid_analyte"},
+                )
+        try:
+            tool_response = await self.labs.read(labs_request, labs_access)
+            summary = abnormal_summary(tool_response)
+            trend = analyte_trend(tool_response, analyte) if analyte else None
+        except LabsProductionUnavailable as exc:
+            return AgentResult(
+                agent=self.name,
+                content=str(exc),
+                data={"feature": "lab_review", "status": "production_refused"},
+            )
         except LabsNotAuthorized as exc:
             return AgentResult(
                 agent=self.name, content=str(exc),
@@ -123,15 +143,6 @@ class LabReviewAgent(BaseAgent):
                 agent=self.name, content=str(exc),
                 data={"feature": "lab_review", "status": "unavailable"},
             )
-        except RuntimeError:
-            # Never surface EMR error detail: it can carry patient data.
-            return AgentResult(
-                agent=self.name,
-                content=("I couldn't reach the lab system just now. The record "
-                         "itself is unaffected — please try again shortly."),
-                data={"feature": "lab_review", "status": "emr_error"},
-            )
-
         content = await self.llm.complete(
             system=_SYSTEM,
             prompt=(f"Clinician's question: {request.message}\n"
@@ -142,20 +153,24 @@ class LabReviewAgent(BaseAgent):
             max_tokens=1000,
         )
 
+        content = f"{SANDBOX_LABEL}.\n\n{content}"
         return AgentResult(
             agent=self.name,
             content=content,
-            citations=[Citation(source="athenahealth (EMR)",
-                                title="Patient lab results")],
+            citations=[Citation(source="athenahealth Preview (synthetic EMR)",
+                                title="Synthetic sandbox lab results")],
             data={
                 "feature": "lab_review",
+                "tier": LabsTier.SANDBOX.value,
+                "sandbox_label": SANDBOX_LABEL,
+                "result_count": tool_response.result_count,
                 "abnormal_summary": summary,
                 "trend": trend,
-                # Access record for the audit chain: who reached which record,
-                # without writing a patient identifier into the log.
-                "access": {"patient_ref_sha256_16": _hash_ref(patient_ref),
-                           "resolved_by": resolved_by,
-                           "sandbox": self.labs.sandbox},
+                "access": {
+                    "record_ref_sha256_16": _hash_ref(labs_request.record_ref),
+                    "resolved_by": "host_open_record",
+                    "sandbox": True,
+                },
             },
         )
 
@@ -174,16 +189,4 @@ def _guess_analyte(message: str) -> str | None:
     for a in _ANALYTES:
         if a in low:
             return a
-    return None
-
-
-def _guess_name(message: str) -> str | None:
-    """Sandbox convenience only: 'pull up Donna Sandboxtest' -> 'Sandboxtest'."""
-    low = message.lower()
-    for lead in ("pull up ", "look up ", "open ", "find "):
-        if lead in low:
-            tail = message[low.index(lead) + len(lead):].strip()
-            words = [w for w in tail.replace("'s", "").split() if w[:1].isalpha()]
-            if words:
-                return words[-1] if len(words) == 1 else " ".join(words[:2])
     return None

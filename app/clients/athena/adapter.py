@@ -12,17 +12,15 @@ from .models import LabReport
 
 class LabSource(ABC):
     @abstractmethod
-    def find_patient(self, family: str, given: str | None = None,
-                     birthdate: str | None = None) -> list[dict]:
-        """Search patients; returns [{'id', 'name', 'birthdate'}, ...]."""
+    def get_lab_reports(
+        self,
+        record_ref: str,
+        since: str,
+        until: str,
+        analytes: tuple[str, ...] = (),
+    ) -> list[LabReport]:
+        """Bounded lab reports for one host-open record.
 
-    @abstractmethod
-    def get_lab_reports(self, patient_id: str, since: str | None = None) -> list[LabReport]:
-        """All lab reports (with discrete values where available) for a patient.
-
-        since: ISO date (YYYY-MM-DD) lower bound, optional.
+        Both bounds are required ISO dates. ``analytes`` may narrow the
+        Observation query further when it contains LOINC codes.
         """
-
-    @abstractmethod
-    def get_report_document(self, report: LabReport) -> bytes | None:
-        """Original lab report file (PDF/image) if one exists."""
