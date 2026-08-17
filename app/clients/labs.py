@@ -290,7 +290,7 @@ class LabsReadAccess:
     mount: MountContext
     profile: ComplianceProfile
     audit: AuditLogger
-    record_scope_source: Literal["host_open_record", "platform"]
+    record_scope_source: Literal["platform_signed_open_record", "platform"]
 
 
 def _mock_payload(as_of: date) -> list[LabReport]:
@@ -411,9 +411,10 @@ class LabsClient:
             )
         if request.tier == LabsTier.PRODUCTION:
             raise LabsProductionUnavailable(PRODUCTION_REQUIREMENTS_MESSAGE)
-        if access.record_scope_source != "host_open_record":
+        if access.record_scope_source != "platform_signed_open_record":
             raise LabsNotAuthorized(
-                "Sandbox lab review requires the record currently open in the host."
+                "Sandbox lab review requires a signed grant for the record "
+                "currently open in the host."
             )
         if self.s.athena_env != "preview" or self.s.athena_practice_id != "195900":
             raise LabsNotAuthorized(

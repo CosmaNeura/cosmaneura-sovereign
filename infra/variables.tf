@@ -2,27 +2,74 @@ variable "tags" {
   description = "Tags applied to all resources"
   type        = map(string)
   default = {
-    environment = "production"
-    service     = "cosmaneura-sovereign"
-    managed     = "terraform"
+    service = "cosmaneura-sovereign"
+    managed = "terraform"
   }
 }
 
-# GitHub repo (OWNER/REPO) and branch allowed to deploy via OIDC federation.
+variable "deployment_environment" {
+  description = "Explicit isolated deployment boundary; no environment is selected by default"
+  type        = string
+  nullable    = false
+
+  validation {
+    condition     = contains(["prod", "staging"], var.deployment_environment)
+    error_message = "deployment_environment must be exactly prod or staging."
+  }
+}
+
+# GitHub repo (OWNER/REPO) allowed to deploy through the protected production
+# Environment's OIDC subject.
 variable "github_repository" {
   description = "GitHub repo authorized to push images / deploy, as OWNER/REPO"
   type        = string
   default     = "CosmaNeura/cosmaneura-sovereign"
 }
 
-variable "github_branch" {
-  description = "Branch whose workflow runs may deploy"
-  type        = string
-  default     = "main"
+variable "key_vault_secrets_ready" {
+  description = "Operator assertion that both mount-specific vaults contain every required runtime secret"
+  type        = bool
+  default     = false
 }
 
-# ENV vars that must stay secret. Resolved from .env.production.backend (which
-# carries op:// references) and wired in as Container App secrets.
+variable "live_apps_enabled" {
+  description = "Explicit release gate for creating both externally reachable Container Apps"
+  type        = bool
+  default     = false
+}
+
+variable "initial_image_ref" {
+  description = "Immutable ACR fallback image used to create or recover both mounts; persist and refresh before any later infrastructure plan"
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.initial_image_ref == "" ||
+      can(regex("@sha256:[0-9a-f]{64}$", var.initial_image_ref))
+    )
+    error_message = "initial_image_ref must be empty for resource bootstrap or end in an immutable sha256 digest."
+  }
+}
+
+variable "bootstrap_operator_object_id" {
+  description = "Temporary Entra object ID allowed to push the first image and seed both vaults"
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.bootstrap_operator_object_id == null ||
+      can(regex("^[0-9a-fA-F-]{36}$", var.bootstrap_operator_object_id))
+    )
+    error_message = "bootstrap_operator_object_id must be null or a UUID-shaped Entra object ID."
+  }
+}
+
+# ENV vars that must stay secret. Terraform stores only their versionless Key
+# Vault URIs; values are seeded with scripts/sync-key-vault-secrets.sh and never
+# enter Terraform state.
 variable "sovereign_secret_vars" {
   description = "ENV vars kept as Container App secrets"
   type        = set(string)
@@ -36,6 +83,7 @@ variable "sovereign_secret_vars" {
     # from both public allowlists below.
     "ATHENA_CLIENT_ID",
     "ATHENA_CLIENT_SECRET",
+    "SOVEREIGN_RECORD_GRANT_SECRET",
     # Add "MAGISTERIUM_MCP_TOKEN" here only when the optional inline doctrinal
     # MCP layer is enabled (MAGISTERIUM_MCP_ENABLED=true) — otherwise it would
     # force an unused, empty Container App secret.
@@ -104,21 +152,40 @@ variable "public_public_vars" {
 
 # Start commands by process type (mirrors cosmaneura/infra). Reads ../Procfile.
 data "external" "procfile" {
-  program     = ["yq", "Procfile", "--output-format", "json"]
-  working_dir = "${path.module}/.."
+  program = [
+    "python3",
+    abspath("${path.module}/scripts/read-procfile.py"),
+    abspath("${path.module}/../Procfile"),
+  ]
+  working_dir = abspath("${path.module}/..")
 }
 
-# All env values (public + secret) for this environment, resolved from
-# .env.production.backend via 1Password and emitted as JSON.
-# Inspect with: ./scripts/export-env.sh ../.env.production.backend
-data "external" "secrets" {
-  program     = ["bash", "${path.module}/scripts/export-env.sh", "${path.module}/../.env.production.backend"]
-  working_dir = path.module
+# Only non-secret provider configuration enters Terraform state. The exporter
+# refuses op:// references and fails if an allowlisted key is absent.
+data "external" "provider_public_config" {
+  count = var.live_apps_enabled ? 1 : 0
+  program = [
+    "bash",
+    abspath("${path.module}/scripts/export-public-env.sh"),
+    local.environment,
+    abspath("${path.module}/../.env.${local.deployment_context.env_file_suffix}.backend"),
+    join(",", sort(tolist(var.sovereign_public_vars))),
+    "provider",
+  ]
+  working_dir = abspath(path.module)
 }
 
-# A physically separate public export. It must contain only the allowlisted
-# public keys above; startup validation independently rejects forbidden drift.
-data "external" "public_secrets" {
-  program     = ["bash", "${path.module}/scripts/export-env.sh", "${path.module}/../.env.production.public"]
-  working_dir = path.module
+# The public configuration is independently filtered, so provider-only names
+# cannot cross into its Terraform state or Container App environment.
+data "external" "public_config" {
+  count = var.live_apps_enabled ? 1 : 0
+  program = [
+    "bash",
+    abspath("${path.module}/scripts/export-public-env.sh"),
+    local.environment,
+    abspath("${path.module}/../.env.${local.deployment_context.env_file_suffix}.public"),
+    join(",", sort(tolist(var.public_public_vars))),
+    "public",
+  ]
+  working_dir = abspath(path.module)
 }

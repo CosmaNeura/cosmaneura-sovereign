@@ -168,7 +168,7 @@ class LabReviewAgent(BaseAgent):
                 "trend": trend,
                 "access": {
                     "record_ref_sha256_16": _hash_ref(labs_request.record_ref),
-                    "resolved_by": "host_open_record",
+                    "resolved_by": "platform_signed_open_record",
                     "sandbox": True,
                 },
             },

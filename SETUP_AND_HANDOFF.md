@@ -237,25 +237,26 @@ advisory won't be available there; the REST arbitration gate still applies.
 
 ---
 
-## 10. Wire authentication to your identity provider (Dev)
+## 10. Wire the provider Clerk template
 
 The JWT layer is built and tested; it needs to be pointed at your IdP. For a
 **provider/PHI deployment** (required — do not use `disabled` or `dev_hs256` in
 production):
 
-1. In your IdP (Auth0 / Cognito / Entra / Okta / Keycloak), create an API/app
-   for this service and a **role** that marks a user as a clinician.
-2. Set in `.env`: `AUTH_MODE=oidc`, `OIDC_ISSUER`, `OIDC_AUDIENCE`,
-   `OIDC_JWKS_URL`, `OIDC_ALGORITHMS=["RS256"]`, `AUTH_ROLE_CLAIM` (the claim
-   carrying roles — dotted paths OK, e.g. `realm_access.roles` for Keycloak),
-   `AUTH_PROVIDER_ROLE` (the role value granting the provider persona), and
-   `ALLOW_PROVIDER_PERSONA=true`.
-3. Run a **live smoke test** with a real token (the JWKS endpoint isn't
-   reachable from the build environment, so this step is on you).
+1. In Clerk, create the JWT template `cosmaneura-sovereign` with
+   `aud="cosmaneura-sovereign"` and
+   `roles: ["{{user.public_metadata.sovereign_role}}"]`.
+2. An administrator sets `user.public_metadata.sovereign_role="provider"` only
+   for approved pilot users. Never stamp a static provider role on every token.
+3. Set `AUTH_MODE=oidc`, the Clerk issuer/JWKS values,
+   `OIDC_AUDIENCE=cosmaneura-sovereign`, `OIDC_ALGORITHMS=["RS256"]`,
+   `AUTH_ROLE_CLAIM=roles`, `AUTH_PROVIDER_ROLE=provider`, and
+   `ALLOW_PROVIDER_PERSONA=false`.
+4. Run the deployed live smoke with correct-role and wrong-role real tokens.
 
-Once configured: every `/chat` call needs a valid token; persona is taken from
-the verified role claim; a patient token cannot reach the PHI path even if the
-body claims `provider` (such attempts are audited as `persona_override`).
+Once configured: every provider `/chat` call needs a valid token and provider
+authority requires the verified role claim; a non-provider token cannot reach
+that pinned mount even if the body claims `provider`.
 Emergencies still short-circuit before auth.
 
 > Token verification is necessary but **not sufficient** for HIPAA. It is one
@@ -280,6 +281,10 @@ the (already-built) JWT auth at your identity provider (§10).
 
 ## 12. Sprint status & go-live runbook (July 24, 2026)
 
+> Historical sprint snapshot. For current dual-mount deployment and smoke
+> procedure, use `DEPLOY_CHECKLIST.md`; the current smoke tools target deployed
+> pinned instances and intentionally do not run direct local provider clients.
+
 Everything below reflects the `claude/repo-review-8e9d5x` branch (PR #1).
 Written so the incoming developer can go from clone to first live output in
 under an hour.
@@ -294,7 +299,7 @@ under an hour.
 | `GET /welcome` bootstrap, `POST /digest` journey compression, `GET /panel.js` drop-in dashboard component | `app/main.py`, `app/panel.js` |
 | History-aware routing; agents consume `metadata.journey_digest` | `app/sovereign/router.py`, agents |
 | Azure client speaks BOTH endpoint dialects (classic + Foundry v1, incl. `max_completion_tokens`) | `app/clients/llm.py` |
-| Live smoke test with plain-language failure hints | `tools/smoke_live.py` |
+| Paired deployed mount/OIDC/model smoke | `tools/smoke_live.py` |
 | Design docs: `INTERACTION_DESIGN.md`, `PROVIDER_COPILOT_DESIGN.md`, `UI_UX_DESIGN.md`; data governance in `README.md` | repo root |
 
 ### Azure facts + consolidation checklist (owner decision, July 24, 2026)
@@ -322,21 +327,20 @@ consolidation — 15 minutes:
 - Endpoint (wired in config): `https://cosmascode.services.ai.azure.com/openai/v1`
 - Deployments (wired in config): `gpt-5.6-sol` · `gpt-5.4-nano`
 - Key: 1Password item `CosmasCode` — never transmitted outside 1Password
-- `tools/smoke_live.py` validates all of the above; a 404 there means a
-  deployment-name mismatch and says so in plain language
+- The current `tools/smoke_live.py` validates deployed public/provider mount
+  separation, missing/wrong-role/provider-role OIDC behavior, and live model paths.
 
 ### Go-live runbook (first real output, synthetic data)
 
-1. `git fetch && git checkout claude/repo-review-8e9d5x && make install`
-2. `cp .env.example .env` — endpoint + deployment names are already correct;
-   fill `AZURE_OPENAI_API_KEY` (1Password) and `MAGISTERIUM_API_KEY` (vault);
-   set `MOCK_MODE=false`.
-3. `PYTHONPATH=. python tools/smoke_live.py` → expect three PASSes. Each
-   failure mode prints its own remediation hint.
-4. `PYTHONPATH=. python run_demo.py` with real models — read all 8 scenarios,
-   eyeball routing choices and doctrinal verdicts. SYNTHETIC DATA ONLY.
-5. Deploy staging via `infra/` (Terraform targets Azure Container Apps; env
-   contract in `infra/variables.tf` already matches the new config).
+1. Follow `DEPLOY_CHECKLIST.md` to provision physically separate foundations;
+   leave live apps and CI deployment disabled by default.
+2. Supply the deployed URLs, short-lived provider-role and non-provider Clerk
+   tokens, and a fresh host-issued grant for the confirmed vendor-owned Preview
+   record only in the protected transactional smoke step.
+3. Run the paired deployer from the reviewed private operator terminal. It runs
+   both deployed smoke tools and rolls both image revisions back if any
+   functional gate fails. Keep unattended workflow deployment disabled until a
+   smoke-time credential mint exchange is implemented.
 
 ### Blocked on (not code)
 

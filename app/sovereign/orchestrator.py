@@ -59,6 +59,12 @@ from app.schemas import (ChatRequest, ChatResponse, Citation, DigestRequest,
 from app.security.auth import Principal
 from app.security.mount import (MountResolveRequest, MountResolver,
                                 MountResolutionError, PinnedResolver)
+from app.security.record_grant import (
+    RecordGrantConfigurationError,
+    RecordGrantRejected,
+    configured_record_grant_key,
+    verify_record_grant,
+)
 from app.sovereign.arbiter import DoctrinalArbiter
 from app.sovereign.router import Router
 
@@ -304,13 +310,13 @@ class Sovereign:
         # Persona is retained only as a derived UX/prompt hint. Replace the
         # legacy body field before routing or dispatch so downstream code can
         # never observe it as authority (or even as a tone hint).
-        # The sandbox record is the one exception allowed by ADR 0015: capture
-        # the host-open record once, then strip both its canonical key and the
-        # temporary legacy alias before the router, model, or agent sees the
-        # chat metadata. Production never accepts this host-supplied scope.
-        host_record_ref = request.metadata.get("record_ref")
-        if host_record_ref is None:
-            host_record_ref = request.metadata.get("patient_ref")
+        # The sandbox record grant is the one exception allowed by ADR 0015:
+        # capture its opaque ciphertext once, then strip every authority-shaped
+        # field before the router, model, or agent sees chat metadata. The
+        # browser cannot select the underlying Athena record; the platform
+        # derives it from the authenticated open chart and Sovereign verifies
+        # that actor-bound grant immediately before tool construction.
+        host_record_grant = request.metadata.get("record_ref")
         if request.persona != effective_persona:
             self.audit.record(trace_id=trace_id, profile=profile, event="persona_override",
                               details={"claimed": request.persona.value,
@@ -394,11 +400,37 @@ class Sovereign:
         if intent == Intent.LAB_REVIEW:
             labs_request = None
             labs_access = None
-            record_value = host_record_ref
+            record_value = None
+            if isinstance(host_record_grant, str) and principal is not None:
+                try:
+                    grant_key = configured_record_grant_key(
+                        self.s.sovereign_record_grant_secret.get_secret_value()
+                        if self.s.sovereign_record_grant_secret is not None
+                        else None
+                    )
+                    verified_grant = verify_record_grant(
+                        host_record_grant,
+                        key=grant_key,
+                        expected_actor_ref=principal.subject,
+                    )
+                except RecordGrantConfigurationError:
+                    self.audit.record(
+                        trace_id=trace_id,
+                        profile=profile,
+                        event="ehr_labs_record_grant_refused",
+                        details={"reason": "grant_verifier_unavailable"},
+                    )
+                except RecordGrantRejected:
+                    self.audit.record(
+                        trace_id=trace_id,
+                        profile=profile,
+                        event="ehr_labs_record_grant_refused",
+                        details={"reason": "grant_rejected"},
+                    )
+                else:
+                    record_value = verified_grant.vendor_record_ref
             if (
-                isinstance(record_value, str)
-                and record_value.strip()
-                and record_value == record_value.strip()
+                record_value is not None
                 and mount.actor_id is not None
                 and mount.tenant_id is not None
             ):
@@ -437,7 +469,7 @@ class Sovereign:
                         mount=mount,
                         profile=profile,
                         audit=self.audit,
-                        record_scope_source="host_open_record",
+                        record_scope_source="platform_signed_open_record",
                     )
             result = await agent.run(
                 request,

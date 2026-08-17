@@ -1,156 +1,152 @@
-"""Bounded athenahealth Preview smoke for governed ``labs.read``.
+"""Run one governed lab review through the deployed provider mount.
 
-Run with ``PYTHONPATH=. .venv/bin/python tools/smoke_labs.py``. The script
-requires only ``ATHENA_CLIENT_ID`` and ``ATHENA_CLIENT_SECRET`` and is pinned
-to the known synthetic Preview practice/record. It never searches by name,
-never calls an LLM, performs one logical read, and derives summaries locally.
+Required environment variables:
+
+* ``SOVEREIGN_PROVIDER_URL`` — exact HTTPS origin of the provider instance.
+* ``SOVEREIGN_PROVIDER_TOKEN`` — real Clerk JWT from the provider template.
+* ``SOVEREIGN_SYNTHETIC_RECORD_GRANT`` — short-lived host-issued Fernet grant.
+* ``SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED=true`` — explicit operator assertion
+  that the mapped Preview record contains only vendor-owned synthetic data.
+
+The script never searches by name or prints either token, a record reference, answer,
+lab values, or an upstream response body.
 """
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import sys
-from datetime import date, timedelta
+from collections.abc import Callable
 
-from app.clients.labs import (
-    SANDBOX_LABEL,
-    LabsCategory,
-    LabsClient,
-    LabsPurpose,
-    LabsReadAccess,
-    LabsReadRequest,
-    LabsTier,
-    LabsTimeWindow,
-    abnormal_summary,
-    analyte_trend,
+import httpx
+
+from app.clients.labs import SANDBOX_LABEL
+from tools.deployed_smoke import (
+    SmokeFailure,
+    assert_health,
+    assert_welcome,
+    bearer_headers,
+    request_json,
+    required_base_url,
+    required_token,
 )
-from app.compliance.audit import AuditLogger
-from app.config import ComplianceProfile, MountProfile, Persona, Settings
-from app.security.mount import MountContext
-
-PREVIEW_PRACTICE = "195900"
-SYNTHETIC_RECORD_REF = "a-195900.E-60178"
 
 
-def _hint(err: str) -> str:
-    lowered = err.lower()
-    if "401" in lowered or "invalid_client" in lowered or "token request failed" in lowered:
-        return "Hint: re-copy the Preview client id and secret from the Developer Console."
-    if "403" in lowered:
-        return (
-            "Hint: the Preview app needs only DiagnosticReport.read and "
-            "Observation.read FHIR scopes."
+_FERNET_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{100,4096}={0,2}$")
+
+
+def required_synthetic_record_grant() -> str:
+    if os.environ.get("SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED") != "true":
+        raise SmokeFailure(
+            "SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED must be exactly true after Preview verification"
         )
-    if "429" in lowered:
-        return "Hint: the Preview rate limit was reached; wait briefly and retry."
-    if any(
-        token in lowered
-        for token in ("connection", "timed out", "timeout", "resolve", "ssl")
+    grant = os.environ.get("SOVEREIGN_SYNTHETIC_RECORD_GRANT", "").strip()
+    if not _FERNET_TOKEN_RE.fullmatch(grant):
+        raise SmokeFailure(
+            "SOVEREIGN_SYNTHETIC_RECORD_GRANT must be a fresh host-issued Fernet token"
+        )
+    return grant
+
+
+def _assert_lab_response(payload: dict) -> None:
+    if payload.get("persona") != "provider" or payload.get("intent") != "lab_review":
+        raise SmokeFailure("provider request did not route to the lab-review lane")
+    if payload.get("safety_notice") is not None:
+        raise SmokeFailure("lab-review response carried an unexpected safety notice")
+    if not isinstance(payload.get("trace_id"), str) or not payload["trace_id"]:
+        raise SmokeFailure("lab-review response has no trace identifier")
+    answer = payload.get("answer")
+    if not isinstance(answer, str) or not answer.startswith(SANDBOX_LABEL):
+        raise SmokeFailure("lab-review response is missing the persistent sandbox label")
+    review = payload.get("doctrinal_review")
+    if not isinstance(review, dict) or not isinstance(review.get("conforms"), bool):
+        raise SmokeFailure("lab-review response did not complete doctrinal arbitration")
+
+    structured = payload.get("structured")
+    if not isinstance(structured, dict):
+        raise SmokeFailure("lab-review response has no structured result")
+    expected = {
+        "feature": "lab_review",
+        "tier": "sandbox",
+        "sandbox_label": SANDBOX_LABEL,
+    }
+    for name, value in expected.items():
+        if structured.get(name) != value:
+            raise SmokeFailure(f"lab-review result has an unexpected {name}")
+    count = structured.get("result_count")
+    if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 500:
+        raise SmokeFailure("lab-review result count is empty or out of bounds")
+    access = structured.get("access")
+    if not isinstance(access, dict):
+        raise SmokeFailure("lab-review result has no access proof")
+    if set(access) != {"record_ref_sha256_16", "resolved_by", "sandbox"}:
+        raise SmokeFailure("lab-review access proof has an unexpected shape")
+    record_hash = access.get("record_ref_sha256_16")
+    if (
+        not isinstance(record_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{16}", record_hash)
+        or access.get("resolved_by") != "platform_signed_open_record"
+        or access.get("sandbox") is not True
     ):
-        return "Hint: check network access to api.preview.platform.athenahealth.com."
-    return "Hint: share this synthetic-data-only failure with the developer."
+        raise SmokeFailure("lab-review access proof is not bound to the host-open sandbox record")
+    citations = payload.get("citations")
+    if not isinstance(citations, list) or not any(
+        isinstance(item, dict) and item.get("source") == "athenahealth Preview (synthetic EMR)"
+        for item in citations
+    ):
+        raise SmokeFailure("lab-review response has no synthetic Preview citation")
 
 
-def _fail(stage: str, exc: Exception) -> None:
-    print(f"[FAIL] {stage}: {exc}")
-    print("       " + _hint(str(exc)))
+async def run(
+    client: httpx.AsyncClient,
+    provider_url: str,
+    provider_token: str,
+    record_grant: str,
+    *,
+    emit: Callable[[str], None] = print,
+) -> None:
+    headers = bearer_headers(provider_token)
+    health = await request_json(client, "GET", provider_url, "/healthz")
+    assert_health(health, "provider_assistant", "oidc")
+    welcome = await request_json(client, "GET", provider_url, "/welcome")
+    assert_welcome(welcome, "provider_assistant")
+    emit("[PASS] deployed provider is OIDC-authenticated and pinned to Preview sandbox labs")
 
-
-def _access(settings: Settings, request: LabsReadRequest) -> LabsReadAccess:
-    profile = ComplianceProfile(Persona.PROVIDER)
-    mount = MountContext(
-        surface="provider_assistant",
-        auth_tier="provider",
-        capabilities=("ehr:labs:read",),
-        tenant_id=request.tenant_ref,
-        actor_id=request.actor_ref,
+    response = await request_json(
+        client,
+        "POST",
+        provider_url,
+        "/chat",
+        headers=headers,
+        body={
+            "persona": "provider",
+            "message": "Anything concerning in the open chart's lab results?",
+            "metadata": {"record_ref": record_grant},
+        },
     )
-    return LabsReadAccess(
-        trace_id="labs_preview_smoke_trace",
-        expected_turn_request_ref=request.turn_request_ref,
-        authorized_record_ref=request.record_ref,
-        expected_purpose=request.purpose,
-        expected_categories=request.categories,
-        expected_time_window=request.time_window,
-        expected_tier=request.tier,
-        mount=mount,
-        profile=profile,
-        audit=AuditLogger(settings),
-        record_scope_source="host_open_record",
-    )
+    _assert_lab_response(response)
+    emit("[PASS] one bounded deployed labs.read completed with access proof and doctrinal review")
 
 
 async def main() -> int:
-    settings = Settings(
-        mock_mode=False,
-        feature_athena_labs=True,
-        mount_profile=MountProfile.PROVIDER_ASSISTANT,
-        mount_tenant_id="tenant_preview195900",
-        athena_env="preview",
-        athena_practice_id=PREVIEW_PRACTICE,
-        labs_allow_patient_search=False,
-        audit_sink="stdout",
-    )
-    print(f"{SANDBOX_LABEL}; practice={settings.athena_practice_id}")
-
-    if not (settings.athena_client_id and settings.athena_client_secret):
-        print(
-            "[FAIL] Credentials: ATHENA_CLIENT_ID and ATHENA_CLIENT_SECRET "
-            "must both be set."
-        )
-        return 1
-    print("[PASS] Preview credentials present")
-
-    labs = LabsClient(settings)
     try:
-        await asyncio.to_thread(labs._source().tokens.get_token)
-        print("[PASS] OAuth token issued with minimal labs-only scopes")
-    except Exception as exc:  # every failure kind gets a synthetic-safe hint
-        _fail("OAuth token", exc)
+        provider_url = required_base_url("SOVEREIGN_PROVIDER_URL")
+        provider_token = required_token()
+        record_grant = required_synthetic_record_grant()
+        timeout = httpx.Timeout(120.0, connect=15.0)
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=False,
+            headers={"User-Agent": "cosmaneura-sovereign-labs-smoke/1"},
+        ) as client:
+            await run(client, provider_url, provider_token, record_grant)
+    except SmokeFailure as error:
+        print(f"[FAIL] {error}", file=sys.stderr)
         return 1
-
-    request = LabsReadRequest(
-        turn_request_ref="labs_preview_smoke_turn",
-        actor_ref="actor_preview_smoke",
-        tenant_ref="tenant_preview195900",
-        record_ref=SYNTHETIC_RECORD_REF,
-        purpose=LabsPurpose.LAB_REVIEW,
-        categories=(LabsCategory.LABORATORY,),
-        analytes=(),
-        time_window=LabsTimeWindow(
-            since=date.today() - timedelta(days=730), until=date.today()
-        ),
-        tier=LabsTier.SANDBOX,
-    )
-    try:
-        response = await labs.read(request, _access(settings, request))
-        if response.result_count == 0:
-            print(
-                "[FAIL] Bounded labs.read: the known synthetic record returned "
-                "no discrete values in the 730-day window."
-            )
-            print(
-                "       Hint: confirm the Preview fixture and record id before "
-                "certifying the lane."
-            )
-            return 1
-        print(
-            f"[PASS] One bounded labs.read returned {response.result_count} "
-            "discrete values (entered-in-error excluded)"
-        )
-    except Exception as exc:
-        _fail("Bounded labs.read", exc)
-        return 1
-
-    summary = abnormal_summary(response)
-    trend = analyte_trend(response, "a1c")
-    print(
-        f"[PASS] Local views derived without another EHR read: "
-        f"{summary['abnormal_analytes']} abnormal analytes; "
-        f"{trend['point_count']} A1C points"
-    )
-    print("All stages passed against synthetic athenahealth Preview data.")
+    print("Deployed synthetic Preview lab smoke passed without printing clinical data.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    raise SystemExit(asyncio.run(main()))

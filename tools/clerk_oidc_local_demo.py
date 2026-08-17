@@ -31,8 +31,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 # --- Simulated Clerk configuration --------------------------------------------
 CLERK_ISSUER = "https://demo-clerk.example.com"   # OIDC_ISSUER
 AUDIENCE = "cosmaneura-sovereign"                  # OIDC_AUDIENCE (Clerk JWT template)
-ROLE_CLAIM = "org_role"                            # AUTH_ROLE_CLAIM (a Clerk claim)
-PROVIDER_ROLE = "clinician"                        # AUTH_PROVIDER_ROLE
+ROLE_CLAIM = "roles"                               # dedicated template claim
+PROVIDER_ROLE = "provider"                         # admin-managed metadata value
 KID = "clerk-demo-key-1"
 
 # 1) Clerk's signing key + the JWKS it would publish.

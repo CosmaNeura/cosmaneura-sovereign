@@ -1,114 +1,165 @@
-"""
-Live smoke test — the "did the flip to real models work?" one-command check.
+"""Smoke both deployed, physically separated pinned-mount instances.
 
-Run AFTER filling .env with real credentials (MOCK_MODE=false,
-LLM_PROVIDER=azure_openai, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY,
-REASONING_MODEL / FAST_MODEL set to the Azure *deployment names*):
+Required environment variables:
 
-    PYTHONPATH=. python tools/smoke_live.py
+* ``SOVEREIGN_PUBLIC_URL`` — exact HTTPS origin of the public instance.
+* ``SOVEREIGN_PROVIDER_URL`` — exact HTTPS origin of the provider instance.
+* ``SOVEREIGN_PROVIDER_TOKEN`` — real Clerk JWT from the provider template.
+* ``SOVEREIGN_NON_PROVIDER_TOKEN`` — valid Clerk JWT without the provider role.
 
-Uses SYNTHETIC prompts only — safe to run before any compliance gate. Steps:
-  1. Ping the fast deployment (router/classifier path).
-  2. Ping the reasoning deployment (agent drafting path).
-  3. If MAGISTERIUM_API_KEY is set: run one full pipeline scenario
-     (referral routing + arbitration) end-to-end.
-
-Each step prints PASS/FAIL with a plain-language hint for the usual causes.
+The prompts are synthetic. The script never prints a token, response body, or
+answer and refuses redirects so provider credentials cannot cross origins.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Callable
 
-from app.clients.llm import LLMClient
-from app.config import Persona, Settings
-from app.schemas import ChatRequest
+import httpx
+
+from tools.deployed_smoke import (
+    SmokeFailure,
+    assert_chat,
+    assert_health,
+    assert_welcome,
+    bearer_headers,
+    distinct_origins,
+    distinct_tokens,
+    expect_status,
+    request_json,
+    required_base_url,
+    required_token,
+)
 
 
-def _hint(err: str) -> str:
-    e = err.lower()
-    if "401" in e or "unauthorized" in e or "key" in e:
-        return "Hint: the API key looks wrong. Re-copy it from the Azure resource's Keys page."
-    if "404" in e or "not found" in e:
-        return ("Hint: Azure can't find that deployment name. REASONING_MODEL / "
-                "FAST_MODEL must match the deployment names in Foundry's "
-                "'Models + endpoints' list EXACTLY (they are addresses, not model IDs).")
-    if "timed out" in e or "connect" in e or "resolve" in e:
-        return "Hint: AZURE_OPENAI_ENDPOINT looks wrong or unreachable. Copy it from the deployment page."
-    if "quota" in e or "429" in e:
-        return "Hint: rate/quota limit. Check the deployment's quota (TPM) in Foundry."
-    if "unsupported" in e or "temperature" in e or "max_tokens" in e:
-        return ("Hint: this model rejected a request parameter. GPT-5-generation "
-                "models change parameter rules between versions — send this exact "
-                "message to the developer; it's a one-line fix in app/clients/llm.py.")
-    return "Hint: read the message above; if unclear, send it to the developer verbatim (it is PHI-safe)."
+_PUBLIC_EDUCATION = {
+    "persona": "patient",
+    "message": "Explain in general what systolic and diastolic blood pressure numbers mean.",
+    "metadata": {},
+}
+_PROVIDER_EDUCATION = {
+    "persona": "provider",
+    "message": "Explain in general what systolic and diastolic blood pressure numbers mean.",
+    "metadata": {},
+}
+_PUBLIC_ESCALATION_ATTEMPT = {
+    "persona": "provider",
+    "message": "Review the lab results from the open chart and show the A1C trend.",
+    "metadata": {"record_ref": "synthetic-smoke-record"},
+}
+
+
+async def run(
+    client: httpx.AsyncClient,
+    public_url: str,
+    provider_url: str,
+    provider_token: str,
+    non_provider_token: str,
+    *,
+    emit: Callable[[str], None] = print,
+) -> None:
+    distinct_origins(public_url, provider_url)
+    distinct_tokens(provider_token, non_provider_token)
+    provider_headers = bearer_headers(provider_token)
+
+    public_health = await request_json(client, "GET", public_url, "/healthz")
+    assert_health(public_health, "public", "disabled")
+    provider_health = await request_json(client, "GET", provider_url, "/healthz")
+    assert_health(provider_health, "provider_assistant", "oidc")
+    emit("[PASS] both health endpoints report distinct pinned mounts with MOCK_MODE=false")
+
+    public_welcome = await request_json(client, "GET", public_url, "/welcome")
+    assert_welcome(public_welcome, "public")
+    provider_welcome = await request_json(client, "GET", provider_url, "/welcome")
+    assert_welcome(provider_welcome, "provider_assistant")
+    emit("[PASS] welcome capabilities are mount-specific and provider labs are sandbox-only")
+
+    await expect_status(
+        client,
+        "POST",
+        provider_url,
+        "/chat",
+        401,
+        body=_PROVIDER_EDUCATION,
+    )
+    emit("[PASS] provider chat rejects a missing Clerk token")
+
+    await expect_status(
+        client,
+        "POST",
+        provider_url,
+        "/chat",
+        403,
+        headers=bearer_headers(non_provider_token),
+        body=_PROVIDER_EDUCATION,
+    )
+    emit("[PASS] provider chat rejects a valid actor without the provider role")
+
+    denied = await request_json(
+        client,
+        "POST",
+        public_url,
+        "/chat",
+        body=_PUBLIC_ESCALATION_ATTEMPT,
+    )
+    assert_chat(
+        denied,
+        persona="patient",
+        intent="lab_review",
+        safety_notice="capability_denied",
+    )
+    if denied.get("structured"):
+        raise SmokeFailure("public capability denial unexpectedly returned structured data")
+    emit("[PASS] public body claims cannot reach the provider labs capability")
+
+    public_chat = await request_json(
+        client,
+        "POST",
+        public_url,
+        "/chat",
+        body=_PUBLIC_EDUCATION,
+    )
+    assert_chat(public_chat, persona="patient", intent="engagement")
+    emit("[PASS] public live model pipeline answered a synthetic education request")
+
+    provider_chat = await request_json(
+        client,
+        "POST",
+        provider_url,
+        "/chat",
+        headers=provider_headers,
+        body=_PROVIDER_EDUCATION,
+    )
+    assert_chat(provider_chat, persona="provider", intent="engagement")
+    emit("[PASS] provider live model pipeline accepted the verified Clerk actor")
 
 
 async def main() -> int:
-    s = Settings()
-    print(f"provider={s.llm_provider}  mock_mode={s.mock_mode}")
-    print(f"reasoning deployment: {s.reasoning_model}")
-    print(f"fast deployment:      {s.fast_model}\n")
-    if s.mock_mode:
-        print("MOCK_MODE is still true — set MOCK_MODE=false in .env and rerun.")
-        return 1
-
-    # Catch the most common endpoint mix-up before making any network call:
-    # the Foundry *project* endpoint (…/api/projects/…) is for Microsoft's
-    # agent SDK, not the Azure OpenAI protocol this service speaks.
-    ep = s.azure_openai_endpoint or ""
-    if s.llm_provider == "azure_openai":
-        if "/api/projects/" in ep:
-            print("[FAIL] AZURE_OPENAI_ENDPOINT is the Foundry *project* endpoint "
-                  "(it contains /api/projects/).")
-            print("       Use the Azure OpenAI endpoint instead: in Foundry open "
-                  "Models + endpoints → click a deployment → copy the Target URI —")
-            print("       the part before /openai/ is the endpoint, e.g. "
-                  "https://<resource>.openai.azure.com")
-            return 1
-        if not ep.startswith("https://"):
-            print("[FAIL] AZURE_OPENAI_ENDPOINT is empty or not an https:// URL.")
-            return 1
-
-    llm = LLMClient(s)
-    failures = 0
-
-    for label, model in (("fast", s.fast_model), ("reasoning", s.reasoning_model)):
-        try:
-            out = await llm.complete(system="Reply with exactly: OK",
-                                     prompt="ping", model=model, max_tokens=5)
-            print(f"[PASS] {label} deployment answered: {out[:40]!r}")
-        except Exception as exc:  # noqa: BLE001 — report every failure kind
-            failures += 1
-            print(f"[FAIL] {label} deployment: {exc}")
-            print("       " + _hint(str(exc)))
-
-    if failures:
-        return failures
-
-    if not s.magisterium_api_key:
-        print("\n[SKIP] Full-pipeline scenario: MAGISTERIUM_API_KEY not set. "
-              "Both model deployments work; add the Magisterium key to test "
-              "routing + doctrinal arbitration end-to-end.")
-        return 0
-
-    from app.sovereign.orchestrator import Sovereign
     try:
-        sov = Sovereign(s)
-        resp = await sov.handle(ChatRequest(
-            persona=Persona.PATIENT,
-            message="I'd like to find a Catholic primary care doctor in Texas.",
-            metadata={"state": "TX"}))
-        print(f"\n[PASS] Full pipeline: intent={resp.intent.value}, "
-              f"doctrinal_review={'yes' if resp.doctrinal_review else 'tier-skipped'}, "
-              f"trace={resp.trace_id}")
-        print("First 200 chars of the live answer:\n" + resp.answer[:200])
-    except Exception as exc:  # noqa: BLE001
-        print(f"\n[FAIL] Full pipeline: {exc}")
-        print("       " + _hint(str(exc)))
+        public_url = required_base_url("SOVEREIGN_PUBLIC_URL")
+        provider_url = required_base_url("SOVEREIGN_PROVIDER_URL")
+        provider_token = required_token()
+        non_provider_token = required_token("SOVEREIGN_NON_PROVIDER_TOKEN")
+        timeout = httpx.Timeout(90.0, connect=15.0)
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=False,
+            headers={"User-Agent": "cosmaneura-sovereign-live-smoke/1"},
+        ) as client:
+            await run(
+                client,
+                public_url,
+                provider_url,
+                provider_token,
+                non_provider_token,
+            )
+    except SmokeFailure as error:
+        print(f"[FAIL] {error}", file=sys.stderr)
         return 1
+    print("All deployed mount and live-model checks passed.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    raise SystemExit(asyncio.run(main()))

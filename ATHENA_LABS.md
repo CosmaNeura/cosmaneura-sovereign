@@ -1,17 +1,25 @@
 # athenahealth Lab Results — Integration Notes
 
-Status: **integrated, tested offline (56 tests), and LIVE-VERIFIED against
-the athenahealth Preview sandbox** — the owner ran `tools/smoke_labs.py` on
-2026-08-14 with real Developer Console credentials: OAuth token issued,
+Status: **integrated, tested offline, and historically live-verified against
+the athenahealth Preview sandbox** — on 2026-08-14 the owner ran the earlier
+direct-client smoke with real Developer Console credentials: OAuth token issued,
 Donna Sandboxtest resolved (`a-195900.E-60178`), 76 lab reports / 129
 discrete values retrieved (entered-in-error filtered), abnormal summary
 returned 14 analytes (low platelets, high fasting glucose, high BUN and
-creatinine, low eGFR), A1C 7.2 %. All five stages passed on the first run.
+creatinine, low eGFR), A1C 7.2 %. All five adapter stages passed on the first
+run. This historical direct smoke does not prove the provider-host record-grant
+boundary; that end-to-end smoke remains a deployment gate.
 
 Sandbox data note: Donna carries only ONE A1C observation, so the panel's
 trend chart (which requires >= 2 numeric points) will not draw for A1C on
 live sandbox data — the agent states single-point trends in prose instead,
 by design. Multi-observation analytes (e.g. creatinine, glucose) chart.
+
+The current `tools/smoke_labs.py` exercises one host-bound record through the
+deployed OIDC provider mount. It refuses name search, requires explicit
+synthetic-record confirmation plus a fresh actor-bound grant, and prints no token,
+record reference, lab value,
+answer, or upstream response body.
 
 Source: the `chatbot-bundle` delivered 2026-08-14, sandbox-verified against
 athenahealth Preview (practice 195900, patient Donna Sandboxtest).
@@ -46,9 +54,10 @@ six agents:
 | `openai_schemas.TOOLS` / `execute_tool` | **not used** — the router selects the lane; no function-calling loop |
 | `tests/test_tools.py` | `tests/test_labs.py`, re-pointed at the vendored client |
 
-The tool *capabilities* are unchanged: `find_patient`, `get_lab_results`
-(`lab_results`), `get_analyte_trend` (`analyte_trend`),
-`summarize_abnormal_labs` (`abnormal_summary`).
+The only callable governed operation is `labs.read`. Patient-name search is
+not part of that contract and is refused at every tier. Trend and abnormal
+summaries are deterministic projections of the one bounded read result, not
+additional EHR calls.
 
 ## 2. Deltas from the delivered code
 
@@ -71,28 +80,33 @@ The tool *capabilities* are unchanged: `find_patient`, `get_lab_results`
   it from production — omitted so it cannot be called by accident), plus the
   demo/seed/chat-loop reference scripts.
 
-## 3. Authorization — the gap worth naming
+## 3. Authorization — signed open-record grant
 
-The brief asks for a provider↔patient authorization check before tool calls.
-**The Sovereign cannot perform that check**: it has no patient roster. Only
-the host app knows which patients a clinician may open. Left unaddressed,
-`find_patient` is an authorization bypass in production — the model can name
-any patient in the practice and the tool fetches their labs.
+The browser never chooses an Athena record and a raw `record_ref` is never
+authority. The provider host performs the boundary check that Sovereign cannot:
 
-Implemented instead:
+1. The platform authenticates the Clerk session and re-resolves the exact
+   doctor-owned appointment and patient for the open Notes view.
+2. It requires an active synthetic-only designation and an active mapping to
+   athenahealth Preview practice `195900`, under database locks.
+3. It issues a 60-second Fernet grant with a closed claim set bound to the
+   verified Clerk subject, appointment, patient, sandbox tier, Preview practice,
+   and vendor record. The vendor identifier exists only inside ciphertext in
+   the browser.
+4. Sovereign authenticates the grant with its provider-only Key Vault secret,
+   requires `actor_ref` to equal the verified JWT `sub`, and derives the vendor
+   record server-side. Only then can it construct the fixed `LabsReadRequest`.
 
-1. **The host supplies the patient.** `metadata.patient_ref` comes from the
-   record the clinician already has open — the host authorized it by
-   displaying it. This is the normal path.
-2. **Name search is sandbox-only.** Outside `ATHENA_ENV=preview` it is
-   refused unless a deployment explicitly sets
-   `LABS_ALLOW_PATIENT_SEARCH=true`. Regression-tested.
-3. **Access is audited without identifiers.** The agent returns
-   `access.patient_ref_sha256_16` (a hash) plus how the patient was resolved,
-   so the hash-chained audit shows who reached which record without writing a
-   patient identifier into the log. *Open question for counsel: a HIPAA
-   accounting of disclosures may require the real identifier in a protected
-   store — that is a deliberate decision, not an oversight.*
+Tampered, expired, wrong-actor, wrong-practice, non-synthetic, production-tier,
+extra/missing-claim, and raw/name-like values all fail before the lab source.
+Name search is forbidden unconditionally. Revocation prevents new grants; an
+already issued synthetic Preview grant has at most the documented 60-second
+lifetime.
+
+The pre/post audit contains actor, tenant, turn, purpose, category, adapter,
+bounded window, and a record digest, never values or the vendor identifier.
+For this pinned pilot it is operational evidence only; V7/V8 centralized
+durability remains explicitly deferred under the accepted build plan.
 
 ## 4. Configuration
 
@@ -100,10 +114,11 @@ Implemented instead:
 FEATURE_ATHENA_LABS=true          # whole capability, off by default
 ATHENA_CLIENT_ID=…                # from Key Vault / 1Password, never committed
 ATHENA_CLIENT_SECRET=…
+SOVEREIGN_RECORD_GRANT_SECRET=…   # canonical Fernet key; provider vault only
 ATHENA_ENV=preview                # preview | production
 ATHENA_PRACTICE_ID=195900
 ATHENA_DEPARTMENT_ID=1
-LABS_ALLOW_PATIENT_SEARCH=false   # keep false outside the sandbox
+LABS_ALLOW_PATIENT_SEARCH=false   # required; name search is always forbidden
 ```
 
 With `MOCK_MODE=true` (the default) the lane returns deterministic stub labs
@@ -113,27 +128,30 @@ surface — so the whole lane is exercisable with zero credentials.
 
 ## 5. Verified
 
-- `tests/test_labs.py` (12 tests): the bundle's tool assertions preserved
+- `tests/test_labs.py` plus `tests/test_record_grant.py`: the bundle's tool
+  assertions preserved
   through integration (voided-report filtering, abnormal-only filter, trend by
   LOINC *and* by name substring, latest-value grouping), plus flag-off,
   credential-less, production-search-refused, BAA-attestation, routing, and
-  audit-hash gates.
-- The brief's demo script, through the full pipeline:
-  "Pull up Donna Sandboxtest" → `lab_review` (resolved by search, sandbox);
-  "Anything concerning in her labs?" → A1C 8.2 % high, ferritin 18 ng/mL low
-  (normal sodium correctly excluded); "Show me her A1C trend" → 7.6 → 8.2,
-  oldest first. Doctrinal gate and audit chain ran on every turn.
+  audit gates, exact grant claims, tamper/expiry/actor failures, secret
+  redaction, public-secret absence, and raw-record refusal.
+- The direct Preview adapter smoke remains useful for credential/network
+  validation. The release smoke must instead obtain a fresh platform grant
+  for a designated synthetic chart and exercise `/chat` through the provider
+  panel.
 
 ## 6. What's left
 
 | Item | Owner |
 |---|---|
-| ~~Live sandbox smoke test~~ → **DONE — live-verified by the owner, 2026-08-14** (five PASSes on first run; see Status above) | — |
-| ~~Surface labs in the panel~~ → **done**: `panel.js` renders `structured.trend` as a validated trend chart (ref band, emphasized endpoint, hover tooltips); the lab chip appears in `/welcome` only when `FEATURE_ATHENA_LABS=true`; browser-verified in the dashboard harness | — |
+| Provision the Clerk JWT template and approved provider metadata; prove correct-role and wrong-role tokens | Operator |
+| Seed the same generated Fernet key into the platform provider vault and provider Sovereign vault; prove it is absent from public | Operator |
+| Designate the demo platform patient as synthetic-only and map its opaque Preview `195900` record using the guarded CLI | Operator |
+| Run the end-to-end provider panel smoke and the paired deployment rollback rehearsal | Operator + developer |
 | Rewrite the vendored client on httpx and retire the thread dispatch | Developer, post-pilot |
 | Shared token cache if the service scales past one worker (tokens are per-process, ~60 min) | Developer, post-pilot |
-| Production go-live: practice BAA, "Cosmaneura Lab Insights" enabled in athenaOne, real practice id, `BAA_ATTESTED=true` | John + counsel |
-| Accounting-of-disclosures decision (hash vs. identifier in the audit store) | Counsel |
+| Real-data / production EHR authorization | Explicitly out of scope for this pilot |
+| V7/V8 centralized durable audit | Deferred/report-only per build prompt v2 |
 
 Rate limits observed in Preview: 15 req/s, 50k/day. Tokens last ~60 minutes
 and are cached in-process.

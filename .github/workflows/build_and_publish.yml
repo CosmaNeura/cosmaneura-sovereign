@@ -13,7 +13,14 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Never interrupt a main-branch run between the two mount updates. Pull
+  # requests are cheap enough to finish rather than sharing cancellation policy
+  # with the safety-critical deployment job.
+  cancel-in-progress: false
+
+# PR-controlled checks must never inherit a repository-default write token.
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -63,6 +70,10 @@ jobs:
   infrastructure:
     name: OpenTofu
     runs-on: ubuntu-latest
+    env:
+      # CI validates production configuration explicitly; the Terraform root
+      # itself has no default deployment boundary.
+      TF_VAR_deployment_environment: prod
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -79,36 +90,42 @@ jobs:
   deploy:
     name: 🚀 Deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Four revision transitions plus bounded forward/rollback smoke loops can
+    # legitimately exceed 20 minutes. Leave enough runway for the EXIT trap to
+    # restore both mounts rather than letting the runner kill it mid-rollback.
+    timeout-minutes: 60
     needs: [test, infrastructure]
     # Default-off kill switch. Do not enable until the external deployment,
     # governance, secrets, dual-app, smoke, and rollback gates are cleared.
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.SOVEREIGN_DEPLOY_ENABLED == 'true' }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && vars.SOVEREIGN_DEPLOY_ENABLED == 'true' }}
     environment: production
     permissions:
       contents: read
       id-token: write # required for Azure OIDC federation (no stored creds)
     env:
+      DEPLOYMENT_ENVIRONMENT: prod
       RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'cosmaneura-sovereign-prod' }}
-      CONTAINER_APP: ${{ vars.AZURE_CONTAINER_APP || 'cosmaneura-sovereign-prod-app' }}
+      PROVIDER_APP: ${{ vars.AZURE_PROVIDER_CONTAINER_APP || 'cosmaneura-sovereign-prod-app' }}
+      PUBLIC_APP: ${{ vars.AZURE_PUBLIC_CONTAINER_APP || 'cosmaneura-web-prod-app' }}
       REGISTRY: ${{ vars.CONTAINER_REGISTRY_HOST }} # e.g. cosmaneurasovereignprodregistry.azurecr.io
+      REGISTRY_SERVER: ${{ vars.CONTAINER_REGISTRY_HOST }}
       IMAGE_REPO: cosmaneura/sovereign
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - name: Install Nixpacks 1.41.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.12.5"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Install locked smoke dependencies
         run: |
-          archive="$RUNNER_TEMP/nixpacks-v1.41.0.tar.gz"
-          install_dir="$RUNNER_TEMP/nixpacks-v1.41.0"
-          curl --fail --location --silent --show-error \
-            --output "$archive" \
-            https://github.com/railwayapp/nixpacks/releases/download/v1.41.0/nixpacks-v1.41.0-x86_64-unknown-linux-gnu.tar.gz
-          echo "194bcad8c379f78a309eee1a88b2e6b2abc59f354efe7ecd7b4bbaf21de99a06  $archive" \
-            | sha256sum --check --strict
-          mkdir -p "$install_dir"
-          tar -xzf "$archive" -C "$install_dir"
-          echo "$install_dir" >> "$GITHUB_PATH"
-          "$install_dir/nixpacks" --version
+          uv venv --python 3.13 "$RUNNER_TEMP/deploy-venv"
+          uv pip install --python "$RUNNER_TEMP/deploy-venv" \
+            --require-hashes --only-binary=:all: \
+            -r requirements.lock
+          uv pip check --python "$RUNNER_TEMP/deploy-venv"
 
       # OIDC login — uses the federated identity created in infra/main.tf.
       - uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3
@@ -117,26 +134,21 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: ACR login
-        run: az acr login --name "${REGISTRY%%.*}"
-
-      - name: Build & push image
+      - name: Build and push checksum-pinned immutable image
         run: |
-          IMAGE="$REGISTRY/$IMAGE_REPO"
-          SHA="${{ github.sha }}"
-          nixpacks build . \
-            --name "$IMAGE:$SHA" \
-            --platform linux/amd64 \
-            --label org.opencontainers.image.revision="$SHA" \
-            --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}"
-          docker tag "$IMAGE:$SHA" "$IMAGE:latest"
-          docker push "$IMAGE:$SHA"
-          docker push "$IMAGE:latest"
+          IMAGE_REF="$(REGISTRY="$REGISTRY" IMAGE_REPO="$IMAGE_REPO" \
+            infra/scripts/build-bootstrap-image.sh)"
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
 
-      - name: Deploy to Azure
+      - name: Deploy both mounts with paired rollback
+        env:
+          REVISION_SUFFIX: r-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_PYTHON: ${{ runner.temp }}/deploy-venv/bin/python
+          SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED: ${{ vars.SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED }}
+          # Intentionally no Clerk JWTs or record grant here: all are
+          # short-lived and must never be persisted as workflow secrets. This
+          # default-off job cannot deploy until a reviewed smoke-time mint
+          # exchange is added.
+          SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS: "false"
         run: |
-          IMAGE="$REGISTRY/$IMAGE_REPO:${{ github.sha }}"
-          REV="r-$(echo "${{ github.sha }}" | cut -c1-7)"
-          az containerapp update \
-            -n "$CONTAINER_APP" -g "$RESOURCE_GROUP" \
-            -i "$IMAGE" --revision-suffix "$REV"
+          infra/scripts/deploy-dual.sh
