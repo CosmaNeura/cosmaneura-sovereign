@@ -25,22 +25,25 @@ PINNED_BASE_IMAGE = (
     EXPECTED_BASE_IMAGE
     + "@sha256:d45c89d80e13d7ad0fd555b5130f22a866d9dd10e861f589932303ef2314c7de"
 )
-LOCKED_INSTALL = (
+EXPECTED_INSTALL = (
+    "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && "
     "python -m pip install --require-hashes --only-binary=:all: "
     "-r requirements.lock"
 )
 
 
 def _normalize_pip_install(lines: list[str], revision: str) -> None:
-    mounted_install = (
+    mount_prefix = (
         f"RUN --mount=type=cache,id={revision}-/root/cache/pip,"
-        f"target=/root/.cache/pip {LOCKED_INSTALL}"
+        "target=/root/.cache/pip "
     )
+    mounted_install = f"{mount_prefix}{EXPECTED_INSTALL}"
     mount_lines = [line for line in lines if "--mount" in line]
     pip_install_lines = [line for line in lines if "python -m pip install" in line]
     if mount_lines != [mounted_install] or pip_install_lines != [mounted_install]:
         raise ValueError("generated Dockerfile pip cache mount or command drifted")
-    lines[lines.index(mounted_install)] = f"RUN {LOCKED_INSTALL}"
+    index = lines.index(mounted_install)
+    lines[index] = "RUN " + lines[index][len(mount_prefix):]
 
 
 def _parse_build_script(
@@ -121,7 +124,7 @@ def finalize(source: Path, expected_image: str, revision: str, epoch: int) -> No
     content = "\n".join(lines) + ("\n" if content.endswith("\n") else "")
     if (
         "--mount" in content
-        or content.splitlines().count(f"RUN {LOCKED_INSTALL}") != 1
+        or content.splitlines().count(f"RUN {EXPECTED_INSTALL}") != 1
         or "requirements.txt" in content
     ):
         raise ValueError("normalized Dockerfile install command is unsafe")

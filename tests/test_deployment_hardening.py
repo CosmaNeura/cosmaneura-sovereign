@@ -716,6 +716,7 @@ dockerfile.write_text(
     "FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067\\n"
     f"RUN --mount=type=cache,id={revision}-/root/cache/pip,"
     "target=/root/.cache/pip "
+    "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && "
     "python -m pip install --require-hashes --only-binary=:all: "
     "-r requirements.lock\\n"
 )
@@ -816,13 +817,15 @@ if args[:2] == ["acr", "build"]:
     if args[-1] != ".":
         raise SystemExit("ACR source is not the generated working directory")
     content = pathlib.Path(dockerfile).read_text()
-    locked_install = (
-        "RUN python -m pip install --require-hashes --only-binary=:all: "
+    expected_install = (
+        "RUN python -m venv --copies /opt/venv && "
+        ". /opt/venv/bin/activate && "
+        "python -m pip install --require-hashes --only-binary=:all: "
         "-r requirements.lock"
     )
     if (
         "--mount" in content
-        or content.splitlines().count(locked_install) != 1
+        or content.splitlines().count(expected_install) != 1
         or "requirements.txt" in content
     ):
         raise SystemExit("ACR received an unsafe normalized install command")
@@ -1064,6 +1067,7 @@ def test_nixpacks_remote_context_is_validated_and_normalized(tmp_path: Path) -> 
         "FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067\n"
         f"RUN --mount=type=cache,id={revision}-/root/cache/pip,"
         "target=/root/.cache/pip "
+        "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && "
         "python -m pip install --require-hashes --only-binary=:all: "
         "-r requirements.lock\n"
     )
@@ -1123,6 +1127,20 @@ def test_nixpacks_remote_context_is_validated_and_normalized(tmp_path: Path) -> 
 
     dockerfile.write_text(
         original_dockerfile.replace(
+            "python -m venv --copies /opt/venv", "python -m venv /opt/venv"
+        )
+    )
+    rejected = subprocess.run(
+        [sys.executable, helper, source, image, revision, "1700000000"],
+        text=True,
+        capture_output=True,
+    )
+    assert rejected.returncode == 1
+    assert "pip cache mount or command drifted" in rejected.stderr
+    dockerfile.write_text(original_dockerfile)
+
+    dockerfile.write_text(
+        original_dockerfile.replace(
             "-r requirements.lock", "-r requirements.lock --no-deps"
         )
     )
@@ -1143,13 +1161,15 @@ def test_nixpacks_remote_context_is_validated_and_normalized(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     assert not (generated / "build.sh").exists()
     normalized = dockerfile.read_text()
-    locked_install = (
-        "RUN python -m pip install --require-hashes --only-binary=:all: "
+    expected_install = (
+        "RUN python -m venv --copies /opt/venv && "
+        ". /opt/venv/bin/activate && "
+        "python -m pip install --require-hashes --only-binary=:all: "
         "-r requirements.lock"
     )
     assert "RUN --mount" not in normalized
     assert "--mount" not in normalized
-    assert normalized.splitlines().count(locked_install) == 1
+    assert normalized.splitlines().count(expected_install) == 1
     assert "requirements.txt" not in normalized
     assert (
         f'LABEL org.opencontainers.image.revision="{revision}"'
