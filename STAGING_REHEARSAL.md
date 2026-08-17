@@ -8,7 +8,9 @@ non-mock controls as production, but every stateful Azure resource has a
 The only intentionally shared external dependency is the explicitly supplied
 Azure Health DeID service. Staging has its own resource group, ACR, provider and
 public Container App Environments, Log Analytics workspaces, apps, runtime
-identities, Key Vaults, GitHub OIDC identity, state key, and secret references.
+identities, Key Vaults, state key, and secret references. The GitHub OIDC
+identity and all of its grants are default-off in staging; this rehearsal uses
+the reviewed operator path.
 
 ## External gates
 
@@ -27,6 +29,11 @@ Do not create the live apps until all of these are true:
 
 No real patient record or production EHR credential is permitted.
 
+The Log Analytics/Container App Environment phase must not be applied until the
+shared state account's blob versioning and soft-delete recovery policy has been
+approved. Workspace shared keys are provider-computed sensitive state fields;
+the staging root does not own or modify that cross-stack backend.
+
 ## 1. Select staging explicitly
 
 From a clean checkout:
@@ -39,6 +46,8 @@ cp infra/deployment.staging.auto.tfvars.example infra/deployment.auto.tfvars
 
 Replace the Clerk placeholders and review every assertion. Keep all secret
 entries as `op://Staging/...` references. Never substitute Production items.
+Keep `github_deploy_enabled=false`; no staging workflow currently needs that
+federated principal or its deployment roles.
 
 Initialize and prove the backend boundary:
 

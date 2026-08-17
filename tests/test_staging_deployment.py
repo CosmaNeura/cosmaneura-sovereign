@@ -46,6 +46,16 @@ def test_staging_persistent_inputs_select_only_the_staging_registry(
     assert disabled.returncode == 0, disabled.stderr
     assert "staging disabled" in disabled.stdout
 
+    path.write_text(
+        source.replace(
+            "github_deploy_enabled   = false",
+            "github_deploy_enabled   = null",
+        )
+    )
+    invalid_github_gate = _run_input_validator(path, "staging")
+    assert invalid_github_gate.returncode == 1
+    assert "github_deploy_enabled must be literal true or false" in invalid_github_gate.stderr
+
     digest = "a" * 64
     enabled = (
         source.replace("live_apps_enabled       = false", "live_apps_enabled       = true")
@@ -238,6 +248,100 @@ def test_foundation_parent_and_rollback_registry_refuse_targeted_destroy() -> No
     for block in (resource_group, registry):
         assert "lifecycle {" in block
         assert "prevent_destroy = true" in block
+
+
+def test_phase_two_runtime_roots_refuse_targeted_destroy_and_bound_staging_logs() -> None:
+    main = (INFRA / "main.tf").read_text()
+    key_vault = (INFRA / "key_vault.tf").read_text()
+    providers = (INFRA / "providers.tf").read_text()
+
+    for resource_type, name in (
+        ("azurerm_log_analytics_workspace", "main"),
+        ("azurerm_log_analytics_workspace", "public"),
+        ("azurerm_container_app_environment", "main"),
+        ("azurerm_container_app_environment", "public"),
+    ):
+        block = main.split(f'resource "{resource_type}" "{name}" {{', 1)[1].split(
+            '\nresource "', 1
+        )[0]
+        assert "lifecycle {" in block
+        assert "prevent_destroy = true" in block
+
+    for name in ("provider_runtime", "public_runtime"):
+        block = key_vault.split(
+            f'resource "azurerm_user_assigned_identity" "{name}" {{', 1
+        )[1].split('\nresource "', 1)[0]
+        assert "lifecycle {" in block
+        assert "prevent_destroy = true" in block
+
+    workspace_prefix = 'resource "azurerm_log_analytics_workspace"'
+    for name in ("main", "public"):
+        block = main.split(f'{workspace_prefix} "{name}" {{', 1)[1].split(
+            '\nresource "', 1
+        )[0]
+        assert 'sku                 = "PerGB2018"' in block
+        assert "daily_quota_gb      = local.log_analytics_daily_quota_gb" in block
+
+    assert (
+        'log_analytics_daily_quota_gb = local.environment == "staging" ? 0.1 : -1'
+        in providers
+    )
+
+
+def test_staging_github_deploy_identity_is_default_off_as_one_complete_unit() -> None:
+    main = (INFRA / "main.tf").read_text()
+    providers = (INFRA / "providers.tf").read_text()
+    variables = (INFRA / "variables.tf").read_text()
+    outputs = (INFRA / "outputs.tf").read_text()
+    prod_inputs = (INFRA / "deployment.auto.tfvars.example").read_text()
+    staging_inputs = (INFRA / "deployment.staging.auto.tfvars.example").read_text()
+
+    assert "github_deploy_enabled_default = true" in providers
+    assert "github_deploy_enabled_default = false" in providers
+    assert "var.github_deploy_enabled == null" in providers
+    github_variable = variables.split('variable "github_deploy_enabled"', 1)[1].split(
+        'variable "key_vault_secrets_ready"', 1
+    )[0]
+    assert "default     = null" in github_variable
+    assert "nullable    = true" in github_variable
+    assert "github_deploy_enabled   = true" in prod_inputs
+    assert "github_deploy_enabled   = false" in staging_inputs
+
+    for resource_type, name in (
+        ("azurerm_user_assigned_identity", "ghactions"),
+        ("azurerm_federated_identity_credential", "ghactions"),
+        ("azurerm_role_assignment", "github_acr_push"),
+        ("azurerm_role_assignment", "github_acr_tasks"),
+        ("azurerm_role_assignment", "github_env_operator"),
+        ("azurerm_role_assignment", "github_public_env_operator"),
+    ):
+        block = main.split(f'resource "{resource_type}" "{name}" {{', 1)[1].split(
+            '\nresource "', 1
+        )[0]
+        assert "count" in block
+        assert "local.github_deploy_enabled ? 1 : 0" in block
+
+    for name in ("github_app_operator", "github_public_app_operator"):
+        block = main.split(f'resource "azurerm_role_assignment" "{name}" {{', 1)[
+            1
+        ].split('\nresource "', 1)[0]
+        assert (
+            "var.live_apps_enabled && local.github_deploy_enabled ? 1 : 0" in block
+        )
+
+    assert main.count("to   = azurerm_") == 6
+    assert "azurerm_user_assigned_identity.ghactions[0]" in outputs
+    assert "try(" in outputs
+
+
+def test_phase_two_docs_block_stateful_logging_until_backend_recovery_is_approved() -> None:
+    infra_readme = (INFRA / "README.md").read_text()
+    rehearsal = (ROOT / "STAGING_REHEARSAL.md").read_text()
+    for document in (infra_readme, rehearsal):
+        assert "shared keys" in document
+        assert "blob versioning" in document
+        assert "soft delete" in document or "soft-delete" in document
+    assert "github_deploy_enabled=false" in rehearsal
 
 
 def test_all_new_staging_operator_scripts_are_executable_and_syntax_clean() -> None:

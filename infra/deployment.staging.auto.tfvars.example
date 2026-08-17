@@ -7,6 +7,9 @@ deployment_environment  = "staging"
 # physically separate from production.
 azure_deid_service_id   = "replace_with_reviewed_deid_service_resource_id"
 
+# The current staging rollout is operator-driven. Do not create a latent
+# federated deploy principal or its roles.
+github_deploy_enabled   = false
 live_apps_enabled       = false
 key_vault_secrets_ready = false
 initial_image_ref        = ""

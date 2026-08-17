@@ -17,6 +17,9 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
 - [ ] `cp .env.production.public.example .env.production.public`
 - [ ] `cp infra/deployment.auto.tfvars.example infra/deployment.auto.tfvars`
       (leave its three release gates fail-closed during foundation bootstrap).
+- [ ] Keep the production example's `github_deploy_enabled=true`. Staging uses
+      `false` until a reviewed staging workflow and protected GitHub Environment
+      exist.
 - [ ] Fill every key. Keep the listed Magisterium, CosmasCode, and provider-only
       Athena credentials as `op://` references; never put values in these files.
 - [ ] Generate `SOVEREIGN_RECORD_GRANT_SECRET` exactly with
@@ -73,6 +76,10 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
       has DeID access.
 - [ ] Confirm `tofu -chdir=infra plan` creates no Container Apps while
       `live_apps_enabled=false`; foundation bootstrap must not expose ingress.
+- [ ] Before creating either Log Analytics workspace, separately approve blob
+      versioning and soft delete on the shared state account. AzureRM stores the
+      workspaces' sensitive shared keys in state; this staging/prod root does not
+      own that cross-stack backend setting.
 
 ## 4. First immutable image and vault seed
 - [ ] From the repository root, queue the first remote ACR build and capture

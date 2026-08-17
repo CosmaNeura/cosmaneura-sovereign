@@ -14,6 +14,12 @@ resource "azurerm_user_assigned_identity" "provider_runtime" {
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   tags                = merge(local.resource_tags, { mount = "provider_assistant" })
+
+  # Recreating this principal changes both its Key Vault/ACR grants and the
+  # client ID pinned into the provider app.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "azurerm_user_assigned_identity" "public_runtime" {
@@ -21,6 +27,10 @@ resource "azurerm_user_assigned_identity" "public_runtime" {
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   tags                = merge(local.resource_tags, { mount = "public" })
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "azurerm_key_vault" "provider" {

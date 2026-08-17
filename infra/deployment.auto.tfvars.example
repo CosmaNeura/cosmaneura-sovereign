@@ -3,6 +3,9 @@
 # externally reachable apps may exist.
 deployment_environment  = "prod"
 azure_deid_service_id   = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.HealthDataAIServices/deidServices/AnonymizerAPI"
+# Preserve the existing production OIDC deploy path; its repository kill switch
+# remains independently default-off.
+github_deploy_enabled   = true
 live_apps_enabled       = false
 key_vault_secrets_ready = false
 initial_image_ref        = ""

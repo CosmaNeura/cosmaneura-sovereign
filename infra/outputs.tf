@@ -40,11 +40,12 @@ output "public_runtime_identity_client_id" {
   value = azurerm_user_assigned_identity.public_runtime.client_id
 }
 
-# Wire these into the GitHub repo (vars/secrets) for the deploy workflow.
+# Wire these into the GitHub repo only when github_deploy_enabled creates the
+# deploy identity; both outputs are null otherwise.
 output "gha_identity_client_id" {
-  value = azurerm_user_assigned_identity.ghactions.client_id
+  value = try(azurerm_user_assigned_identity.ghactions[0].client_id, null)
 }
 
 output "tenant_id" {
-  value = azurerm_user_assigned_identity.ghactions.tenant_id
+  value = try(azurerm_user_assigned_identity.ghactions[0].tenant_id, null)
 }
