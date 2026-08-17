@@ -234,7 +234,7 @@ identities; secret values do not enter Terraform state or the deployment job.
 | `BAA_ATTESTED` | hard-coded `false` | **`true`** under the Azure BAA |
 | `LLM_PROVIDER` | `azure_openai` | `azure_openai` |
 | `REASONING_MODEL` / `FAST_MODEL` | `gpt-5.6-sol` / `gpt-5.4-nano` | same |
-| `CORS_ALLOW_ORIGINS` | `["https://cosmaneura.com"]` | `["https://app.cosmaneura.com"]` |
+| `CORS_ALLOW_ORIGINS` | `["https://cosmaneura.com","https://www.cosmaneura.com"]` | `["https://app.cosmaneura.com"]` |
 
 > The provider deployment refuses to run in non-mock mode unless
 > `BAA_ATTESTED=true` and the inference path is BAA-covered. Do not assert it
