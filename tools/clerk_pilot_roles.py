@@ -137,6 +137,7 @@ class ClerkApi:
             )
 
         matches: dict[str, ClerkUser] = {}
+        saw_unverified_exact_match = False
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 continue
@@ -151,6 +152,17 @@ class ClerkApi:
             }
             exact_match = email in normalized_addresses
             if not exact_match:
+                continue
+            verified_exact_match = any(
+                isinstance(address, dict)
+                and isinstance(address.get("email_address"), str)
+                and address["email_address"].strip().casefold() == email
+                and isinstance(address.get("verification"), dict)
+                and address["verification"].get("status") == "verified"
+                for address in addresses
+            )
+            if not verified_exact_match:
+                saw_unverified_exact_match = True
                 continue
             user_id = candidate.get("id")
             metadata = candidate.get("public_metadata", {})
@@ -169,6 +181,10 @@ class ClerkApi:
                 is_reserved_admin=RESERVED_ADMIN_EMAIL in normalized_addresses,
             )
 
+        if not matches and saw_unverified_exact_match:
+            raise OperatorError(
+                f"the exact Clerk email {email} is not verified; refusing pilot access"
+            )
         if len(matches) != 1:
             raise OperatorError(
                 f"expected exactly one existing Clerk user for {email}; found {len(matches)}"

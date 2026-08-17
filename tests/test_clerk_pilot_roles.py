@@ -21,11 +21,20 @@ def _user(
     *,
     metadata: dict[str, Any] | None = None,
     additional_emails: tuple[str, ...] = (),
+    unverified_emails: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return {
         "id": user_id,
         "email_addresses": [
-            {"email_address": address} for address in (email, *additional_emails)
+            {
+                "email_address": address,
+                "verification": {
+                    "status": (
+                        "unverified" if address in unverified_emails else "verified"
+                    )
+                },
+            }
+            for address in (email, *additional_emails)
         ],
         "public_metadata": {} if metadata is None else metadata,
     }
@@ -348,6 +357,39 @@ def test_reserved_admin_secondary_email_cannot_bypass_guard() -> None:
     assert methods == ["GET"]
     assert "reserved admin" in stderr
     assert "break-glass" in stderr
+
+
+def test_unverified_secondary_email_cannot_receive_provider_role() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(
+            200,
+            json=[
+                _user(
+                    "user_Pilot1",
+                    "verified-owner@cosmaneura.com",
+                    additional_emails=("unverified-pilot@cosmaneura.com",),
+                    unverified_emails=("unverified-pilot@cosmaneura.com",),
+                )
+            ],
+        )
+
+    result, stdout, stderr = _run(
+        [
+            "grant",
+            "--email",
+            "unverified-pilot@cosmaneura.com",
+            "--apply",
+        ],
+        httpx.MockTransport(handler),
+    )
+
+    assert result == 2
+    assert stdout == ""
+    assert methods == ["GET"]
+    assert "not verified" in stderr
 
 
 def test_secret_can_arrive_on_stdin_and_is_never_rendered() -> None:
