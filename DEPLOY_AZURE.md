@@ -162,12 +162,13 @@ share it. Staging also caps each `PerGB2018` workspace at 0.1 GB/day, while
 production keeps its existing unlimited quota pending a separate retention and
 availability decision.
 
-1. Target-apply the four conditional operator assignments plus both runtime
-   identities' ACR/Key Vault roles and the provider DeID role. Their dependencies
-   create the resource group, ACR, vaults, and identities. Confirm all nine
-   assignments are visible and allow Azure data-plane propagation before
-   continuing; the operator's scoped ACR push/task and vault-write roles are
-   bootstrap-only.
+1. Target-plan the four conditional operator assignments plus both runtime
+   identities' ACR/Key Vault roles, the provider DeID role, and the staging-only
+   `azapi_resource.staging_deid`. Their dependencies create the resource group,
+   ACR, vaults, identities, and isolated staging DeID service. Apply only the
+   exact reviewed plan. Confirm all expected assignments are visible and allow
+   Azure data-plane propagation before continuing; the operator's scoped ACR
+   push/task and vault-write roles are bootstrap-only.
 2. Run `DEPLOYMENT_ENVIRONMENT=<prod|staging> REGISTRY=<name>.azurecr.io
    infra/scripts/build-bootstrap-image.sh` and capture the returned immutable
    `@sha256` reference. It checksum-verifies Nixpacks, generates and normalizes
@@ -272,8 +273,11 @@ ClinicalTrials.gov, or any non-BAA hop* — translates to a few Azure controls:
 - **Separate Log Analytics.** The main environment's Log Analytics isn't under a
   HIPAA retention policy; give the Sovereign environment its own workspace so PHI-
   adjacent operational logs aren't commingled.
-- **De-identification.** Non-mock provider startup requires the Azure Health Data
-  Services de-identification endpoint. The regex path is development-only.
+- **De-identification.** Non-mock provider startup requires Azure Health Data
+  Services de-identification. Production is read through an explicit AzAPI data
+  resource; staging creates its own `cosmaneura-staging-deid` in East US with
+  no managed identity and public access enabled. Terraform derives and injects
+  the returned endpoint. The regex path is development-only.
 - **Egress.** Magisterium / ClinicalTrials / NPPES are public, non-BAA. The
   `assert_no_phi` tripwire + de-id gate are the enforcement; no Azure networking
   change is required, but if you want belt-and-suspenders, restrict the provider

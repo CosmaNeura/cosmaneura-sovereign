@@ -7,14 +7,15 @@ import sys
 from pathlib import Path
 
 
-EXPECTED = {
+COMMON_EXPECTED = {
     "deployment_environment",
-    "azure_deid_service_id",
     "github_deploy_enabled",
     "live_apps_enabled",
     "key_vault_secrets_ready",
     "initial_image_ref",
 }
+PRODUCTION_ONLY = {"azure_deid_service_id"}
+ALLOWED = COMMON_EXPECTED | PRODUCTION_ONLY
 DEID_RE = re.compile(
     r'^"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]+/'
     r'providers/Microsoft\.HealthDataAIServices/deidServices/[^/]+"$'
@@ -40,19 +41,16 @@ def parse(path: Path) -> dict[str, str]:
         if not match:
             raise InputError(f"line {number} is not a simple assignment")
         name, value = match.groups()
-        if name not in EXPECTED:
+        if name not in ALLOWED:
             raise InputError(f"unexpected deployment input: {name}")
         if name in values:
             raise InputError(f"duplicate deployment input: {name}")
         values[name] = value.strip()
-    missing = sorted(EXPECTED - values.keys())
-    if missing:
-        raise InputError("missing deployment inputs: " + ", ".join(missing))
     return values
 
 
 def validate(values: dict[str, str], expected_environment: str | None = None) -> str:
-    environment_literal = values["deployment_environment"]
+    environment_literal = values.get("deployment_environment")
     if environment_literal not in {'"prod"', '"staging"'}:
         raise InputError("deployment_environment must be exactly prod or staging")
     environment = environment_literal.strip('"')
@@ -60,7 +58,18 @@ def validate(values: dict[str, str], expected_environment: str | None = None) ->
         raise InputError(
             f"deployment_environment does not match requested {expected_environment} boundary"
         )
-    if not DEID_RE.fullmatch(values["azure_deid_service_id"]):
+    expected = COMMON_EXPECTED | (PRODUCTION_ONLY if environment == "prod" else set())
+    missing = sorted(expected - values.keys())
+    if missing:
+        raise InputError("missing deployment inputs: " + ", ".join(missing))
+    extra = sorted(values.keys() - expected)
+    if extra:
+        raise InputError(
+            f"{environment} forbids deployment inputs: " + ", ".join(extra)
+        )
+    if environment == "prod" and not DEID_RE.fullmatch(
+        values["azure_deid_service_id"]
+    ):
         raise InputError("azure_deid_service_id must be an explicit DeID resource ID")
 
     github_deploy_enabled = values["github_deploy_enabled"]

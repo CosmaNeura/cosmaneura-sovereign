@@ -65,6 +65,10 @@ locals {
 
 terraform {
   required_providers {
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 2.12.0"
+    }
     azurerm = {
       source = "hashicorp/azurerm"
       # v5 changes the federated-identity resource schema. Stay on the tested
@@ -91,4 +95,8 @@ terraform {
 provider "azurerm" {
   subscription_id = local.azure_subscription_id
   features {}
+}
+
+provider "azapi" {
+  subscription_id = local.azure_subscription_id
 }

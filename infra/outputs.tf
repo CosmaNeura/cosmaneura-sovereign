@@ -40,6 +40,16 @@ output "public_runtime_identity_client_id" {
   value = azurerm_user_assigned_identity.public_runtime.client_id
 }
 
+output "azure_deid_service_id" {
+  description = "Environment-selected DeID resource ID used by the provider mount"
+  value       = local.azure_deid_service_id
+}
+
+output "azure_deid_endpoint" {
+  description = "Environment-selected DeID service endpoint injected into the provider mount"
+  value       = local.azure_deid_endpoint
+}
+
 # Wire these into the GitHub repo only when github_deploy_enabled creates the
 # deploy identity; both outputs are null otherwise.
 output "gha_identity_client_id" {

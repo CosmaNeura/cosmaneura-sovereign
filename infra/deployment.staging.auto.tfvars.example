@@ -1,11 +1,8 @@
 # Copy to deployment.auto.tfvars only for the isolated non-production
 # rehearsal stack. There are deliberately no production resource defaults.
 deployment_environment  = "staging"
-
-# The reviewed DeID service is an explicitly shared external dependency. Its
-# resource ID must be supplied even though every stateful staging resource is
-# physically separate from production.
-azure_deid_service_id   = "replace_with_reviewed_deid_service_resource_id"
+# Staging creates its own `cosmaneura-staging-deid` resource. A production or
+# shared DeID resource ID is intentionally not an accepted staging input.
 
 # The current staging rollout is operator-driven. Do not create a latent
 # federated deploy principal or its roles.

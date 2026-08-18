@@ -32,19 +32,24 @@ def test_staging_persistent_inputs_select_only_the_staging_registry(
     path = tmp_path / "deployment.auto.tfvars"
     source = (INFRA / "deployment.staging.auto.tfvars.example").read_text()
     assert "cosmaneura-prod" not in source
-    path.write_text(source)
-    unconfigured = _run_input_validator(path, "staging")
-    assert unconfigured.returncode == 1
-    source = source.replace(
-        "replace_with_reviewed_deid_service_resource_id",
-        "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/"
-        "resourceGroups/reviewed-shared-services/providers/"
-        "Microsoft.HealthDataAIServices/deidServices/AnonymizerAPI",
-    )
+    assert "azure_deid_service_id" not in source
     path.write_text(source)
     disabled = _run_input_validator(path, "staging")
     assert disabled.returncode == 0, disabled.stderr
     assert "staging disabled" in disabled.stdout
+
+    path.write_text(
+        source
+        + "\nazure_deid_service_id = \"/subscriptions/"
+        + "bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/"
+        + "providers/Microsoft.HealthDataAIServices/deidServices/AnonymizerAPI\"\n"
+    )
+    shared_deid = _run_input_validator(path, "staging")
+    assert shared_deid.returncode == 1
+    assert (
+        "staging forbids deployment inputs: azure_deid_service_id"
+        in shared_deid.stderr
+    )
 
     path.write_text(
         source.replace(
@@ -117,6 +122,7 @@ def test_staging_env_examples_use_only_separate_staging_secret_references(
 
     provider = (ROOT / ".env.staging.backend.example").read_text()
     public = (ROOT / ".env.staging.public.example").read_text()
+    assert "AZURE_DEID_ENDPOINT=" not in provider
     assert "op://Staging/sovereign-record-grant/credential" in provider
     assert "SOVEREIGN_RECORD_GRANT_SECRET" not in public
     assert "ATHENA_CLIENT_" not in public
@@ -231,6 +237,42 @@ def test_terraform_root_has_no_implicit_environment_and_pins_state_guard() -> No
     assert "triggers_replace = local.environment" in main
     assert "prevent_destroy = true" in main
     assert "depends_on = [terraform_data.state_environment_guard]" in main
+
+
+def test_staging_owns_deid_and_production_is_data_only() -> None:
+    providers = (INFRA / "providers.tf").read_text()
+    deid = (INFRA / "deid.tf").read_text()
+    variables = (INFRA / "variables.tf").read_text()
+    main = (INFRA / "main.tf").read_text()
+
+    assert 'source  = "Azure/azapi"' in providers
+    assert 'version = "~> 2.12.0"' in providers
+    assert 'data "azapi_resource" "production_deid"' in deid
+    assert 'count = local.environment == "prod" ? 1 : 0' in deid
+    assert 'resource "azapi_resource" "staging_deid"' in deid
+    staging = deid.split(
+        'resource "azapi_resource" "staging_deid"', 1
+    )[1].split('locals {', 1)[0]
+    assert 'count = local.environment == "staging" ? 1 : 0' in staging
+    assert 'type      = "Microsoft.HealthDataAIServices/deidServices@2024-09-20"' in staging
+    assert 'name      = "cosmaneura-staging-deid"' in staging
+    assert 'parent_id = azurerm_resource_group.main.id' in staging
+    assert 'location  = "eastus"' in staging
+    assert 'type = "None"' in staging
+    assert 'publicNetworkAccess = "Enabled"' in staging
+    assert "prevent_destroy = true" in staging
+
+    role = deid.split(
+        'resource "azurerm_role_assignment" "sovereign_deid"', 1
+    )[1]
+    assert "scope                = local.azure_deid_service_id" in role
+    assert 'role_definition_name = "DeID Realtime Data User"' in role
+    assert "azurerm_user_assigned_identity.provider_runtime.principal_id" in role
+
+    assert '"DEID_PROVIDER",' in variables
+    assert '"DEID_PROVIDER", "AZURE_DEID_ENDPOINT"' not in variables
+    assert 'name  = "AZURE_DEID_ENDPOINT"' in main
+    assert "value = local.azure_deid_endpoint" in main
 
 
 def test_foundation_parent_and_rollback_registry_refuse_targeted_destroy() -> None:

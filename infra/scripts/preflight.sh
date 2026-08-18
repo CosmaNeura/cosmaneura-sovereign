@@ -82,18 +82,7 @@ fi
 
 if [[ "$deployment_gate_status" == *" enabled)" ]]; then
   echo "== Enabled deployment boundaries =="
-  deid_service_id="$(python3 - "$ROOT/infra/deployment.auto.tfvars" <<'PY'
-import pathlib
-import re
-import sys
-
-text = pathlib.Path(sys.argv[1]).read_text()
-match = re.search(r'^azure_deid_service_id\s*=\s*"([^"]+)"\s*$', text, re.MULTILINE)
-if not match:
-    raise SystemExit(1)
-print(match.group(1))
-PY
-)"
+  deid_service_id="$(tofu -chdir="$ROOT/infra" output -raw azure_deid_service_id)"
   if DEID_SERVICE_ID="$deid_service_id" \
     "$HERE/verify-key-vault-boundaries.sh" >/dev/null 2>&1; then
     ok "vault inventories and direct/inherited runtime roles are mount-exact"
