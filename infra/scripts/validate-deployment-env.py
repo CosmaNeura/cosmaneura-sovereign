@@ -54,6 +54,19 @@ SECRET_ITEMS = {
 }
 ONEPASSWORD_VAULTS = {"prod": "Production", "staging": "Staging"}
 
+# Staging has one accepted, public Clerk authority. Keep this environment-scoped:
+# production must continue to take its distinct issuer and JWKS URL from the
+# reviewed production deployment file.
+STAGING_PROVIDER_AUTH = {
+    "OIDC_ISSUER": "https://resolved-emu-53.clerk.accounts.dev",
+    "OIDC_JWKS_URL": (
+        "https://resolved-emu-53.clerk.accounts.dev/.well-known/jwks.json"
+    ),
+    "OIDC_AUDIENCE": "cosmaneura-sovereign",
+    "AUTH_ROLE_CLAIM": "roles",
+    "AUTH_PROVIDER_ROLE": "provider",
+}
+
 FIXED = {
     "provider": {
         "MOCK_MODE": "false",
@@ -215,6 +228,12 @@ def validate(environment: str, mount: str, values: dict[str, str]) -> None:
     for name, expected in FIXED[mount].items():
         if values[name] != expected:
             raise ConfigError(f"{name} must be {expected!r} for the {mount} mount")
+    if environment == "staging" and mount == "provider":
+        for name, expected in STAGING_PROVIDER_AUTH.items():
+            if values[name] != expected:
+                raise ConfigError(
+                    f"{name} must match the accepted staging Clerk contract"
+                )
     for name in URL_KEYS & values.keys():
         _https_url(name, values[name])
     _cors(values["CORS_ALLOW_ORIGINS"])

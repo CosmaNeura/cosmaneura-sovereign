@@ -17,8 +17,11 @@ staging; this rehearsal uses the reviewed operator path.
 Do not create the live apps until all of these are true:
 
 - the applicable Azure BAA assertion has been reviewed;
-- a staging Clerk issuer/template can mint one approved `provider` JWT and one
-  valid JWT without that role;
+- the accepted staging Clerk authority is
+  `https://resolved-emu-53.clerk.accounts.dev`, with audience
+  `cosmaneura-sovereign`, claim `roles`, and provider value `provider`; its
+  template can mint one approved provider JWT and one valid JWT without that
+  role;
 - the platform host can mint a 60-second record grant for a designated,
   vendor-owned synthetic athenahealth Preview record in practice `195900`;
 - the Staging 1Password vault has separate provider/public Magisterium and
@@ -44,11 +47,12 @@ cp .env.staging.public.example .env.staging.public
 cp infra/deployment.staging.auto.tfvars.example infra/deployment.auto.tfvars
 ```
 
-Replace the Clerk placeholders and review every assertion. Keep all secret
-entries as `op://Staging/...` references. Never substitute Production items.
-Keep `github_deploy_enabled=false`; no staging workflow currently needs that
-federated principal or its deployment roles. Do not add a DeID resource ID or
-endpoint: Terraform creates the staging service and injects its returned URL.
+Review the pinned, non-secret staging Clerk contract and every assertion. Keep
+all secret entries as `op://Staging/...` references. Never substitute
+Production items. Keep `github_deploy_enabled=false`; no staging workflow
+currently needs that federated principal or its deployment roles. Do not add a
+DeID resource ID or endpoint: Terraform creates the staging service and injects
+its returned URL.
 
 Initialize and prove the backend boundary:
 

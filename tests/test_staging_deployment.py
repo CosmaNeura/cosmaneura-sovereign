@@ -101,12 +101,7 @@ def test_staging_env_examples_use_only_separate_staging_secret_references(
         assert "op://Staging/" in source
         assert "op://Production/" not in source
         path = tmp_path / f"{mount}.env"
-        path.write_text(
-            source.replace(
-                "your-staging-instance.clerk.accounts.dev",
-                "staging-tenant.clerk.accounts.dev",
-            )
-        )
+        path.write_text(source)
         result = subprocess.run(
             [
                 sys.executable,
@@ -122,10 +117,78 @@ def test_staging_env_examples_use_only_separate_staging_secret_references(
 
     provider = (ROOT / ".env.staging.backend.example").read_text()
     public = (ROOT / ".env.staging.public.example").read_text()
+    assert "OIDC_ISSUER=https://resolved-emu-53.clerk.accounts.dev" in provider
+    assert (
+        "OIDC_JWKS_URL=https://resolved-emu-53.clerk.accounts.dev/"
+        ".well-known/jwks.json"
+    ) in provider
+    assert "OIDC_AUDIENCE=cosmaneura-sovereign" in provider
+    assert "AUTH_ROLE_CLAIM=roles" in provider
+    assert "AUTH_PROVIDER_ROLE=provider" in provider
+    assert "org_role" not in provider
+    assert "AUTH_PROVIDER_ROLE=clinician" not in provider
     assert "AZURE_DEID_ENDPOINT=" not in provider
     assert "op://Staging/sovereign-record-grant/credential" in provider
     assert "SOVEREIGN_RECORD_GRANT_SECRET" not in public
     assert "ATHENA_CLIENT_" not in public
+
+
+def test_staging_provider_rejects_drift_from_accepted_clerk_authority(
+    tmp_path: Path,
+) -> None:
+    validator = SCRIPTS / "validate-deployment-env.py"
+    source = (ROOT / ".env.staging.backend.example").read_text()
+
+    for stale, replacement, expected_key in (
+        (
+            "resolved-emu-53.clerk.accounts.dev",
+            "other-staging.clerk.accounts.dev",
+            "OIDC_ISSUER",
+        ),
+        ("AUTH_ROLE_CLAIM=roles", "AUTH_ROLE_CLAIM=org_role", "AUTH_ROLE_CLAIM"),
+        (
+            "AUTH_PROVIDER_ROLE=provider",
+            "AUTH_PROVIDER_ROLE=clinician",
+            "AUTH_PROVIDER_ROLE",
+        ),
+    ):
+        path = tmp_path / f"{expected_key}.env"
+        path.write_text(source.replace(stale, replacement))
+        result = subprocess.run(
+            [sys.executable, validator, "staging", "provider", path],
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 1
+        assert expected_key in result.stderr
+        assert "accepted staging Clerk contract" in result.stderr or (
+            "must be 'roles'" in result.stderr
+            or "must be 'provider'" in result.stderr
+        )
+
+
+def test_production_provider_remains_clerk_issuer_agnostic(tmp_path: Path) -> None:
+    source = (ROOT / ".env.production.backend.example").read_text()
+    assert "resolved-emu-53.clerk.accounts.dev" not in source
+    source = source.replace("tenant_replace_me", "tenant_preview_195900")
+    source = source.replace(
+        "your-instance.clerk.accounts.dev",
+        "independent-production.clerk.accounts.dev",
+    )
+    path = tmp_path / "provider.env"
+    path.write_text(source)
+    result = subprocess.run(
+        [
+            sys.executable,
+            SCRIPTS / "validate-deployment-env.py",
+            "prod",
+            "provider",
+            path,
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_staging_env_rejects_production_and_cross_mount_secret_references(

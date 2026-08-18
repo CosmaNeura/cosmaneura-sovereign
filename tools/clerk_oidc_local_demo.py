@@ -137,7 +137,7 @@ def main() -> None:
 
     print("\n=== A. Token verification (real RS256 path against the JWKS) ===")
     p = verifier.verify(mint(PROVIDER_ROLE))
-    check("clinician token -> PROVIDER persona", p.persona == Persona.PROVIDER,
+    check("provider-role token -> PROVIDER persona", p.persona == Persona.PROVIDER,
           f"subject={p.subject} roles={p.roles}")
 
     p = verifier.verify(mint(None))
