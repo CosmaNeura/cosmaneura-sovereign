@@ -157,7 +157,7 @@ The dashboard chatbot in app.cosmaneura.com calls the same single endpoint:
 
 ```
 POST /chat
-Authorization: Bearer <clinician JWT>     → provider persona (verified)
+Authorization: Bearer <provider-role JWT> → provider persona (verified)
 {
   "persona": "provider",
   "message": "<what the clinician typed>",

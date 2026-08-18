@@ -330,7 +330,7 @@ document.getElementById("ctxtoggle").onclick = function(){
 const panel = CosmaNeuraPanel.mount({
   sovereignUrl: "",                     // same origin in this harness
   // Demo runs with AUTH_MODE=disabled, so there is no token. In production
-  // this returns the clinician's verified Clerk JWT. The panel derives its
+  // this returns the provider's verified Clerk JWT. The panel derives its
   // presentation hint from the server-resolved /welcome response.
   getAuthToken: async () => null,
   getContext: async () => buildContext(),

@@ -59,8 +59,9 @@ the interaction design:
 Clerk; the paid entitlement (e.g. the $59/mo tier) is a Clerk claim; the page
 exchanges the Clerk session for the bearer token it sends to `/chat`.
 Unauthenticated visitors see the marketing/paywall page, not the chat.
-Providers additionally carry the clinician role claim → provider persona,
-verified server-side (already enforced by the principal override).
+Providers additionally carry the canonical provider authority (`roles`
+contains `provider`) → provider persona, verified server-side (already
+enforced by the principal override).
 
 **Later (Phase 2/3, unchanged):** per-tenant theming of this same page, and
 the sandboxed-iframe widget for **third-party** partner sites (MyCatholicDoctor).
@@ -127,7 +128,7 @@ transcripts would blow request budgets. Two-part answer, both built:
 
 ```json
 {
-  "persona": "provider",                      // from the clinician's JWT, verified server-side
+  "persona": "provider",                      // from the provider-role JWT, verified server-side
   "message": "<what the clinician typed>",
   "history": [ ...this client's thread... ],
   "metadata": {

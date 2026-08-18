@@ -118,6 +118,12 @@ users; never stamp a static provider role into every session. Then configure:
 | `AUTH_PROVIDER_ROLE` | `provider` | admin-managed `sovereign_role` value |
 | `ALLOW_PROVIDER_PERSONA` | `false` | legacy body-persona elevation stays disabled |
 
+For the isolated staging rehearsal, the accepted non-secret authority is
+`https://resolved-emu-53.clerk.accounts.dev` and its JWKS URL is
+`https://resolved-emu-53.clerk.accounts.dev/.well-known/jwks.json`. Those
+staging values do not apply to production; production must use its own reviewed
+Clerk instance while preserving the audience/claim/provider values above.
+
 The current `Doctor` row carries `clerk_id` but has no canonical organization
 spine. Do not infer a provider role from that row alone. Provision an exact Clerk
 template/claim and verify it against the authenticated, doctor-scoped platform
