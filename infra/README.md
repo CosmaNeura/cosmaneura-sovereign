@@ -23,6 +23,7 @@ after bootstrap.
 | Provider/public environments | `cosmaneura-sovereign-<env>-app-environment` / `cosmaneura-web-<env>-app-environment` |
 | Provider/public apps | `cosmaneura-sovereign-<env>-app` / `cosmaneura-web-<env>-app` |
 | Provider/public Key Vaults | `cosmasov<env>provider` / `cosmasov<env>public` |
+| Staging DeID | `cosmaneura-staging-deid` in East US; production remains an explicit data-only dependency |
 | Optional GitHub OIDC identity + role assignments | `cosmaneura-sovereign-<env>-gha-identity` |
 
 State lives in the **existing** `cosmaneuratfstate` storage account under an
@@ -56,6 +57,9 @@ availability and audit-retention budget is decided separately.
   `yq` are not required.
 - Copy the two env examples for the selected boundary. Non-secret allowlisted values are literals;
   runtime secret sources remain `op://` references for the Key Vault sync.
+  The DeID endpoint is not a file input: Terraform reads it from the existing
+  production data resource or the staging-owned resource and injects it only
+  into the provider app.
   The canonical 44-character Fernet record-grant key is provider-only and must
   never appear in the public env, vault, app, Terraform inputs, or command
   arguments.
@@ -66,11 +70,13 @@ availability and audit-retention budget is decided separately.
 
 ## Deploy
 
-1. Resolve the logged-in operator's Entra object ID and target-apply the four
+1. Resolve the logged-in operator's Entra object ID and target-plan the four
    `bootstrap_*` assignments plus `provider_acr_pull`, `public_acr_pull`, both
-   `*_key_vault_secrets` assignments, and `sovereign_deid`, with
+   `*_key_vault_secrets` assignments, `sovereign_deid`, and (in staging only)
+   `azapi_resource.staging_deid`, with
    `-var=bootstrap_operator_object_id=<uuid>`. Their dependencies create the RG,
-   ACR, vaults, and both runtime identities; the apps cannot be created yet.
+   ACR, vaults, both runtime identities, and the staging-owned DeID service; the
+   apps cannot be created yet. Apply only the exact reviewed plan.
    Confirm all assignments are visible and allow Azure data-plane propagation
    before continuing.
 2. Build the first digest: `DEPLOYMENT_ENVIRONMENT=<prod|staging>

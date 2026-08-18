@@ -5,12 +5,12 @@ their paired rollback behavior. It uses the same Terraform resources and
 non-mock controls as production, but every stateful Azure resource has a
 `staging` name and the backend key is `sovereign-staging.tfstate`.
 
-The only intentionally shared external dependency is the explicitly supplied
-Azure Health DeID service. Staging has its own resource group, ACR, provider and
-public Container App Environments, Log Analytics workspaces, apps, runtime
-identities, Key Vaults, state key, and secret references. The GitHub OIDC
-identity and all of its grants are default-off in staging; this rehearsal uses
-the reviewed operator path.
+Staging owns `cosmaneura-staging-deid` in East US in addition to its own
+resource group, ACR, provider and public Container App Environments, Log
+Analytics workspaces, apps, runtime identities, Key Vaults, state key, and
+secret references. Its provider identity has no role on the production DeID
+service. The GitHub OIDC identity and all of its grants are default-off in
+staging; this rehearsal uses the reviewed operator path.
 
 ## External gates
 
@@ -47,7 +47,8 @@ cp infra/deployment.staging.auto.tfvars.example infra/deployment.auto.tfvars
 Replace the Clerk placeholders and review every assertion. Keep all secret
 entries as `op://Staging/...` references. Never substitute Production items.
 Keep `github_deploy_enabled=false`; no staging workflow currently needs that
-federated principal or its deployment roles.
+federated principal or its deployment roles. Do not add a DeID resource ID or
+endpoint: Terraform creates the staging service and injects its returned URL.
 
 Initialize and prove the backend boundary:
 
@@ -89,7 +90,7 @@ Seed and verify the two exact secret inventories:
   staging public cosmasovstagingpublic
 
 DEPLOYMENT_ENVIRONMENT=staging \
-DEID_SERVICE_ID='<reviewed Azure DeID resource ID>' \
+DEID_SERVICE_ID="$(tofu -chdir=infra output -raw azure_deid_service_id)" \
   ./infra/scripts/verify-key-vault-boundaries.sh
 ```
 

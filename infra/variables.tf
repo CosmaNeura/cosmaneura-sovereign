@@ -111,8 +111,8 @@ variable "sovereign_public_vars" {
     "OIDC_ALGORITHMS", "AUTH_ROLE_CLAIM", "AUTH_PROVIDER_ROLE",
     # compliance gates
     "ALLOW_PROVIDER_PERSONA", "BAA_ATTESTED",
-    # clinical de-id (keyless via managed identity — see deid.tf)
-    "DEID_PROVIDER", "AZURE_DEID_ENDPOINT",
+    # clinical de-id; the endpoint is derived in deid.tf, never operator input
+    "DEID_PROVIDER",
     # reasoning LLM (Azure OpenAI: endpoint is a URL, not a secret)
     "LLM_PROVIDER", "REASONING_MODEL", "FAST_MODEL",
     "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_VERSION",

@@ -175,6 +175,13 @@ resource "azurerm_container_app" "sovereign" {
         value = azurerm_user_assigned_identity.provider_runtime.client_id
       }
 
+      # This is derived from the environment-owned DeID resource. Keeping it
+      # outside the file export prevents staging from reusing a production URL.
+      env {
+        name  = "AZURE_DEID_ENDPOINT"
+        value = local.azure_deid_endpoint
+      }
+
       # Unlike the main app (TCP probes), the Sovereign exposes a real health
       # endpoint, so probe it over HTTP.
       readiness_probe {
