@@ -265,6 +265,24 @@ identities; secret values do not enter Terraform state or the deployment job.
 > `BAA_ATTESTED=true` and the inference path is BAA-covered. Do not assert it
 > until the applicable agreement and deployment controls are verified.
 
+### Staging-only BAA attestation record (August 19, 2026)
+
+The owner reports that Microsoft's standard BAA is stored in CosmaNeura's
+compliance records. Azure support ticket `2607240040011671` stated on August 17,
+2026 that the Microsoft DPA includes the HIPAA BAA and normally requires no
+separate form, conditional on the customer's applicable agreement. Live billing
+metadata reports `MicrosoftOnlineServicesProgram` for subscription
+`bab2a709-1fcb-4c87-a9fc-802f7477ec13`. Microsoft Learn describes Azure
+licensing as incorporating the Product Terms/DPA and the HIPAA BAA as available
+by default for in-scope services.
+
+That is the recorded operational basis for asserting `BAA_ATTESTED=true` only
+on this synthetic Preview staging rehearsal. It is not a legal opinion, proof of
+full HIPAA compliance, or permission to process real PHI. Before real-PHI use,
+the applicable agreement and every PHI-bearing service must be validated for
+this subscription; V7/V8 durable audit, production EHR authorization, counsel
+review, and the remaining production gates below must also be complete.
+
 ---
 
 ## 6. The PHI boundary in Azure terms

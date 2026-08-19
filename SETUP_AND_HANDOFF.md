@@ -25,7 +25,31 @@ sets `MOCK_MODE=false`. That alone gets you a live patient build.
 ## 2. HIPAA for the provider build (required before any provider/PHI use)
 
 The provider persona accepts PHI, so the inference path **must** be covered by a
-Business Associate Agreement. Verified facts as of now:
+Business Associate Agreement.
+
+### Current Azure staging attestation record (synthetic data only)
+
+On August 19, 2026, John attested that a copy of Microsoft's standard BAA is
+stored in CosmaNeura's compliance records. Azure support ticket
+`2607240040011671` stated on August 17 that Microsoft's DPA includes the HIPAA
+BAA and generally requires no separate form, conditional on the customer's
+applicable agreement. Live billing metadata reports
+`MicrosoftOnlineServicesProgram` for subscription
+`bab2a709-1fcb-4c87-a9fc-802f7477ec13`; Microsoft Learn says Azure licensing
+incorporates the Product Terms/DPA and makes the HIPAA BAA available by default
+for in-scope services.
+
+This is the owner-recorded basis for `BAA_ATTESTED=true` on the synthetic-only
+staging deployment. It is not a finding that CosmaNeura is HIPAA compliant and
+does not authorize real PHI. The retained agreement's applicability to the exact
+subscription and each PHI-bearing Azure service has not been independently
+validated in this repository. Real-PHI use still requires that validation,
+V7/V8 durable audit, production EHR authorization, counsel review, and every
+other production control in this handoff.
+
+### Alternative inference paths
+
+Verified facts for the deferred Anthropic option:
 
 - Anthropic **will sign a BAA** covering the **first-party Messages API** on
   qualifying commercial tiers, **with Zero Data Retention (ZDR) enabled**.
@@ -37,8 +61,11 @@ Business Associate Agreement. Verified facts as of now:
 - Alternatively, run Claude via **AWS Bedrock** or **Google Vertex** under that
   hyperscaler's BAA — useful if you're already in one of those clouds.
 
-**Action (You):** decide first-party Anthropic BAA+ZDR vs. Bedrock/Vertex, then
-execute the agreement. **Action (Dev):** point the provider build at the
+**Action (You):** retain the Microsoft agreement evidence and obtain an
+agreement-owner or counsel confirmation before any real PHI; execute a separate
+BAA only if a future inference provider requires one. **Action (Dev):** keep the
+staging rehearsal synthetic-only and keep every PHI-bearing hop inside the
+reviewed Azure path. If Anthropic is enabled later, point it only at the
 BAA-covered endpoint and confirm ZDR is on.
 
 > **Hard invariant baked into the design:** Magisterium and every public data API
@@ -346,7 +373,7 @@ consolidation — 15 minutes:
 
 | Item | Blocks | Owner |
 |---|---|---|
-| Microsoft DPA/BAA written confirmation | `BAA_ATTESTED=true` → any real PHI | John (support ticket filed) |
+| Exact Microsoft agreement/service-scope validation | Any real PHI (synthetic staging attestation recorded August 19, 2026) | John + agreement owner/counsel; support ticket `2607240040011671` is conditional |
 | Credits-cover-AOAI + quota tier answer | cost planning; 5.6 quota headroom | John (same ticket) |
 | Clerk OIDC production values | `AUTH_MODE=oidc` → provider persona in prod | Developer + John |
 | Cosmas dashboard mount (panel.js + `getAuthToken`/`getContext` + `/digest` at note-write) | Surface B | Developer (Cosmas repo; contract in `UI_UX_DESIGN.md` §3) |
