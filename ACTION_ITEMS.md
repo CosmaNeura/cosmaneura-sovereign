@@ -6,6 +6,24 @@
 **Azure OpenAI–first (GPT-5.5)** to use CosmaNeura's $125k Azure credits for build
 and test. The Anthropic BAA is **deferred, not dropped** (see the end of this doc).
 
+**Attestation update (August 19, 2026):** John reports that a copy of Microsoft's
+standard BAA is retained in CosmaNeura's compliance records. Azure support ticket
+`2607240040011671` stated on August 17, 2026 that Microsoft's DPA includes the
+HIPAA BAA and that most Azure customers do not execute a separate form, subject
+to the agreement applicable to the customer. Live billing metadata identifies
+subscription `bab2a709-1fcb-4c87-a9fc-802f7477ec13` as
+`MicrosoftOnlineServicesProgram`. Microsoft Learn also describes Azure licensing
+as incorporating the Product Terms/DPA and the HIPAA BAA as available by default
+for in-scope services.
+
+That evidence is recorded as the owner's basis for setting `BAA_ATTESTED=true`
+in the **synthetic-only staging rehearsal**. It is not a legal conclusion, a
+HIPAA-compliance certification, or authorization for real PHI. The repository
+does not contain the BAA itself. Before real-PHI use, counsel or the agreement
+owner must confirm that the retained agreement applies to this exact subscription
+and to every PHI-bearing Azure service in the deployed path. V7/V8 durable audit,
+production EHR authorization, and the other real-PHI gates remain open.
+
 **Why this document exists:** The provider (PHI/HIPAA) build is deliberately locked
 in code until real legal paperwork is in place — the PHI path refuses to run unless
 `BAA_ATTESTED=true`, and that flag may only be set once a Business Associate
@@ -22,6 +40,12 @@ reasoning) that Claude previously held by default.
 ---
 
 ## ☐ Action Item 1 — Confirm the Microsoft DPA/BAA **and** that the $125k credits cover Azure OpenAI
+
+**Partial status (August 19, 2026):** the staging attestation basis is recorded
+above. This combined action item remains open because the support reply was
+conditional on the applicable agreement, and the credits/quota answer is not
+recorded here. Those gaps do not block the synthetic staging rehearsal; they do
+block treating this item as real-PHI production clearance.
 
 **Why it matters:** With Azure OpenAI as the production inference path, Microsoft's
 HIPAA BAA (bundled in its **Data Protection Addendum**, DPA) is the legal basis for
