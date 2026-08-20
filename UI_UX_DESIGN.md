@@ -190,15 +190,17 @@ only ephemeral display state and optional UI caching.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /welcome` | Requires the sole opaque mount bearer and `X-Cosmaneura-Embed-Version: 1.0`; Sovereign resolves the mount before returning filtered paths. Query `persona` is ignored for authority. |
+| `GET /welcome` | Requires the sole opaque mount bearer and `X-Cosmaneura-Embed-Version: 1.0`; Sovereign calls the read-only Agent API mount bootstrap before returning filtered paths. Query `persona` is ignored for authority. |
 | `POST /chat` | Also requires the same canonical UUIDv4 in the body and `X-Cosmaneura-Client-Turn-ID`; the response echoes both the UUID and embed version. |
 
-**Activation blocker:** the ratified Agent API mount resolver currently opens a
-pending interaction lineage on every resolution, while `/welcome` has no turn
-phases to close. Before platform activation, governance must ratify either a
-bootstrap/no-lineage resolution purpose or the treatment of these zero-phase,
-zero-audit, zero-usage bootstrap lineages. Sovereign does not invent that wire
-extension locally.
+The ratified welcome bootstrap is `POST
+/service/v1/agent/mount-context/bootstrap`: no body, client-turn ID,
+interaction reference, idempotency key, persistence, audit, model call, tool
+call, or effect. Sovereign sends only its Entra workload bearer, the opaque
+mount token in `X-Cosmaneura-Mount-Context`, and a fresh trace ID. The exact
+five-field `MountContext` response can filter deterministic welcome paths but
+grants no action authority. `/chat` continues to use the lineage-opening mount
+resolver and canonical turn phases.
 
 **Latency note / next step:** responses are currently single-shot. When lanes
 go live on real models, add SSE streaming to `/chat` so the answer types in —

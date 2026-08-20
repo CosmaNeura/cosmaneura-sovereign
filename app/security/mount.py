@@ -1,8 +1,9 @@
 """Server-resolved mount authority for Sovereign requests.
 
 The legacy resolver pins exactly one mount in deployment configuration
-(ADR 0014). The provider-first profile selects the platform resolver and
-uses its ratified interaction lineage as the sole authority source.
+(ADR 0014). The provider-first profile selects platform inspection for welcome
+and turn-bearing resolution for actions; only the latter opens interaction
+lineage.
 Neither resolver accepts surface, tier, capability, tenant, or actor values
 from a chat request body.
 """
@@ -110,6 +111,14 @@ class MountResolveRequest:
 
 
 @dataclass(frozen=True)
+class MountBootstrapRequest:
+    """Inputs for a read-only mount inspection with no turn lineage."""
+
+    trace_id: str
+    mount_context_token: Optional[str] = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
 class MountResolution:
     """A resolved snapshot plus the platform's non-authorizing lineage data."""
 
@@ -118,6 +127,14 @@ class MountResolution:
     trace_id: str
     interaction_ref: Optional[str] = None
     interaction_reused: bool = False
+
+
+@dataclass(frozen=True)
+class MountBootstrap:
+    """A mount snapshot that carries correlation but no interaction identity."""
+
+    context: MountContext
+    trace_id: str
 
 
 class MountResolutionError(RuntimeError):
@@ -143,6 +160,14 @@ class MountResolver(ABC):
 
     @abstractmethod
     async def resolve(self, request: MountResolveRequest) -> MountResolution:
+        raise NotImplementedError
+
+
+class MountBootstrapper(ABC):
+    """Inspect a mount without opening a conversational interaction."""
+
+    @abstractmethod
+    async def bootstrap(self, request: MountBootstrapRequest) -> MountBootstrap:
         raise NotImplementedError
 
 
@@ -197,8 +222,8 @@ class PinnedResolver(MountResolver):
 WorkloadTokenProvider = Callable[[], Awaitable[str]]
 
 
-class PlatformResolver(MountResolver):
-    """Call the ratified platform mount-context resolver without faking it."""
+class PlatformResolver(MountResolver, MountBootstrapper):
+    """Call the ratified platform mount-context operations without faking them."""
 
     def __init__(
         self,
@@ -219,30 +244,40 @@ class PlatformResolver(MountResolver):
             or parsed_base.path not in {"", "/"}
         ):
             raise ValueError("platform_base_url must be an HTTPS origin")
-        endpoint = (
+        resolve_endpoint = (
             f"{platform_base_url.rstrip('/')}"
             "/service/v1/agent/mount-context/resolve"
+        )
+        bootstrap_endpoint = (
+            f"{platform_base_url.rstrip('/')}"
+            "/service/v1/agent/mount-context/bootstrap"
         )
         # The agent API is an operator-configured, workload-authenticated
         # internal service and may intentionally resolve to private address
         # space. The strict HTTPS-origin check above still rejects userinfo,
         # paths, query strings, and fragments.
-        assert_safe_outbound_url(endpoint, allow_private=True)
-        self._endpoint = endpoint
+        assert_safe_outbound_url(resolve_endpoint, allow_private=True)
+        assert_safe_outbound_url(bootstrap_endpoint, allow_private=True)
+        self._endpoint = resolve_endpoint
+        self._bootstrap_endpoint = bootstrap_endpoint
         self._workload_token_provider = workload_token_provider
         self._timeout_seconds = timeout_seconds
         self._client = client
 
-    async def _post(self, headers: dict[str, str]) -> httpx.Response:
+    async def _post(
+        self,
+        endpoint: str,
+        headers: dict[str, str],
+    ) -> httpx.Response:
         try:
             if self._client is not None:
                 return await asyncio.wait_for(
-                    self._client.post(self._endpoint, headers=headers),
+                    self._client.post(endpoint, headers=headers),
                     timeout=self._timeout_seconds,
                 )
             async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
                 return await asyncio.wait_for(
-                    client.post(self._endpoint, headers=headers),
+                    client.post(endpoint, headers=headers),
                     timeout=self._timeout_seconds,
                 )
         except (httpx.TransportError, asyncio.TimeoutError):
@@ -250,22 +285,20 @@ class PlatformResolver(MountResolver):
                 status_code=503, code="MOUNT_RESOLUTION_UNAVAILABLE", retryable=True,
             ) from None
 
-    async def resolve(self, request: MountResolveRequest) -> MountResolution:
-        mount_token = request.mount_context_token
-        if mount_token is None:
+    def _mount_token(self, value: Optional[str]) -> str:
+        if value is None:
             raise MountResolutionError(
                 status_code=401, code="MOUNT_CONTEXT_REQUIRED", retryable=False,
             )
-        if not 16 <= len(mount_token) <= 8192:
+        if not 16 <= len(value) <= 8192:
             raise MountResolutionError(
                 status_code=401, code="MOUNT_CONTEXT_INVALID", retryable=False,
             )
-        if not _TRACE_ID_PATTERN.fullmatch(request.trace_id):
-            raise MountResolutionError(
-                status_code=503, code="MOUNT_RESOLUTION_INVALID", retryable=False,
-            )
+        return value
+
+    async def _workload_token(self) -> str:
         try:
-            workload_token = await asyncio.wait_for(
+            token = await asyncio.wait_for(
                 self._workload_token_provider(),
                 timeout=self._timeout_seconds,
             )
@@ -277,44 +310,53 @@ class PlatformResolver(MountResolver):
             raise MountResolutionError(
                 status_code=503, code="WORKLOAD_TOKEN_UNAVAILABLE", retryable=False,
             ) from None
-        if not workload_token or "\n" in workload_token or "\r" in workload_token:
+        if not token or "\n" in token or "\r" in token:
             raise MountResolutionError(
                 status_code=503, code="WORKLOAD_TOKEN_UNAVAILABLE", retryable=False,
             )
-        response = await self._post({
+        return token
+
+    @staticmethod
+    def _response_error(response: httpx.Response) -> MountResolutionError:
+        status = response.status_code if 400 <= response.status_code <= 599 else 503
+        safe_code = None
+        upstream_retryable = False
+        try:
+            problem = response.json()
+            if isinstance(problem, dict):
+                candidate = problem.get("code")
+                if candidate in _SAFE_PLATFORM_PROBLEM_CODES:
+                    safe_code = candidate
+                upstream_retryable = problem.get("retryable") is True
+        except (TypeError, ValueError):
+            pass
+        return MountResolutionError(
+            status_code=status,
+            code=(
+                safe_code
+                or (
+                    "MOUNT_RESOLUTION_REJECTED" if status < 500
+                    else "MOUNT_RESOLUTION_UNAVAILABLE"
+                )
+            ),
+            retryable=status in {429, 503, 504} and upstream_retryable,
+        )
+
+    async def resolve(self, request: MountResolveRequest) -> MountResolution:
+        mount_token = self._mount_token(request.mount_context_token)
+        if not _TRACE_ID_PATTERN.fullmatch(request.trace_id):
+            raise MountResolutionError(
+                status_code=503, code="MOUNT_RESOLUTION_INVALID", retryable=False,
+            )
+        workload_token = await self._workload_token()
+        response = await self._post(self._endpoint, {
             "Authorization": f"Bearer {workload_token}",
             "X-Cosmaneura-Mount-Context": mount_token,
             "X-Cosmaneura-Client-Turn-ID": str(request.client_turn_id),
             "X-Trace-ID": request.trace_id,
         })
         if response.status_code != 200:
-            status = response.status_code if 400 <= response.status_code <= 599 else 503
-            safe_code = None
-            upstream_retryable = False
-            try:
-                problem = response.json()
-                if isinstance(problem, dict):
-                    candidate = problem.get("code")
-                    if candidate in _SAFE_PLATFORM_PROBLEM_CODES:
-                        safe_code = candidate
-                    upstream_retryable = problem.get("retryable") is True
-            except (TypeError, ValueError):
-                pass
-            retryable = (
-                status in {429, 503, 504}
-                and upstream_retryable
-            )
-            raise MountResolutionError(
-                status_code=status,
-                code=(
-                    safe_code
-                    or (
-                        "MOUNT_RESOLUTION_REJECTED" if status < 500
-                        else "MOUNT_RESOLUTION_UNAVAILABLE"
-                    )
-                ),
-                retryable=retryable,
-            )
+            raise self._response_error(response)
         try:
             context = MountContext.model_validate(response.json())
             if context.auth_tier == "provider" and context.actor_id is None:
@@ -347,3 +389,43 @@ class PlatformResolver(MountResolver):
             interaction_ref=interaction_ref,
             interaction_reused=reused_text == "true",
         )
+
+    async def bootstrap(self, request: MountBootstrapRequest) -> MountBootstrap:
+        """Inspect authority without a client turn, interaction, or write."""
+        mount_token = self._mount_token(request.mount_context_token)
+        if not _TRACE_ID_PATTERN.fullmatch(request.trace_id):
+            raise MountResolutionError(
+                status_code=503, code="MOUNT_BOOTSTRAP_INVALID", retryable=False,
+            )
+        workload_token = await self._workload_token()
+        response = await self._post(self._bootstrap_endpoint, {
+            "Authorization": f"Bearer {workload_token}",
+            "X-Cosmaneura-Mount-Context": mount_token,
+            "X-Trace-ID": request.trace_id,
+        })
+        if response.status_code != 200:
+            raise self._response_error(response)
+        try:
+            media_type = response.headers.get("content-type", "").split(";", 1)[0]
+            if media_type.strip().casefold() != "application/json":
+                raise ValueError
+            context = MountContext.model_validate(response.json())
+            if context.auth_tier == "provider" and context.actor_id is None:
+                raise ValueError
+            returned_trace = response.headers["X-Trace-ID"]
+            if (
+                not _TRACE_ID_PATTERN.fullmatch(returned_trace)
+                or returned_trace != request.trace_id
+            ):
+                raise ValueError
+            if any(
+                name.casefold().startswith("x-cosmaneura-")
+                or "idempotency" in name.casefold()
+                for name in response.headers
+            ):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, ValidationError):
+            raise MountResolutionError(
+                status_code=503, code="MOUNT_BOOTSTRAP_INVALID", retryable=False,
+            ) from None
+        return MountBootstrap(context=context, trace_id=returned_trace)

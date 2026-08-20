@@ -291,6 +291,12 @@ fresh canonical client-turn UUID. Platform resolution must return the matching
 provider actor/surface/capabilities; body claims confer no authority.
 Emergencies still short-circuit before auth.
 
+Provider `GET /welcome` uses the separate no-lineage Agent API bootstrap. It
+sends the opaque mount token for read-only inspection but no client-turn ID,
+interaction reference, request body, model/tool work, or persistence. Its
+resolved mount filters deterministic paths only; `/chat` performs a fresh
+authoritative resolution before any action.
+
 > Token verification is necessary but **not sufficient** for HIPAA. It is one
 > control among several — you still need the executed BAA (§2), validated
 > de-identification (§5), platform-owned audit with a separately ratified

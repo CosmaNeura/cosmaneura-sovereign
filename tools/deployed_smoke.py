@@ -84,6 +84,16 @@ def mount_headers(token: str, client_turn_id: uuid.UUID) -> dict[str, str]:
     }
 
 
+def welcome_headers(token: str) -> dict[str, str]:
+    """Return the browser bootstrap headers without inventing a turn ID."""
+    if not 16 <= len(token) <= 8192 or any(character.isspace() for character in token):
+        raise SmokeFailure("platform exchange returned an invalid mount token")
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Cosmaneura-Embed-Version": "1.0",
+    }
+
+
 async def exchange_mount_token(
     client: httpx.AsyncClient,
     platform_url: str,
@@ -168,7 +178,7 @@ async def expect_status(
     path: str,
     status: int,
     *,
-    body: Mapping[str, Any],
+    body: Mapping[str, Any] | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> None:
     try:

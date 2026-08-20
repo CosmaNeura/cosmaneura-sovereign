@@ -46,6 +46,18 @@ _public_chat_limiter = TokenBucketRateLimiter(
 _EMBED_VERSION = "1.0"
 _EMBED_VERSION_HEADER = "X-Cosmaneura-Embed-Version"
 _PROTECTED_EMBED_PATHS = frozenset({"/welcome", "/chat", "/digest"})
+_CORS_ALLOW_METHODS = ("GET", "POST")
+_CORS_ALLOW_HEADERS = (
+    "content-type",
+    "authorization",
+    "x-cosmaneura-client-turn-id",
+    "x-cosmaneura-embed-version",
+)
+_CORS_EXPOSE_HEADERS = (
+    "x-cosmaneura-embed-version",
+    "x-trace-id",
+    "retry-after",
+)
 ProblemCode = Literal[
     "CONTEXT_REQUIRED",
     "CONTEXT_INVALID",
@@ -424,18 +436,9 @@ if _settings.cors_allow_origins:
         CORSMiddleware,
         allow_origins=_settings.cors_allow_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST"],
-        allow_headers=[
-            "content-type",
-            "authorization",
-            "x-cosmaneura-client-turn-id",
-            "x-cosmaneura-embed-version",
-        ],
-        expose_headers=[
-            "x-cosmaneura-embed-version",
-            "x-trace-id",
-            "retry-after",
-        ],
+        allow_methods=_CORS_ALLOW_METHODS,
+        allow_headers=_CORS_ALLOW_HEADERS,
+        expose_headers=_CORS_EXPOSE_HEADERS,
     )
 
 # Reject oversized bodies before they are parsed (defense-in-depth on top of the
@@ -658,11 +661,10 @@ async def welcome(http_request: Request) -> dict:
     if _settings.platform_agent_api_enabled:
         authorization = _one_raw_header(http_request, "Authorization")
         mount_context_token = _raw_bearer(authorization)
-        resolution = await _sovereign.resolve_mount_context(
+        bootstrap = await _sovereign.bootstrap_mount_context(
             mount_context_token=mount_context_token,
-            client_turn_id=uuid.uuid4(),
         )
-        mount = resolution.context
+        mount = bootstrap.context
         if mount.surface != "provider_assistant":
             raise MountResolutionError(
                 status_code=403,

@@ -36,6 +36,7 @@ from tools.deployed_smoke import (
     required_base_url,
     required_opaque_ref,
     required_token,
+    welcome_headers,
 )
 
 
@@ -129,10 +130,7 @@ async def run(
         "GET",
         provider_url,
         "/welcome",
-        headers={
-            "Authorization": f"Bearer {mount_token}",
-            "X-Cosmaneura-Embed-Version": "1.0",
-        },
+        headers=welcome_headers(mount_token),
     )
     assert_welcome(welcome, "provider_assistant")
     emit("[PASS] deployed provider uses platform mount authority and Preview sandbox labs")
