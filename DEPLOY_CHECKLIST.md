@@ -31,19 +31,20 @@ The ordered, do-this-to-go-live list. Architecture/rationale is in
       `./infra/scripts/init-environment.sh prod`.
 - [ ] Run preflight: `./infra/scripts/preflight.sh prod`
 
-## 2. Clerk identity (the cross-service contract — DEPLOY_AZURE.md §2)
-- [ ] Create the Clerk JWT template named **`cosmaneura-sovereign`** with
-      `aud = "cosmaneura-sovereign"` and template claim
-      `roles: ["{{user.public_metadata.sovereign_role}}"]`.
+## 2. Clerk identity and platform exchange (DEPLOY_AZURE.md §2)
+- [ ] Configure the platform context-token exchange for the exact Clerk
+      instance and accepted provider-role claim.
 - [ ] Set `AUTH_ROLE_CLAIM=roles` and `AUTH_PROVIDER_ROLE=provider`. An admin
       must set `user.public_metadata.sovereign_role` to `provider` only for the
       controlled pilot users. Use the dry-run-first, exact-email workflow in
       [`CLERK_PILOT_ROLES.md`](./CLERK_PILOT_ROLES.md); never hard-code
       `provider` into every session.
-- [ ] Set `OIDC_ISSUER` / `OIDC_JWKS_URL` to your Clerk instance values.
-- [ ] Restrict issuance of the provider-role template to the one controlled Preview
-      pilot tenant. The pinned resolver does not prove Clerk org membership;
-      it is not authorized for real PHI or a multi-tenant EHR rollout.
+- [ ] Set platform-enabled Sovereign to `AUTH_MODE=disabled` and
+      `PLATFORM_AGENT_API_ENABLED=true`; inject the exact Agent API origin,
+      Entra scope, and provider workload identity.
+- [ ] Restrict provider authority to the one controlled Preview pilot tenant.
+      Prove both accepted-provider and rejected-non-provider exchanges; this is
+      not authorization for real PHI or a multi-tenant EHR rollout.
 
 ## 3. Bootstrap ACR and Key Vaults
 - [ ] Do not run an unscoped `tofu init`; the environment initializer above
@@ -150,16 +151,16 @@ Actions → Variables), so no cloud credentials are stored:
       .deploy-venv --require-hashes --only-binary=:all: -r requirements.lock`.
 - [ ] For the reviewed operator rollout, export only the resource group, two app
       names, exact registry server, `DEPLOYMENT_ENVIRONMENT=prod`, immutable
-      `IMAGE_REF`, revision suffix, `SMOKE_PYTHON`, and
-      `SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED=true`; then run
+      `IMAGE_REF`, revision suffix, `SMOKE_PYTHON`,
+      `SOVEREIGN_PLATFORM_URL`, and `SOVEREIGN_RUN_LABS_SMOKE=false`; then run
       `SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS=true
       ./infra/scripts/deploy-dual.sh` from a private controlling terminal. It
       asks silently for fresh correct-role/wrong-role Clerk JWTs after both
-      revisions are healthy, runs the live smoke, then asks for the newly minted
-      60-second host grant immediately before labs. Any read/smoke failure rolls
-      both apps back; no credential enters argv, history, or logs. Have both
-      Clerk tokens ready before starting: those prompts time out after 120
-      seconds, and the fresh record-grant prompt times out after 45 seconds.
+      revisions are healthy and uses them only at platform exchange. Any smoke
+      failure rolls both apps back; no credential enters argv, history, or logs.
+      Enable the labs smoke only after that capability is deliberately granted.
+      Have both Clerk tokens ready before starting: those prompts time out after
+      120 seconds; the optional fresh record-grant prompt times out after 45.
 - [ ] Check both `/healthz` endpoints: public must report mount `public`, provider
       must report `provider_assistant`, and both must report `mock_mode=false`.
 - [ ] Keep `SOVEREIGN_DEPLOY_ENABLED` false until the Azure/BAA, exact secret and
@@ -167,24 +168,28 @@ Actions → Variables), so no cloud credentials are stored:
       paired rollback gates, and smoke-time mint exchange pass. A main push
       cannot deploy; until that exchange exists, use only the reviewed operator
       transaction below.
-- [ ] The operator deploy transaction runs `tools/smoke_live.py` and
-      `tools/smoke_labs.py` before commit. Missing/expired/wrong-role tokens,
-      public capability leakage, live model failure, or Preview labs failure
+- [ ] The first-activation operator deploy transaction runs
+      `tools/smoke_live.py` before commit. Missing/expired/wrong-role tokens,
+      public capability leakage, or live model/lineage failure
       rolls **both** mounts back to their captured immutable digests.
 - [ ] Follow [`STAGING_REHEARSAL.md`](./STAGING_REHEARSAL.md): deploy a second
-      immutable staging digest, pass both live and synthetic Preview smokes,
+      immutable staging digest, pass the live feature-limited smoke,
       inject failure at the post-smoke gate, and retain evidence that
       `deploy-dual.sh` restored both previous active digest revisions.
+- [ ] Keep `tools/smoke_labs.py` out of the first activation. Run it only after
+      a later explicit `ehr:labs:read` activation as described in the rehearsal.
 - [ ] Preserve evidence of provider-role success plus missing/wrong-role rejection.
-      Body persona/capability hints must not change the pinned mount.
+      Body persona/capability hints must not change the resolved/deployment mount.
 
 ## 7. Before real PHI (provider mount) — non-negotiable
 - [ ] Applicable Azure BAA controls verified before asserting `BAA_ATTESTED=true`.
 - [ ] Azure de-identification behavior validated with human review.
-- [ ] Platform central audit/reporting and its integrity/retention policy are a
-      deferred V7/V8 production control. Local JSONL and Container logs are not
-      durable; this does **not** block the tightly controlled synthetic Preview
-      pilot, but it does block any claim of production audit durability.
+- [ ] Verify platform conversation, model-usage, and observational writes in
+      the live contract smoke. Sovereign keeps no production audit file or
+      chain head in platform mode.
+- [ ] Complete external integrity verification and retention controls before
+      making stronger production audit assurances. This does **not** block the
+      tightly controlled synthetic Preview pilot.
 - [ ] Production `ehr.labs.read` adapter/registry binding ratified and deployed;
       this release remains synthetic Athena Preview only.
 - [ ] HIPAA counsel + clinical + doctrinal review (`SETUP_AND_HANDOFF.md §6`).

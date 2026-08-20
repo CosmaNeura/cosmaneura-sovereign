@@ -120,12 +120,15 @@ run from a reviewed private operator terminal.
 - **Custom domain.** Bind `sovereign.cosmaneura.com` via
   `azurerm_container_app_custom_domain` + a managed cert (mirror
   `../../cosmaneura/infra/domains.tf`); needs the DNS records created first.
-- **Audit integrity.** V7/V8 central durability is deferred and must be reported;
-  local JSONL and Container logs are not durable audit evidence. It is not a
-  dependency for the controlled synthetic Preview pilot.
+- **Platform reporting.** When the Agent API boundary is enabled, canonical
+  conversation phases, model usage, and closed observations are durably written
+  to the platform. Sovereign keeps no production audit file or chain head.
+- **Integrity.** External ordering, verification, and retention assurance remain
+  separate production controls; the reporting slice alone does not supply them.
 
-These pinned public/provider processes do not call the platform Agent API.
-Real-PHI and multi-tenant EHR authority remain prohibited and out of scope.
+Legacy pinned public/provider processes do not call the platform Agent API.
+The provider-first platform profile does; real-PHI and multi-tenant EHR
+authority retain their separate activation gates.
 
 The full non-production live-smoke and forced paired-rollback procedure is in
 [`../STAGING_REHEARSAL.md`](../STAGING_REHEARSAL.md).

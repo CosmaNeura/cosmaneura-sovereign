@@ -22,8 +22,8 @@ Do not create the live apps until all of these are true:
   `cosmaneura-sovereign`, claim `roles`, and provider value `provider`; its
   template can mint one approved provider JWT and one valid JWT without that
   role;
-- the platform host can mint a 60-second record grant for a designated,
-  vendor-owned synthetic athenahealth Preview record in practice `195900`;
+- the platform exchange can mint an opaque provider mount token, and the Agent
+  API can resolve it and durably accept conversation/model-usage/audit writes;
 - the Staging 1Password vault has separate provider/public Magisterium and
   Azure OpenAI items, Preview API credentials, and a staging-only canonical
   Fernet record-grant key;
@@ -31,6 +31,10 @@ Do not create the live apps until all of these are true:
 - the operator has an Azure role capable of the reviewed bootstrap/apply.
 
 No real patient record or production EHR credential is permitted.
+
+The first activation omits `ehr:labs:read`. A 60-second record grant and the
+designated vendor-owned Preview mapping become required only at the separately
+reviewed labs activation and labs-smoke step.
 
 The Log Analytics/Container App Environment phase must not be applied until the
 shared state account's blob versioning and soft-delete recovery policy has been
@@ -111,15 +115,16 @@ the wrapper refuses a dirty tree. It must differ from the paired baseline. The
 operator needs pull access to the staging ACR so the wrapper can resolve the
 image config by digest and prove its `org.opencontainers.image.revision` label
 equals the checked-out `HEAD` before any Container App mutation or evidence
-write. Use a private controlling terminal so short-lived Clerk JWTs and the
-record grant are prompted after the new revisions are healthy rather than
+write. Use a private controlling terminal so short-lived Clerk JWTs used for
+platform exchange are prompted after the new revisions are healthy rather than
 persisted:
 
 ```bash
 DEPLOYMENT_ENVIRONMENT=staging \
 IMAGE_REF='cosmaneurasovereignstagingregistry.azurecr.io/cosmaneura/sovereign@sha256:<second-digest>' \
 REVISION_SUFFIX='rehearse-<short-id>' \
-SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED=true \
+SOVEREIGN_PLATFORM_URL='https://staging-app.cosmaneura.com' \
+SOVEREIGN_RUN_LABS_SMOKE=false \
 SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS=true \
 REHEARSAL_EVIDENCE_PATH='/absolute/private/path/paired-rollback.json' \
   ./infra/scripts/rehearse-staging-rollback.sh
@@ -128,16 +133,23 @@ REHEARSAL_EVIDENCE_PATH='/absolute/private/path/paired-rollback.json' \
 The script proves the source tree is clean, verifies the candidate manifest and
 image-config digests plus its exact source revision label, and proves the
 baseline is one paired staging digest. It then deploys the second digest to both
-apps, runs both live-model mount smokes and the one bounded synthetic Preview
-lab read, injects failure only after those pass, and delegates rollback to
+apps, runs the live platform-exchange and mount smoke, injects failure only
+after that passes, and delegates rollback to
 `deploy-dual.sh`. Finally it proves both active healthy images equal the exact
 original baseline and re-runs the identity/vault/app boundary check.
+
+After `ehr:labs:read` is deliberately added to the platform grant, repeat with
+`SOVEREIGN_RUN_LABS_SMOKE=true`,
+`SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED=true`, and the opaque
+`SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF`. The script then prompts for the
+short-lived record grant and requires the bounded Preview smoke too.
 
 The JSON evidence contains only resource-neutral revision/image identifiers,
 the source commit, timestamps, and the pass result. It never contains JWTs, a
 record grant, record reference, response body, answer, or lab value. The file is
 created with mode-safe defaults and is never overwritten.
 
-V7/V8 centralized durable audit remains deferred and must still be reported as
-non-blocking only for this tightly controlled synthetic Preview rehearsal. It
-continues to block any real-PHI, multi-tenant, or durable-audit claim.
+The platform-enabled rehearsal must prove canonical conversation, model-usage,
+and observational ingestion. External ordering, integrity verification, and
+retention assurance remain separate production controls. Real-PHI and
+multi-tenant activation retain their separate production gates.

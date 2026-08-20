@@ -14,6 +14,8 @@ from tools.deployed_smoke import SmokeFailure, distinct_origins, request_json
 PROVIDER_TOKEN = "provider-header.provider-payload.provider-signature"
 NON_PROVIDER_TOKEN = "member-header.member-payload.member-signature"
 RECORD_GRANT = "gAAAAA" + "a" * 100 + "=="
+MOUNT_TOKEN = "opaque-platform-mount-token-123456"
+PLATFORM_RECORD_REF = "record_synthetic_123456"
 
 
 def _health(mount: str, auth_mode: str) -> dict:
@@ -22,16 +24,21 @@ def _health(mount: str, auth_mode: str) -> dict:
         "mock_mode": False,
         "mount_profile": mount,
         "auth_mode": auth_mode,
+        "platform_agent_api_enabled": mount == "provider_assistant",
     }
 
 
-def _welcome(provider: bool) -> dict:
+def _welcome(provider: bool, *, labs: bool = True) -> dict:
     if provider:
         return {
             "persona": "provider",
-            "paths": [{"intent": "engagement"}, {"intent": "lab_review"}],
-            "labs_tier": "sandbox",
-            "labs_label": SANDBOX_LABEL,
+            "paths": (
+                [{"intent": "engagement"}, {"intent": "lab_review"}]
+                if labs
+                else [{"intent": "engagement"}]
+            ),
+            "labs_tier": "sandbox" if labs else None,
+            "labs_label": SANDBOX_LABEL if labs else None,
         }
     return {
         "persona": "patient",
@@ -41,7 +48,13 @@ def _welcome(provider: bool) -> dict:
     }
 
 
-def _chat(persona: str, intent: str, *, denied: bool = False) -> dict:
+def _chat(
+    persona: str,
+    intent: str,
+    client_turn_id: str,
+    *,
+    denied: bool = False,
+) -> dict:
     return {
         "answer": "synthetic response",
         "persona": persona,
@@ -49,38 +62,85 @@ def _chat(persona: str, intent: str, *, denied: bool = False) -> dict:
         "structured": {},
         "safety_notice": "capability_denied" if denied else None,
         "trace_id": "trace-synthetic",
+        "client_turn_id": client_turn_id,
     }
 
 
 def test_live_smoke_checks_mounts_roles_and_public_capability_denial() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "platform.test":
+            assert request.url.path == "/embed/v1/context-tokens/exchange"
+            assert request.headers["X-Cosmaneura-Embed-Version"] == "1.0"
+            if request.headers["authorization"] == f"Bearer {NON_PROVIDER_TOKEN}":
+                return httpx.Response(403, json={"detail": "Unavailable."})
+            assert request.headers["authorization"] == f"Bearer {PROVIDER_TOKEN}"
+            return httpx.Response(200, json={
+                "context_token": MOUNT_TOKEN,
+                "token_type": "Bearer",
+                "issued_at": "2026-08-19T12:00:00Z",
+                "refresh_after": "2026-08-19T12:04:00Z",
+                "expires_at": "2026-08-19T12:05:00Z",
+            })
         provider = request.url.host == "provider.test"
         if request.url.path == "/healthz":
             return httpx.Response(
                 200,
                 json=_health(
                     "provider_assistant" if provider else "public",
-                    "oidc" if provider else "disabled",
+                    "disabled",
                 ),
             )
         if request.url.path == "/welcome":
-            return httpx.Response(200, json=_welcome(provider))
+            assert request.headers["X-Cosmaneura-Embed-Version"] == "1.0"
+            if provider:
+                assert request.headers["authorization"] == f"Bearer {MOUNT_TOKEN}"
+            return httpx.Response(
+                200,
+                json=_welcome(provider, labs=False),
+                headers={"X-Cosmaneura-Embed-Version": "1.0"},
+            )
         assert request.url.path == "/chat"
+        assert request.headers["X-Cosmaneura-Embed-Version"] == "1.0"
         authorization = request.headers.get("authorization")
         body = __import__("json").loads(request.content)
+        turn_id = body["client_turn_id"]
         if provider:
             if authorization is None:
-                return httpx.Response(401, json={"detail": "Not authenticated."})
-            if authorization == f"Bearer {NON_PROVIDER_TOKEN}":
-                return httpx.Response(403, json={"detail": "Unavailable."})
-            assert authorization == f"Bearer {PROVIDER_TOKEN}"
-            return httpx.Response(200, json=_chat("provider", "engagement"))
+                return httpx.Response(
+                    401,
+                    json={"detail": "Not authenticated."},
+                    headers={"X-Cosmaneura-Embed-Version": "1.0"},
+                )
+            if "x-cosmaneura-client-turn-id" not in request.headers:
+                return httpx.Response(
+                    422,
+                    json={"detail": "Unavailable."},
+                    headers={"X-Cosmaneura-Embed-Version": "1.0"},
+                )
+            if request.headers["x-cosmaneura-client-turn-id"] == "not-a-uuid":
+                return httpx.Response(
+                    422,
+                    json={"detail": "Unavailable."},
+                    headers={"X-Cosmaneura-Embed-Version": "1.0"},
+                )
+            assert authorization == f"Bearer {MOUNT_TOKEN}"
+            assert request.headers["x-cosmaneura-client-turn-id"] == turn_id
+            return httpx.Response(
+                200,
+                json=_chat("provider", "engagement", turn_id),
+                headers={"X-Cosmaneura-Embed-Version": "1.0"},
+            )
         if "lab results" in body["message"]:
             return httpx.Response(
                 200,
-                json=_chat("patient", "lab_review", denied=True),
+                json=_chat("patient", "lab_review", turn_id, denied=True),
+                headers={"X-Cosmaneura-Embed-Version": "1.0"},
             )
-        return httpx.Response(200, json=_chat("patient", "engagement"))
+        return httpx.Response(
+            200,
+            json=_chat("patient", "engagement", turn_id),
+            headers={"X-Cosmaneura-Embed-Version": "1.0"},
+        )
 
     emitted: list[str] = []
     async def exercise() -> None:
@@ -92,13 +152,14 @@ def test_live_smoke_checks_mounts_roles_and_public_capability_denial() -> None:
                 client,
                 "https://public.test",
                 "https://provider.test",
+                "https://platform.test",
                 PROVIDER_TOKEN,
                 NON_PROVIDER_TOKEN,
                 emit=emitted.append,
             )
 
     asyncio.run(exercise())
-    assert any("without the provider role" in line for line in emitted)
+    assert any("without provider authority" in line for line in emitted)
     assert any("cannot reach the provider labs capability" in line for line in emitted)
 
 
@@ -106,11 +167,34 @@ def test_labs_smoke_checks_one_host_bound_synthetic_preview_read() -> None:
     record_hash = "0123456789abcdef"
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "platform.test":
+            assert request.url.path == "/embed/v1/context-tokens/exchange"
+            assert __import__("json").loads(request.content)["record_ref"] == (
+                PLATFORM_RECORD_REF
+            )
+            return httpx.Response(200, json={
+                "context_token": MOUNT_TOKEN,
+                "token_type": "Bearer",
+                "issued_at": "2026-08-19T12:00:00Z",
+                "refresh_after": "2026-08-19T12:04:00Z",
+                "expires_at": "2026-08-19T12:05:00Z",
+            })
         if request.url.path == "/healthz":
-            return httpx.Response(200, json=_health("provider_assistant", "oidc"))
+            return httpx.Response(200, json=_health("provider_assistant", "disabled"))
         if request.url.path == "/welcome":
-            return httpx.Response(200, json=_welcome(True))
-        assert request.headers["authorization"] == f"Bearer {PROVIDER_TOKEN}"
+            assert request.headers["authorization"] == f"Bearer {MOUNT_TOKEN}"
+            assert request.headers["X-Cosmaneura-Embed-Version"] == "1.0"
+            return httpx.Response(
+                200,
+                json=_welcome(True),
+                headers={"X-Cosmaneura-Embed-Version": "1.0"},
+            )
+        assert request.headers["authorization"] == f"Bearer {MOUNT_TOKEN}"
+        assert "x-cosmaneura-client-turn-id" in request.headers
+        body = __import__("json").loads(request.content)
+        assert body["client_turn_id"] == request.headers[
+            "x-cosmaneura-client-turn-id"
+        ]
         return httpx.Response(200, json={
             "answer": f"{SANDBOX_LABEL}.\n\nSynthetic summary",
             "persona": "provider",
@@ -128,9 +212,10 @@ def test_labs_smoke_checks_one_host_bound_synthetic_preview_read() -> None:
             },
             "safety_notice": None,
             "trace_id": "trace-lab-synthetic",
+            "client_turn_id": body["client_turn_id"],
             "doctrinal_review": {"conforms": True},
             "citations": [{"source": "athenahealth Preview (synthetic EMR)"}],
-        })
+        }, headers={"X-Cosmaneura-Embed-Version": "1.0"})
 
     async def exercise() -> None:
         async with httpx.AsyncClient(
@@ -140,7 +225,9 @@ def test_labs_smoke_checks_one_host_bound_synthetic_preview_read() -> None:
             await smoke_labs.run(
                 client,
                 "https://provider.test",
+                "https://platform.test",
                 PROVIDER_TOKEN,
+                PLATFORM_RECORD_REF,
                 RECORD_GRANT,
                 emit=lambda _message: None,
             )

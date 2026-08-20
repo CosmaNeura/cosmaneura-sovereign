@@ -4,7 +4,7 @@ Agent 5 — Visit / Session Prep ("the Planner").
 Brief: the everyday clinician copilot. Born from a real user workflow: a
 therapist was pasting each session's transcript into a consumer ChatGPT
 conversation to get next-session talking points. This agent makes that native
-— same outcome, but inside the BAA-covered boundary, with the audit chain and
+— same outcome, but inside the BAA-covered boundary, with the governed audit record and
 the Catholic arbitration gate the side-channel never had.
 
 What it produces (BRIEF by default — the clinician reviews it minutes before

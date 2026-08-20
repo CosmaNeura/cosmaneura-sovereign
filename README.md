@@ -29,7 +29,8 @@ mechanical orchestration. White-labelled onto MyCatholicDoctor.
   MCP server *while reasoning* (off by default; de-identified text only). See
   `ARCHITECTURE.md` §2 and `SETUP_AND_HANDOFF.md` §9.
 - **Compliance scaffolding** — PHI de-identification, a PHI-boundary tripwire,
-  and a content-hashing audit logger that never stores raw text.
+  platform-owned canonical conversation/usage/audit reporting for provider
+  turns, and a legacy local hash logger for offline development only.
 
 ## Quickstart (runs with zero credentials)
 
@@ -56,11 +57,13 @@ PYTHONPATH=. uvicorn app.main:app --reload
 ```bash
 curl -s localhost:8000/healthz
 
-curl -s localhost:8000/chat -H 'content-type: application/json' -d '{
-  "message": "I need to find a Catholic OB-GYN near me",
-  "persona": "patient",
-  "metadata": {"state": "NH", "specialty": "obstetrics"}
-}' | python -m json.tool
+TURN_ID=$(python -c 'import uuid; print(uuid.uuid4())')
+curl -s localhost:8000/chat \
+  -H 'X-Cosmaneura-Embed-Version: 1.0' \
+  -H "X-Cosmaneura-Client-Turn-ID: $TURN_ID" \
+  -H 'content-type: application/json' \
+  -d "{\"client_turn_id\":\"$TURN_ID\",\"message\":\"Find a Catholic OB-GYN near Nashua, New Hampshire\"}" \
+  | python -m json.tool
 ```
 
 The demo exercises the pipeline end-to-end: a patient referral, a concierge
@@ -71,32 +74,42 @@ question (answered directly by Magisterium), and an emergency message
 
 ## Authentication
 
-`/chat` supports JWT auth so the **persona is derived from a verified identity**,
-not from the request body. Controlled by `AUTH_MODE`:
+Authority depends on the deployment mode, never the request persona:
 
-- `disabled` (default) — no token required; persona comes from the body (still
-  gated by `ALLOW_PROVIDER_PERSONA`). Local dev / patient-only, no PHI.
+- `disabled` (default public profile) — the public deployment requires no user
+  token. In platform-enabled provider mode the same setting means the sole
+  bearer is an opaque platform mount token, not an IdP JWT. A body persona is
+  never authority.
 - `dev_hs256` — shared-secret tokens for local testing without an identity
   provider. Mint one with `tools/mint_dev_token.py`. **Not for production.**
-- `oidc` — production. Verifies RS256/ES256 against your identity provider's
-  JWKS, plus issuer/audience/expiry. Works with Auth0, Cognito, Entra, Okta,
-  Keycloak, etc. **Provider/PHI deployments must use this.**
+- `oidc` — legacy platform-disabled provider mode. Verifies RS256/ES256 against
+  the identity provider's JWKS plus issuer/audience/expiry.
+- platform-enabled provider mode — set `AUTH_MODE=disabled` and
+  `PLATFORM_AGENT_API_ENABLED=true`. The host exchanges its authenticated
+  session for an opaque mount token and sends that as the sole bearer plus a
+  fresh client-turn UUID. The Agent API resolves actor, tenant, surface, and
+  capabilities; Sovereign does not verify the browser JWT directly.
 
 Local example with a dev token:
 
 ```bash
-export AUTH_MODE=dev_hs256 AUTH_DEV_SECRET=devsecret
+export AUTH_MODE=dev_hs256
+export AUTH_DEV_SECRET=dev-secret-at-least-thirty-two-bytes
+export MOUNT_PROFILE=provider_assistant MOUNT_TENANT_ID=tenant_local
 # start the server in another shell with the same env, then:
-TOKEN=$(AUTH_DEV_SECRET=devsecret python tools/mint_dev_token.py --role provider)
+TOKEN=$(python tools/mint_dev_token.py --role provider)
+TURN_ID=$(python -c 'import uuid; print(uuid.uuid4())')
 curl -s localhost:8000/chat -H "Authorization: Bearer $TOKEN" \
+  -H 'X-Cosmaneura-Embed-Version: 1.0' \
+  -H "X-Cosmaneura-Client-Turn-ID: $TURN_ID" \
   -H 'content-type: application/json' \
-  -d '{"persona":"patient","message":"help me understand these labs"}'
-# The token's role wins: this is treated as a provider request regardless of body.
+  -d "{\"client_turn_id\":\"$TURN_ID\",\"persona\":\"patient\",\"message\":\"help me prepare questions for a visit\"}"
+# The deployment-pinned mount is authoritative. The verified provider role
+# binds the actor; neither the body persona nor the JWT role selects a mount.
 ```
 
-A patient token cannot reach the PHI path by putting `"persona":"provider"` in
-the body — the verified claim overrides it. See `SETUP_AND_HANDOFF.md` for the
-OIDC settings your developer wires to your identity provider.
+A body `persona` cannot select the provider/PHI path. See
+`SETUP_AND_HANDOFF.md` for the platform exchange and legacy OIDC boundaries.
 
 ## Going live (the short version)
 
@@ -105,8 +118,8 @@ OIDC settings your developer wires to your identity provider.
    Retention** on a qualifying tier (or run Claude via AWS Bedrock / Google Vertex
    under that hyperscaler's BAA).
 3. Set `MOCK_MODE=false` and populate `.env` (copy from `.env.example`).
-4. Replace the **baseline** de-identifier and audit sink with production-grade
-   equivalents — see the hardening checklist in `SETUP_AND_HANDOFF.md`.
+4. Replace the **baseline** de-identifier and complete platform retention and
+   integrity controls — see the hardening checklist in `SETUP_AND_HANDOFF.md`.
 
 ## Project layout
 
@@ -153,9 +166,9 @@ improves through configuration we build, not by learning from your records.
 **How long do we keep it?**
 Full visit transcripts are automatically deleted from your dashboard **7 days**
 after the visit. Generated notes remain available in your dashboard for **up to
-12 months**, or until you delete them. Our audit log — kept for compliance —
-stores cryptographic fingerprints of content, never the content itself, so even
-our own compliance records contain no patient information.
+12 months**, or until you delete them. Governed audit records use opaque
+references and content hashes rather than raw notes, and are still treated as
+protected compliance data with controlled access and retention.
 
 **Who decides what enters the medical record?**
 You do. Nothing this system produces is written to your EHR automatically. You

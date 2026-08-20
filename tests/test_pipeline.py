@@ -191,6 +191,15 @@ def test_audit_chain_links_records():
     assert start != mid != end and len(end) == 64
 
 
+def test_platform_audit_mode_has_no_local_chain_head_state():
+    from app.compliance.audit import AuditLogger
+    from app.config import Settings
+
+    log = AuditLogger(Settings(platform_agent_api_enabled=True))
+    assert not hasattr(log, "_prev_chain")
+    assert not hasattr(log, "_lock")
+
+
 # --- second-pass security regression tests ----------------------------------
 
 def test_literal_mode_scrubs_before_magisterium():
@@ -598,12 +607,13 @@ def test_dashboard_harness_gated_by_demo_flag():
 # --- HTTP surface: welcome bootstrap ------------------------------------------
 
 def test_welcome_serves_greeting_and_guided_paths():
-    """Both UI surfaces bootstrap from /welcome — no auth, no LLM call."""
+    """The legacy public mount still bootstraps deterministically without a model."""
     from fastapi.testclient import TestClient
     from app.main import app as web_app
 
     client = TestClient(web_app)
-    r = client.get("/welcome")
+    headers = {"X-Cosmaneura-Embed-Version": "1.0"}
+    r = client.get("/welcome", headers=headers)
     assert r.status_code == 200
     w = r.json()
     assert w["persona"] == "patient"
@@ -615,7 +625,11 @@ def test_welcome_serves_greeting_and_guided_paths():
     assert w["disclaimer"]
 
     # A caller cannot switch mounts by claiming a provider persona.
-    spoofed = client.get("/welcome", params={"persona": "provider"}).json()
+    spoofed = client.get(
+        "/welcome",
+        params={"persona": "provider"},
+        headers=headers,
+    ).json()
     assert spoofed["persona"] == "patient"
     assert {p["intent"] for p in spoofed["paths"]} == {
         "referral", "engagement", "concierge", "doctrinal",
@@ -626,7 +640,7 @@ def test_welcome_serves_greeting_and_guided_paths():
 
     provider = _provider_settings(feature_athena_labs=False)
     with patch.object(main_module, "_settings", provider):
-        provider_welcome = client.get("/welcome").json()
+        provider_welcome = client.get("/welcome", headers=headers).json()
     intents = {p["intent"] for p in provider_welcome["paths"]}
     assert provider_welcome["persona"] == "provider"
     assert "visit_prep" in intents and "ethics_consult" in intents

@@ -234,8 +234,9 @@ class Settings(BaseSettings):
     # per-tenant branding in the Phase 2 tenant layer.
     partner_name: str = "CosmaNeura"
 
-    # Audit sink: "stdout" for local dev, "file" writes JSONL to audit_path.
-    # In production point this at an append-only, access-controlled store.
+    # Legacy local sink. When the provider platform boundary is enabled,
+    # only value-free operational stderr is emitted here and the platform owns
+    # durable audit ingestion. The local chain has no production integrity claim.
     audit_sink: str = "stdout"
     audit_path: str = "./audit_log.jsonl"
 
@@ -255,6 +256,20 @@ class Settings(BaseSettings):
     mount_surface: Optional[str] = None
     mount_auth_tier: Optional[str] = None
     mount_capabilities: Optional[list[str]] = None
+
+    # --- Platform authority and observational audit ----------------------
+    # Provider-first platform rollout. When enabled, the opaque platform mount
+    # context is the authority source and each completed turn is durably
+    # reported to the platform Agent API with the same interaction lineage.
+    # The sole Authorization bearer is that opaque mount token. Direct Clerk
+    # JWT verification exists only when this boundary is disabled.
+    platform_agent_api_enabled: bool = False
+    platform_agent_api_base_url: Optional[str] = None
+    platform_agent_api_scope: Optional[str] = None
+    platform_workload_client_id: Optional[str] = None
+    # Total budget for one canonical phase or observational write, including
+    # same-key retries. Keep telemetry failure from consuming the chat timeout.
+    platform_write_timeout_seconds: float = Field(default=3.0, ge=0.1, le=10.0)
 
     # Anonymous public traffic is limited in-process before any model call.
     # Container Apps is configured with a single public replica until a shared
@@ -277,8 +292,10 @@ class Settings(BaseSettings):
     baa_attested: bool = False
 
     # --- Authentication ----------------------------------------------------
-    # See AuthMode. Provider/PHI deployments MUST use "oidc" (persona bound to a
-    # verified identity); "disabled" is patient-only/local dev.
+    # Platform-authoritative provider mounts MUST use "disabled": their sole
+    # inbound bearer is an opaque mount token, resolved by the platform. Legacy
+    # provider mounts verify the browser actor directly and use OIDC in live
+    # deployments. Public/local development also uses "disabled" by default.
     auth_mode: AuthMode = AuthMode.DISABLED
     # OIDC (production) — from your identity provider (Auth0/Cognito/Entra/Okta/…)
     oidc_issuer: Optional[str] = None
@@ -452,6 +469,15 @@ def validate_deployment_configuration(settings: Settings) -> None:
             forbidden.append("SOVEREIGN_RECORD_GRANT_SECRET")
         if settings.labs_allow_patient_search:
             forbidden.append("LABS_ALLOW_PATIENT_SEARCH")
+        if settings.platform_agent_api_enabled:
+            forbidden.append("PLATFORM_AGENT_API_ENABLED")
+        for name, value in (
+            ("PLATFORM_AGENT_API_BASE_URL", settings.platform_agent_api_base_url),
+            ("PLATFORM_AGENT_API_SCOPE", settings.platform_agent_api_scope),
+            ("PLATFORM_WORKLOAD_CLIENT_ID", settings.platform_workload_client_id),
+        ):
+            if _has_value(value):
+                forbidden.append(name)
         if settings.deid_provider.strip().lower() != "regex":
             forbidden.append("DEID_PROVIDER")
         for name, value in (
@@ -474,36 +500,43 @@ def validate_deployment_configuration(settings: Settings) -> None:
         raise DeploymentConfigurationError(
             "MOUNT_PROFILE=provider_assistant requires MOUNT_TENANT_ID."
         )
-    if settings.auth_mode == AuthMode.DISABLED:
-        raise DeploymentConfigurationError(
-            "MOUNT_PROFILE=provider_assistant requires authenticated actors; "
-            "AUTH_MODE cannot be disabled."
-        )
-    if not settings.mock_mode and settings.auth_mode != AuthMode.OIDC:
-        raise DeploymentConfigurationError(
-            "A non-mock MOUNT_PROFILE=provider_assistant deployment requires "
-            "AUTH_MODE=oidc."
-        )
+    if settings.platform_agent_api_enabled:
+        if settings.auth_mode != AuthMode.DISABLED:
+            raise DeploymentConfigurationError(
+                "Platform authority requires AUTH_MODE=disabled so the sole "
+                "Authorization bearer is the opaque mount token."
+            )
+    else:
+        if settings.auth_mode == AuthMode.DISABLED:
+            raise DeploymentConfigurationError(
+                "A legacy provider mount requires authenticated actors; "
+                "AUTH_MODE cannot be disabled."
+            )
+        if not settings.mock_mode and settings.auth_mode != AuthMode.OIDC:
+            raise DeploymentConfigurationError(
+                "A non-mock legacy provider deployment requires AUTH_MODE=oidc."
+            )
     if not settings.mock_mode:
         if not settings.baa_attested:
             raise DeploymentConfigurationError(
                 "A non-mock provider deployment requires BAA_ATTESTED=true."
             )
-        missing_oidc = [
-            name
-            for name, value in (
-                ("OIDC_ISSUER", settings.oidc_issuer),
-                ("OIDC_AUDIENCE", settings.oidc_audience),
-                ("OIDC_JWKS_URL", settings.oidc_jwks_url),
-                ("AUTH_PROVIDER_ROLE", settings.auth_provider_role),
-            )
-            if not _has_value(value)
-        ]
-        if missing_oidc:
-            raise DeploymentConfigurationError(
-                "A non-mock provider deployment is missing required OIDC "
-                "configuration: " + ", ".join(missing_oidc) + "."
-            )
+        if not settings.platform_agent_api_enabled:
+            missing_oidc = [
+                name
+                for name, value in (
+                    ("OIDC_ISSUER", settings.oidc_issuer),
+                    ("OIDC_AUDIENCE", settings.oidc_audience),
+                    ("OIDC_JWKS_URL", settings.oidc_jwks_url),
+                    ("AUTH_PROVIDER_ROLE", settings.auth_provider_role),
+                )
+                if not _has_value(value)
+            ]
+            if missing_oidc:
+                raise DeploymentConfigurationError(
+                    "A non-mock legacy provider deployment is missing required "
+                    "OIDC configuration: " + ", ".join(missing_oidc) + "."
+                )
         if settings.deid_provider != "azure":
             raise DeploymentConfigurationError(
                 "A non-mock provider deployment requires DEID_PROVIDER=azure."
@@ -521,6 +554,46 @@ def validate_deployment_configuration(settings: Settings) -> None:
                 "A non-mock provider deployment requires a canonical "
                 "SOVEREIGN_RECORD_GRANT_SECRET."
             ) from None
+
+    if settings.platform_agent_api_enabled:
+        missing_platform = [
+            name
+            for name, value in (
+                ("PLATFORM_AGENT_API_BASE_URL", settings.platform_agent_api_base_url),
+                ("PLATFORM_AGENT_API_SCOPE", settings.platform_agent_api_scope),
+                ("PLATFORM_WORKLOAD_CLIENT_ID", settings.platform_workload_client_id),
+            )
+            if not _has_value(value)
+        ]
+        if missing_platform:
+            raise DeploymentConfigurationError(
+                "Platform authority is missing required configuration: "
+                + ", ".join(missing_platform)
+                + "."
+            )
+        try:
+            parsed_platform = urlparse(settings.platform_agent_api_base_url or "")
+        except ValueError:
+            parsed_platform = urlparse("")
+        if (
+            parsed_platform.scheme != "https"
+            or not parsed_platform.hostname
+            or parsed_platform.username is not None
+            or parsed_platform.password is not None
+            or parsed_platform.path not in {"", "/"}
+            or parsed_platform.params
+            or parsed_platform.query
+            or parsed_platform.fragment
+        ):
+            raise DeploymentConfigurationError(
+                "PLATFORM_AGENT_API_BASE_URL must be an exact HTTPS origin."
+            )
+        scope = settings.platform_agent_api_scope or ""
+        if not scope.startswith("api://") or not scope.endswith("/.default"):
+            raise DeploymentConfigurationError(
+                "PLATFORM_AGENT_API_SCOPE must be an api:// application scope "
+                "ending in /.default."
+            )
 
 
 @lru_cache

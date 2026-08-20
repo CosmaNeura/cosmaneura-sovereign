@@ -21,8 +21,9 @@ in the **synthetic-only staging rehearsal**. It is not a legal conclusion, a
 HIPAA-compliance certification, or authorization for real PHI. The repository
 does not contain the BAA itself. Before real-PHI use, counsel or the agreement
 owner must confirm that the retained agreement applies to this exact subscription
-and to every PHI-bearing Azure service in the deployed path. V7/V8 durable audit,
-production EHR authorization, and the other real-PHI gates remain open.
+and to every PHI-bearing Azure service in the deployed path. Live proof of the
+platform reporting, production EHR authorization, and the other real-PHI gates
+remain open.
 
 **Why this document exists:** The provider (PHI/HIPAA) build is deliberately locked
 in code until real legal paperwork is in place — the PHI path refuses to run unless
@@ -196,10 +197,10 @@ maps to a switch or setting the developer controls:
 |---|---|---|
 | Executed BAA on the inference path | `BAA_ATTESTED` (env → `app/config.py`) | Action Item 1 (Microsoft DPA confirmation for the Azure OpenAI path) |
 | HIPAA-grade de-identification | `DEID_PROVIDER=azure` (replaces the regex baseline) | Action Item 1 (de-id service in DPA scope) + Phase 5 validation |
-| Persona bound to verified identity | `AUTH_MODE=oidc` + production IdP values | Separate deployment task (Phase 5) |
+| Persona bound to verified identity | Clerk-authenticated platform exchange + authoritative mount resolution | Separate deployment task (Phase 5) |
 
 **Credits ≠ compliance:** the $125k lets us build and test aggressively, but every
 test before the gates above pass uses **synthetic or de-identified data only**.
 
-Items not in this document (WORM audit store, rate limiting, pen test, counsel
-review) remain tracked as Phase 5 hardening work.
+Items not in this document (global audit ordering/integrity, rate limiting, pen
+test, counsel review) remain tracked as Phase 5 hardening work.

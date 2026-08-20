@@ -1,13 +1,14 @@
 # UI/UX Design — Two Surfaces, One Brain
 
-**Status:** design + first implementation. The standalone chat surface and the
-shared `GET /welcome` bootstrap are built in this branch; the Cosmas dashboard
-panel is specified here for the Cosmas frontend team (separate codebase).
+**Status:** versioned reference implementation. The provider-first platform
+activation uses the protected `GET /welcome` bootstrap and the versioned Cosmas
+dashboard panel. Public activation and the labs lane remain disabled rollout
+steps.
 
 The chatbot ships on two surfaces. Both are thin clients over the **same two
 endpoints** — `GET /welcome` (bootstrap) and `POST /chat` (everything else).
-No client-side intelligence, no divergence: the Sovereign is the brain, the
-surfaces are skin.
+Both calls require the opaque platform mount token and embed version `1.0`.
+The browser supplies presentation hints, never authority.
 
 ```
 Surface A: chat.cosmaneura.com          Surface B: app.cosmaneura.com
@@ -24,9 +25,9 @@ Surface A: chat.cosmaneura.com          Surface B: app.cosmaneura.com
 
 | Copilot failure mode | Our countermeasure |
 |---|---|
-| **Context-blind** — often doesn't reliably know what you're looking at; you re-explain | Surface B injects the open record automatically: the note/session on screen flows into `metadata` on every message. The user never pastes anything (that's the exact workflow we're replacing). |
+| **Context-blind** — often doesn't reliably know what you're looking at; you re-explain | Surface B sends only opaque platform snapshot/thread/digest references for the open record. Sovereign retrieves governed context through the platform boundary; the browser does not replay raw notes. |
 | **Answers stranded in the sidebar** — you copy-paste results back into your document | Responses carry machine-readable payloads (`structured`, `citations`); the panel offers one-click actions: *Insert into note*, *Save prep to visit*. The answer lands where the work is. |
-| **Popup amnesia** — every invocation starts from zero | One continuous thread **per client/patient**, keyed by the record the clinician has open. Thread history lives in Cosmas's DB (the Sovereign stays stateless); Cosmas replays it via `history[]`. |
+| **Popup amnesia** — every invocation starts from zero | The platform owns canonical accepted/final turns. The host may hydrate governed history for display; browser callbacks are never the durability boundary. |
 | **Mode pickers and ribbon buttons** — the user must know which feature to summon | Invisible routing. The clinician just types; the Sovereign's router picks the lane (visit prep / ethics consult / referral / explain). Chips are suggestions, never modes. |
 | **Nagging** — autopop-ups, upsells, "try asking…" toasts | Quiet by default. A collapsed rail with one button. It speaks first **only** when opened, never uninvited. |
 | **Opaque answers** — where did this come from? | A visible trust surface: source citations, the doctrinal-review line ("✓ Reviewed for conformity with Catholic teaching"), and intent badges. Clinicians extend trust to what shows its work. |
@@ -53,15 +54,16 @@ the interaction design:
 - **Trust surface**: intent badge, source line, doctrinal-review line.
 - **Structured cards**: provider matches (with booking links) and trials
   render as cards, not prose.
-- **Persistent footer disclaimer** (per INTERACTION_DESIGN Decision 3).
+- **Governed disclaimer surface** on standard responses; explicit sensitive
+  presentation suppresses it rather than relying on client inference.
 
-**Auth & payment gating (deployment, not new code):** `AUTH_MODE=oidc` against
-Clerk; the paid entitlement (e.g. the $59/mo tier) is a Clerk claim; the page
-exchanges the Clerk session for the bearer token it sends to `/chat`.
+**Auth & payment gating (deployment, not new code):** Clerk authenticates the
+browser and the platform exchange validates the applicable entitlement. The
+page sends only the returned opaque mount token to `/chat`; platform-enabled
+Sovereign runs with direct OIDC verification disabled.
 Unauthenticated visitors see the marketing/paywall page, not the chat.
-Providers additionally carry the canonical provider authority (`roles`
-contains `provider`) → provider persona, verified server-side (already
-enforced by the principal override).
+Provider authority comes only from the platform-resolved mount context; a role,
+persona, or record hint in browser JSON cannot grant it.
 
 **Later (Phase 2/3, unchanged):** per-tenant theming of this same page, and
 the sandboxed-iframe widget for **third-party** partner sites (MyCatholicDoctor).
@@ -74,76 +76,88 @@ button, expanding to the same chat UI as Surface A (same component styling,
 same rendering rules) plus context awareness and actions.
 
 **Reference implementation (built):** `app/panel.js`, served by the Sovereign
-at `GET /panel.js`. Self-contained vanilla JS — no framework, no dependencies,
-prefixed styles. The host mounts it with two required callbacks; everything
-else is optional:
+at `GET /embed/v1/panel.js`. Self-contained vanilla JS — no framework, no dependencies,
+prefixed styles. The host must supply the ratified version, exact HTTPS origin,
+token/context callbacks, and human-contact callback; other action adapters are
+optional:
 
 ```html
-<script src="https://sovereign.example.com/panel.js"></script>
+<script src="https://sovereign.example.com/embed/v1/panel.js"></script>
 <script>
-  CosmaNeuraPanel.mount({
+  const panel = CosmaNeuraPanel.mount({
     sovereignUrl: "https://sovereign.example.com",
-    getAuthToken: async () => currentUserJwt,   // the auth bridge
-    getContext:   async () => ({                // whatever record is on screen
-      clientId, journey_digest, prior_sessions: latestNote,
-      terminology, care_model /* + labs, metrics, templates per view */ }),
+    embedVersion: "1.0",
+    getAuthToken: async () => host.getFreshPlatformContextToken(),
+    getContext: async () => ({
+      clientId: openRecord.threadKey,
+      thread_ref: openRecord.assistantThreadRef,
+      context_snapshot_ref: openRecord.assistantSnapshotRef,
+      digest_ref: openRecord.journeyDigestRef,
+      terminology: settings.terminology,
+      care_model: openRecord.careModel,
+    }),
     onInsert: (text) => note.insert(text),      // optional action hooks
     onSave:   (text) => visits.savePrep(text),
-    loadHistory, saveHistory,                   // optional thread persistence
+    onHumanContact: action => host.openHumanContactPath(action.action_id),
+    loadHistory: clientId => platform.loadGovernedAssistantHistory(clientId),
+    onHistoryUpdated: (clientId, history) => ephemeralUi.replace(clientId, history),
   });
 
   // REQUIRED whenever the open record changes: swaps the visible conversation
   // with the record. Without it the previous patient's thread stays on screen
   // under the new patient's chart — wrong-patient display. The panel also
   // rebuilds defensively if it sees a new clientId at send time.
-  onRecordChange(id => panel.setRecord(id));
+  onRecordChange(async id => {
+    host.invalidateCachedMountToken();
+    await panel.setRecord(id);
+  });
 </script>
 ```
 
 The component implements the full action contract below (badges, emergency
 card, trust line, verified-calculations box, Copy/Download, Insert/Save
-hooks), budgets context payloads to stay inside the Sovereign's body cap
-(newest-first truncation), and keys thread continuity to `clientId`. The
-panel **never scrapes the page** — the host owns what context flows, which is
-both the privacy posture and the reason it can't go stale when the dashboard
-UI changes.
+hooks), validates the closed governed-history shape, and keys thread continuity
+to `clientId`. The panel **never scrapes the page** and sends no raw history,
+note, profile, lab, patient, or digest content in the initial activation.
+
+The panel sends the opaque mount token as the sole bearer on `/welcome` and
+`/chat`, requires and verifies embed version `1.0`, and sends one fresh random
+`client_turn_id` identically in the chat body and header. It never retries a
+chat automatically. After an ambiguous transport or retryable service failure,
+it preserves the exact serialized body, UUID, record generation, and draft,
+reacquires a fresh bearer/context pair, and offers an explicit user retry.
+Canonical conversation durability belongs to
+the platform Agent API, not browser history callbacks.
 
 ### The multi-session context problem (and its answer)
 
-A panel can only send what the host gives it, and "my last 2-3 visits" as raw
-transcripts would blow request budgets. Two-part answer, both built:
+A panel can only send what the host gives it, and browser replay of prior notes
+would expand both the PHI surface and request ambiguity. The governed answer is
+the platform snapshot/digest boundary:
 
-1. **Notes are already compressed sessions.** Cosmas generates a note per
-   visit — so "last 3 visits" context is 3 *notes* (a few KB), not 3
-   transcripts. The panel's `prior_sessions` accepts either.
-2. **The journey digest (`POST /digest`).** For long journeys, the host calls
-   `/digest` **once per session at note-write time** — off the chat hot path —
-   merging the new session into a compact rolling digest (≤300 words: themes,
-   trajectory, commitments, open threads) stored per client. Chat requests
-   then carry one small `metadata.journey_digest` field, and context cost
-   stays constant whether the client has 3 sessions or 300. Same auth,
-   persona gate, BAA tripwire, and audit chain as `/chat`.
+1. **Context snapshots.** The host sends an opaque `context_snapshot_ref`;
+   authorized server-to-server retrieval decides the minimum necessary content.
+2. **The journey digest.** In platform mode the host uses the ratified platform
+   digest operation at note-write time and passes only its opaque reference to
+   governed consumers. Sovereign's legacy `POST /digest` is unavailable when
+   the Agent API boundary is enabled so it cannot create an orphan lineage or
+   unpersisted model output. The legacy pinned build may retain the local route.
 
-**Context contract** — Cosmas attaches this to every `/chat` call, silently:
+**Initial provider context contract** — only opaque platform-owned references and
+nonclinical presentation hints are sent. Every raw migration bridge is rejected:
 
 ```json
 {
-  "persona": "provider",                      // from the provider-role JWT, verified server-side
+  "client_turn_id": "<fresh random UUIDv4>", // identical to the required header
   "message": "<what the clinician typed>",
-  "history": [ ...this client's thread... ],
   "metadata": {
-    "prior_sessions": "<transcript/notes of the record on screen>",
+    "clientId": "opaque-host-thread-key",
+    "context_snapshot_ref": "snapshot_opaque",
+    "thread_ref": "thread_opaque",
+    "digest_ref": "digest_opaque",
     "care_model": "internal family systems",  // from the client's profile
     "terminology": "client/therapist",        // the account-level setting
-    "case_context": "<case facts if the view is a case/chart>",
-    "output_format": "chat|note|document",    // the panel's output selector
-    "patient_profile": "self-directed",       // Cosmas's engagement tag, if any
-    "intake_summary": "<pre-visit intake bot summary, if any>",
-    "labs": "<lab values/trends when the view is a lab record>",
-    "patient_metrics": {"sex": "female", "age": 52,
-                        "weight_lb": 200, "height_in": 65},
-    "calorie_target": "1500-1600",            // clinician-set, drives verified calc
-    "note_template": "<the provider's own note type, incl. audit sections>"
+    "output_format": "chat|note|document"     // the panel's output selector
   }
 }
 ```
@@ -152,7 +166,9 @@ The user experience this buys: Scott opens a client's record, clicks the rail,
 and types "help me prep the next session" — **no pasting, no uploading, no
 re-explaining who the client is.** That single difference is the product.
 
-**Action contract** — what the panel does with responses:
+**Action contract** — the panel first switches on required
+`presentation.mode` and honors every named suppression. It never infers a
+presentation mode from `intent`. Only then may it expose unsuppressed content:
 
 | Response signal | Panel affordance |
 |---|---|
@@ -163,19 +179,26 @@ re-explaining who the client is.** That single difference is the product.
 | `structured.output_format == "note"` | **Copy** button — clean text for the Athena paste |
 | `structured.output_format == "document"` | **Copy** + **Download** — the Word→PDF replacement |
 | `structured.matches` | Provider cards with booking links (as Surface A) |
-| `intent == "emergency"` | Red card + the panel stays open |
+| `presentation.mode == "emergency"` | Red card + the panel stays open |
+| `presentation.mode == "sensitive_disclosure"` | Humane answer plus only the supplied human-contact action; all seven ordinary surfaces suppressed |
 
-**State:** the Sovereign remains stateless. Cosmas owns thread persistence
-(per-client), the terminology setting (the client/therapist toggle users
-asked for), and which record is on screen. This split means the backend
-scales to partner tenants later without carrying anyone's UI state.
+**State:** the Sovereign remains stateless. The platform owns canonical
+conversation persistence and authority-bound record context. The panel owns
+only ephemeral display state and optional UI caching.
 
 ## 4. Shared API surface (what both UIs consume)
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /welcome?persona=patient\|provider` | Greeting, guided paths (label → prefilled message → expected intent), disclaimer, emergency note, partner name. Built in this branch. |
-| `POST /chat` | Everything else. The UI reads: `answer` (markdown-ish), `intent` (badge + lane-specific affordances), `citations`, `structured`, `doctrinal_review` (trust line), `safety_notice`, `trace_id` (support reference). |
+| `GET /welcome` | Requires the sole opaque mount bearer and `X-Cosmaneura-Embed-Version: 1.0`; Sovereign resolves the mount before returning filtered paths. Query `persona` is ignored for authority. |
+| `POST /chat` | Also requires the same canonical UUIDv4 in the body and `X-Cosmaneura-Client-Turn-ID`; the response echoes both the UUID and embed version. |
+
+**Activation blocker:** the ratified Agent API mount resolver currently opens a
+pending interaction lineage on every resolution, while `/welcome` has no turn
+phases to close. Before platform activation, governance must ratify either a
+bootstrap/no-lineage resolution purpose or the treatment of these zero-phase,
+zero-audit, zero-usage bootstrap lineages. Sovereign does not invent that wire
+extension locally.
 
 **Latency note / next step:** responses are currently single-shot. When lanes
 go live on real models, add SSE streaming to `/chat` so the answer types in —
@@ -183,10 +206,11 @@ perceived speed is a UX feature; budget it into Phase 1 gateway work.
 
 ## 5. Built in this branch vs. next
 
-**Built:** `GET /welcome` (per-persona greeting + paths, tested), the upgraded
+**Built:** protected mount-resolved `GET /welcome`, the upgraded
 standalone chat page (welcome-driven bootstrap, persona-aware chips, emergency
-card treatment, doctrinal trust line, structured cards), config `PARTNER_NAME`.
+card treatment, doctrinal trust line, structured cards), the versioned panel,
+and server-to-platform canonical turn persistence.
 
-**Next:** Clerk wiring + paywall page for chat.cosmaneura.com (deployment);
-the Cosmas panel component (Cosmas repo, per §3 contracts); SSE streaming;
-Phase 2 tenant theming; Phase 3 partner iframe (third parties only).
+**Next:** complete the provider-host mount-token adapter and live lineage smoke;
+then public activation, SSE streaming, tenant theming, and any separately
+ratified third-party embed.

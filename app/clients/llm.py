@@ -12,6 +12,7 @@ at Amazon Bedrock or Google Vertex — the public interface stays the same.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Optional
 
@@ -20,6 +21,13 @@ import httpx
 from app.compliance.netsec import assert_safe_outbound_url, safe_error_message
 from app.compliance.phi import assert_no_phi
 from app.config import Settings, get_settings
+from app.clients.platform_usage import (
+    CallKind,
+    ProviderUsageFacts,
+    begin_model_call,
+    finish_model_call,
+    provider_usage_facts,
+)
 
 
 class LLMClient:
@@ -35,8 +43,51 @@ class LLMClient:
         max_tokens: int = 1024,
         temperature: float = 0.2,
         use_doctrinal_mcp: bool = False,
+        usage_call_kind: CallKind = "drafting",
+        usage_purpose: str = "response_drafting",
     ) -> str:
         model = model or self.s.reasoning_model
+
+        provider = "mock" if self.s.mock_mode else self.s.llm_provider
+        span = begin_model_call(
+            call_kind=usage_call_kind,
+            provider=provider,
+            model=model,
+            deployment=model if provider == "azure_openai" else None,
+            purpose=usage_purpose,
+        )
+        try:
+            answer, facts = await self._complete_unreported(
+                system=system,
+                prompt=prompt,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                use_doctrinal_mcp=use_doctrinal_mcp,
+            )
+        except asyncio.CancelledError:
+            await finish_model_call(span, status="cancelled")
+            raise
+        except Exception as error:
+            await finish_model_call(
+                span,
+                status="failed",
+                facts=getattr(error, "usage_facts", None),
+            )
+            raise
+        await finish_model_call(span, status="succeeded", facts=facts)
+        return answer
+
+    async def _complete_unreported(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+        use_doctrinal_mcp: bool,
+    ) -> tuple[str, ProviderUsageFacts]:
 
         # The Magisterium MCP server is NOT a business associate, and Anthropic's
         # MCP connector is NOT ZDR-eligible. So any text routed through it must be
@@ -47,11 +98,14 @@ class LLMClient:
 
         if self.s.mock_mode:
             if use_doctrinal_mcp:
-                return ("[MOCK MAGISTERIUM MCP] Doctrinal advisory: frame this in keeping "
-                        "with the USCCB Ethical and Religious Directives; do not endorse "
-                        "morally illicit options (e.g. IVF, embryo-destructive research, "
-                        "direct sterilization, euthanasia).")
-            return _mock_completion(system=system, prompt=prompt)
+                return (
+                    "[MOCK MAGISTERIUM MCP] Doctrinal advisory: frame this in keeping "
+                    "with the USCCB Ethical and Religious Directives; do not endorse "
+                    "morally illicit options (e.g. IVF, embryo-destructive research, "
+                    "direct sterilization, euthanasia).",
+                    ProviderUsageFacts(),
+                )
+            return _mock_completion(system=system, prompt=prompt), ProviderUsageFacts()
 
         if self.s.llm_provider == "azure_openai":
             # `model` is the Azure *deployment* name. The inline doctrinal MCP
@@ -109,20 +163,31 @@ class LLMClient:
         except httpx.HTTPError as exc:
             # Never surface the raw error: in provider mode the request body may
             # contain PHI that httpx can echo back in the exception string.
-            raise RuntimeError(safe_error_message(exc, context="LLM inference")) from None
+            error = RuntimeError(safe_error_message(exc, context="LLM inference"))
+            error.usage_facts = provider_usage_facts(  # type: ignore[attr-defined]
+                headers=exc.response.headers if exc.response is not None else None,
+                usage=None,
+                provider="anthropic",
+            )
+            raise error from None
         # Messages API returns a list of content blocks; join the text blocks.
         # (With MCP attached, mcp_tool_use / mcp_tool_result blocks are also
         # present; we keep only the model's final text.)
-        return "".join(
+        answer = "".join(
             block.get("text", "")
             for block in data.get("content", [])
             if block.get("type") == "text"
         ).strip()
+        return answer, provider_usage_facts(
+            headers=resp.headers,
+            usage=data.get("usage"),
+            provider="anthropic",
+        )
 
     async def _complete_azure_openai(
         self, *, system: str, prompt: str, deployment: str,
         max_tokens: int, temperature: float,
-    ) -> str:
+    ) -> tuple[str, ProviderUsageFacts]:
         if not (self.s.azure_openai_endpoint and self.s.azure_openai_api_key):
             raise RuntimeError(
                 "AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are required "
@@ -154,13 +219,32 @@ class LLMClient:
                 data = resp.json()
         except httpx.HTTPError as exc:
             # Provider mode may carry PHI in the body; never echo the raw error.
-            raise RuntimeError(safe_error_message(exc, context="LLM inference")) from None
+            error = RuntimeError(safe_error_message(exc, context="LLM inference"))
+            error.usage_facts = provider_usage_facts(  # type: ignore[attr-defined]
+                headers=exc.response.headers if exc.response is not None else None,
+                usage=None,
+                provider="azure_openai",
+            )
+            raise error from None
         choices = data.get("choices") or []
         if not choices:
-            return ""
-        return (choices[0].get("message", {}).get("content") or "").strip()
+            answer = ""
+        else:
+            answer = (choices[0].get("message", {}).get("content") or "").strip()
+        return answer, provider_usage_facts(
+            headers=resp.headers,
+            usage=data.get("usage"),
+            provider="azure_openai",
+        )
 
-    async def classify_json(self, *, system: str, prompt: str) -> dict:
+    async def classify_json(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        usage_call_kind: CallKind = "classification",
+        usage_purpose: str = "structured_classification",
+    ) -> dict:
         """Helper for routing: ask for strict JSON and parse it safely."""
         raw = await self.complete(
             system=system + "\nRespond with ONLY a JSON object, no prose, no code fences.",
@@ -168,6 +252,8 @@ class LLMClient:
             model=self.s.fast_model,
             max_tokens=300,
             temperature=0.0,
+            usage_call_kind=usage_call_kind,
+            usage_purpose=usage_purpose,
         )
         raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         try:

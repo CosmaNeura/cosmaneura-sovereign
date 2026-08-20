@@ -3,28 +3,27 @@
  *
  * A collapsed right-rail button that expands into the Sovereign chat panel.
  * No framework, no dependencies, styles self-injected and prefixed (.cnp-).
- * The HOST owns auth, context, and persistence — the panel never scrapes the
- * page. Served by the Sovereign at GET /embed/v1/panel.js.
+ * The platform owns authority and canonical conversation persistence. The
+ * host supplies the opaque mount token and presentation hints; the panel never
+ * scrapes the page. Served by the Sovereign at GET /embed/v1/panel.js.
  *
- * Minimal mount (two functions is all a host must implement):
+ * Minimal governed mount:
  *
  *   CosmaNeuraPanel.mount({
  *     sovereignUrl: "https://sovereign.example.com",
- *     getAuthToken: async () => currentUserJwt,          // null when auth disabled (dev)
- *     getContext:   async () => ({                       // whatever is on screen now
- *       clientId: "abc123",                              // keys the thread
- *       record_ref: client.athenaRecordId,                 // host-open synthetic record
- *       journey_digest: client.journeyDigest,            // from POST /digest, see docs
- *       prior_sessions: latestNote,                      // most recent note/transcript
- *       terminology: settings.terminology,               // "client/therapist" etc.
- *       care_model: client.careModel,
- *       // optional per-view: case_context, labs, patient_metrics,
- *       // calorie_target, note_template, patient_profile, intake_summary
+ *     embedVersion: "1.0",
+ *     // Opaque, short-lived platform mount-context token (never a raw IdP JWT).
+ *     getAuthToken: async () => currentBearerToken,
+ *     getContext: async () => ({
+ *       clientId: openRecord.threadKey,
+ *       thread_ref: openRecord.assistantThreadRef,
+ *       context_snapshot_ref: openRecord.assistantSnapshotRef,
+ *       digest_ref: openRecord.journeyDigestRef,
  *     }),
  *     onInsert: (text, resp) => note.insert(text),       // optional action hooks
  *     onSave:   (text, resp, clientId) => visits.savePrep(clientId, text),
- *     loadHistory: async (clientId, {signal}) => [...],  // optional persistence
- *     saveHistory: async (clientId, history) => {},
+ *     onHumanContact: action => host.openHumanContactPath(action.action_id),
+ *     loadHistory: async (clientId) => platform.loadGovernedHistory(clientId),
  *     shiftContent: true,   // default: reflow the host page instead of covering it
  *     fabBottom: "18px",    // launcher offset — raise it above an existing
  *     fabRight: "18px",     //   floating control (e.g. a "Report a Bug" pill)
@@ -91,6 +90,8 @@
     ".cnp-in:focus{border-color:var(--accent2)}",
     ".cnp-send{background:var(--accent);color:#1a130a;border:none;border-radius:10px;",
     "padding:9px 13px;font-weight:700;cursor:pointer}.cnp-send:disabled{opacity:.5}",
+    ".cnp-retry{margin-top:8px;background:var(--panel2);border:1px solid var(--line);",
+    "color:var(--ink);border-radius:7px;padding:5px 10px;cursor:pointer}",
     ".cnp-fmt{background:var(--panel);border:1px solid var(--line);color:var(--ink);",
     "border-radius:9px;padding:8px;font:inherit;font-size:12.5px}",
     ".cnp-welcome-disc{font-size:10px;color:var(--muted);margin-top:6px;text-align:center}",
@@ -101,10 +102,28 @@
     "@keyframes cnpb{0%,60%,100%{opacity:.3}30%{opacity:1}}",
   ].join("");
 
-  // Budget for context payloads: stay well inside the Sovereign's 256 KB
-  // body cap. Prefer the journey digest + latest note over raw transcripts;
-  // when the host passes arrays, keep newest-first until the budget is spent.
-  var CONTEXT_CHAR_BUDGET = 60000;
+  var SUPPRESSION_NAMES = [
+    "disclaimer", "intent_badge", "doctrinal_badge", "citations",
+    "structured_cards", "feature_actions", "guided_paths",
+  ];
+  var OPAQUE_REF = /^[A-Za-z0-9._~-]{8,160}$/;
+  var UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  function freshClientTurnId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function")
+      return window.crypto.randomUUID();
+    if (!window.crypto || typeof window.crypto.getRandomValues !== "function")
+      throw new Error("Secure client-turn generation is unavailable");
+    var bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    var hex = Array.prototype.map.call(bytes, function (value) {
+      return value.toString(16).padStart(2, "0");
+    }).join("");
+    return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" +
+      hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+  }
 
   // Escapes quotes too — escaped text can land inside HTML attributes, where
   // an unescaped quote is an XSS breakout.
@@ -269,32 +288,93 @@
     return box;
   }
 
-  function budgetSessions(prior) {
-    if (prior == null) return "";
-    var parts = Array.isArray(prior) ? prior.slice() : [String(prior)];
-    parts.reverse(); // newest first
-    var out = [], used = 0;
-    for (var i = 0; i < parts.length; i++) {
-      var p = String(parts[i]);
-      if (used + p.length > CONTEXT_CHAR_BUDGET) {
-        p = p.slice(0, Math.max(0, CONTEXT_CHAR_BUDGET - used));
-        if (p) out.push(p + "\n[truncated for size]");
-        break;
-      }
-      out.push(p); used += p.length;
+  function exactHttpsOrigin(value) {
+    if (typeof value !== "string" || !value) throw new Error("sovereignUrl is required");
+    var parsed;
+    try { parsed = new URL(value); } catch (_error) {
+      throw new Error("sovereignUrl must be an absolute HTTPS origin");
     }
-    out.reverse();
-    return out.join("\n\n--- session break ---\n\n");
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password ||
+        parsed.pathname !== "/" || parsed.search || parsed.hash ||
+        parsed.origin !== value)
+      throw new Error("sovereignUrl must be an exact absolute HTTPS origin");
+    return parsed.origin;
+  }
+
+  function closedObject(value, keys) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    var actual = Object.keys(value).sort();
+    var expected = keys.slice().sort();
+    return actual.length === expected.length && actual.every(function (key, index) {
+      return key === expected[index];
+    });
+  }
+
+  function validHumanContact(action) {
+    return closedObject(action, ["label", "action_id", "fallback_text"]) &&
+      typeof action.label === "string" && action.label.length >= 1 && action.label.length <= 120 &&
+      typeof action.action_id === "string" && /^[A-Za-z0-9._~-]{8,128}$/.test(action.action_id) &&
+      typeof action.fallback_text === "string" &&
+      action.fallback_text.length >= 1 && action.fallback_text.length <= 240;
+  }
+
+  function governedPresentation(value) {
+    if (!closedObject(value, ["mode", "suppress", "human_contact"]) ||
+        ["standard", "emergency", "sensitive_disclosure"].indexOf(value.mode) < 0 ||
+        !Array.isArray(value.suppress)) return null;
+    var unique = new Set(value.suppress);
+    if (unique.size !== value.suppress.length || value.suppress.some(function (name) {
+      return SUPPRESSION_NAMES.indexOf(name) < 0;
+    })) return null;
+    if (value.human_contact !== null && !validHumanContact(value.human_contact)) return null;
+    if (value.mode === "sensitive_disclosure" &&
+        (value.human_contact === null || unique.size !== SUPPRESSION_NAMES.length ||
+         SUPPRESSION_NAMES.some(function (name) { return !unique.has(name); }))) return null;
+    return value;
+  }
+
+  function governedHistory(value) {
+    if (!closedObject(value, ["thread_ref", "messages", "next_cursor"]) ||
+        typeof value.thread_ref !== "string" || !OPAQUE_REF.test(value.thread_ref) ||
+        !Array.isArray(value.messages) || value.messages.length > 100 ||
+        !(value.next_cursor === null ||
+          (typeof value.next_cursor === "string" && value.next_cursor.length <= 512))) return null;
+    for (var i = 0; i < value.messages.length; i++) {
+      var message = value.messages[i];
+      if (!closedObject(message, ["turn_ref", "client_turn_id", "role", "content",
+                                  "recorded_at", "presentation"]) ||
+          typeof message.turn_ref !== "string" || !OPAQUE_REF.test(message.turn_ref) ||
+          typeof message.client_turn_id !== "string" || !UUID_V4.test(message.client_turn_id) ||
+          ["user", "assistant"].indexOf(message.role) < 0 ||
+          typeof message.content !== "string" || message.content.length < 1 ||
+          message.content.length > 20000 || typeof message.recorded_at !== "string" ||
+          isNaN(Date.parse(message.recorded_at))) return null;
+      if (message.role === "user" && message.presentation !== null) return null;
+      if (message.role === "assistant" && !governedPresentation(message.presentation)) return null;
+    }
+    return value;
   }
 
   function mount(opts) {
     opts = opts || {};
-    var url = (opts.sovereignUrl || "").replace(/\/$/, "");
+    if (opts.embedVersion !== "1.0")
+      throw new Error("CosmaNeura embed version 1.0 is required");
+    if (typeof opts.getAuthToken !== "function")
+      throw new Error("getAuthToken is required");
+    if (typeof opts.getContext !== "function")
+      throw new Error("getContext is required");
+    if (typeof opts.onHumanContact !== "function")
+      throw new Error("onHumanContact is required");
+    // Parse and normalize no path at all before any credential callback runs.
+    var url = exactHttpsOrigin(opts.sovereignUrl);
+    var embedVersion = opts.embedVersion;
     var state = {
       open: false, busy: false, switching: false, destroyed: false,
-      clientId: null, history: [], persona: "patient", generation: 0,
+      clientId: null, history: null, persona: "patient", generation: 0,
+      recordReady: false, contextSnapshot: null, recordHeaders: null,
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
       recordController: null, chatController: null,
+      retryAttempt: null,
     };
     var ownedTips = [];
     var listeners = [];
@@ -378,32 +458,75 @@
     }
 
     function syncControls() {
-      var disabled = state.destroyed || state.busy || state.switching;
+      var disabled = state.destroyed || state.busy || state.switching ||
+        !state.recordReady || state.clientId === null;
       input.disabled = disabled; fmt.disabled = disabled; send.disabled = disabled;
     }
 
-    function setSensitiveChrome(sensitive) {
-      root.querySelectorAll(".cnp-welcome-disc").forEach(function (notice) {
-        notice.hidden = sensitive;
-      });
-      chips.hidden = sensitive;
+    async function freshBearerHeaders() {
+      var token = await opts.getAuthToken();
+      if (typeof token !== "string" || token.length < 16 ||
+          token.length > 8192 || /\s/.test(token))
+        throw new Error("Assistant bearer token is invalid");
+      return {
+        "authorization": "Bearer " + token,
+        "x-cosmaneura-embed-version": embedVersion,
+      };
     }
 
-    function welcomeData() {
+    function setGovernedChrome(presentation) {
+      var suppressed = new Set(presentation ? presentation.suppress : []);
+      root.querySelectorAll(".cnp-welcome-disc").forEach(function (notice) {
+        notice.hidden = suppressed.has("disclaimer");
+      });
+      chips.hidden = suppressed.has("guided_paths");
+    }
+
+    function welcomeData(headers, generation) {
       if (!state.welcomePromise) {
+        if (!headers || !currentGeneration(generation))
+          return Promise.reject(new Error("record handshake is required"));
         state.welcomeController = new AbortController();
-        state.welcomePromise = fetch(url + "/welcome", {
+        var promise = fetch(url + "/welcome", {
+          headers: headers,
           signal: state.welcomeController.signal,
         }).then(function (r) {
+          if (r.headers.get("x-cosmaneura-embed-version") !== embedVersion)
+            throw new Error("welcome contract mismatch");
           if (!r.ok) throw new Error("welcome unavailable");
           return r.json();
         }).catch(function (error) {
-          state.welcomePromise = null;
-          if (error.name !== "AbortError") throw error;
+          if (state.welcomePromise === promise) state.welcomePromise = null;
           throw error;
         });
+        state.welcomePromise = promise;
       }
       return state.welcomePromise;
+    }
+
+    function governedContext(value, recordId) {
+      var allowed = ["clientId", "thread_ref", "context_snapshot_ref", "digest_ref",
+                     "terminology", "care_model"];
+      if (!value || typeof value !== "object" || Array.isArray(value) ||
+          Object.keys(value).some(function (key) { return allowed.indexOf(key) < 0; }) ||
+          String(value.clientId == null ? "" : value.clientId) !== recordId) return null;
+      var clean = { clientId: recordId };
+      ["thread_ref", "context_snapshot_ref", "digest_ref"].forEach(function (key) {
+        if (value[key] != null) clean[key] = value[key];
+      });
+      if (["thread_ref", "context_snapshot_ref", "digest_ref"].some(function (key) {
+        return clean[key] != null &&
+          (typeof clean[key] !== "string" || !OPAQUE_REF.test(clean[key]));
+      })) return null;
+      if (value.terminology != null) {
+        if (typeof value.terminology !== "string" || value.terminology.length > 40) return null;
+        clean.terminology = value.terminology;
+      }
+      if (value.care_model != null) {
+        if (typeof value.care_model !== "string") return null;
+        clean.care_model = value.care_model;
+      }
+      return clean;
     }
 
     function applyWelcomeUX(w) {
@@ -436,15 +559,10 @@
     // Welcome is mount-resolved by the server: the browser sends no persona.
     // The response drives tone and the persistent sandbox badge even when a
     // restored record history means no welcome bubble is rendered.
-    // Fail closed while bootstrap is pending or unavailable. A successful
-    // public welcome hides it; a sandbox welcome replaces it with the exact
-    // synthetic-data label.
+    // Fail closed until the host explicitly completes setRecord(). A token is
+    // never acquired at mount time because it would not yet be record-bound.
     sandboxBadge.textContent = "Environment not verified";
     sandboxBadge.hidden = false;
-    welcomeData().then(function (w) {
-      if (state.destroyed) return;
-      applyWelcomeUX(w); applyEnvironmentLabel(w);
-    }).catch(function () {});
 
     // Record-scoped threads. A monotonically increasing generation plus an
     // AbortController protects against both cooperative and non-cooperative
@@ -452,56 +570,115 @@
     async function loadThreadFor(id) {
       if (state.destroyed) return;
       var recordId = id == null ? null : String(id);
+      var invalidRecordId = recordId !== null &&
+        (recordId.length < 1 || recordId.length > 128);
+      if (invalidRecordId) recordId = null;
       var generation = ++state.generation;
       abort(state.chatController); abort(state.recordController);
+      abort(state.welcomeController);
       state.chatController = null;
       var recordController = new AbortController();
       state.recordController = recordController;
       state.clientId = recordId;
-      state.history = [];
+      state.history = null;
+      state.recordReady = false;
+      state.contextSnapshot = null;
+      state.recordHeaders = null;
+      state.retryAttempt = null;
+      state.welcomePromise = null;
+      state.welcomeController = null;
       state.welcomeRenderGeneration = null;
       state.busy = false;
-      state.switching = true;
+      state.switching = recordId !== null;
       clearEventHandlers("record");
       input.value = ""; input.style.height = "auto";
       thread.innerHTML = ""; chips.innerHTML = "";
-      setSensitiveChrome(false); clearOwnedTips(); syncControls();
+      setGovernedChrome(null); clearOwnedTips(); syncControls();
+
+      if (recordId === null) {
+        state.recordController = null;
+        sub.textContent = "Open a record to use the assistant";
+        if (invalidRecordId) throw new Error("record identifier is invalid");
+        return generation;
+      }
 
       try {
-        var loaded = opts.loadHistory
-          ? await opts.loadHistory(recordId, { signal: recordController.signal })
-          : [];
+        // Credential and context are acquired together for this generation.
+        // Either late result is discarded if the host switches records.
+        var handshake = await Promise.all([opts.getContext(), freshBearerHeaders()]);
         if (!currentGeneration(generation)) return null;
-        state.history = Array.isArray(loaded) ? loaded : [];
-        // Restored turns render as text; citations and actions belong to the
-        // live response and are not replayed.
-        state.history.forEach(function (m) {
+        var context = governedContext(handshake[0], recordId);
+        if (!context) {
+          var mismatch = new Error("record context mismatch");
+          mismatch.recordMismatch = true;
+          throw mismatch;
+        }
+        state.contextSnapshot = context;
+        state.recordHeaders = handshake[1];
+        var results = await Promise.all([
+          welcomeData(handshake[1], generation),
+          opts.loadHistory
+            ? opts.loadHistory(recordId, { signal: recordController.signal })
+            : Promise.resolve(null),
+        ]);
+        if (!currentGeneration(generation)) return null;
+        var loaded = results[1] === null ? null : governedHistory(results[1]);
+        if (results[1] !== null && !loaded)
+          throw new Error("governed history is invalid");
+        state.history = loaded;
+        (loaded ? loaded.messages : []).forEach(function (m) {
           var b = bubble(m.role === "user" ? "u" : "a");
           if (m.role === "user") b.textContent = m.content || "";
-          else b.innerHTML = md(m.content || "");
+          else render(b, {
+            answer: m.content,
+            presentation: m.presentation,
+            citations: [],
+            doctrinal_review: null,
+            structured: {},
+            safety_notice: null,
+          }, recordId, generation, true);
         });
+        state.recordReady = true;
+        if (loaded && typeof opts.onHistoryUpdated === "function") {
+          Promise.resolve().then(function () {
+            if (currentGeneration(generation) && state.clientId === recordId)
+              return opts.onHistoryUpdated(recordId, loaded);
+          }).catch(function () {});
+        }
+        applyWelcomeUX(results[0]); applyEnvironmentLabel(results[0]);
       } catch (error) {
         if (currentGeneration(generation) && error.name !== "AbortError") {
-          bubble("a").innerHTML = "<p>Conversation history is unavailable.</p>";
+          state.recordReady = false;
+          state.contextSnapshot = null;
+          state.recordHeaders = null;
+          if (error.recordMismatch) {
+            state.clientId = null;
+            thread.innerHTML = "";
+            sub.textContent = "Open a record to use the assistant";
+          } else {
+            bubble("a").innerHTML = "<p>Conversation history is unavailable.</p>";
+          }
         }
       } finally {
         if (currentGeneration(generation)) {
           if (state.recordController === recordController) state.recordController = null;
           state.switching = false;
           syncControls();
-          if (!state.history.length && state.open) await loadWelcome(generation);
+          if (state.recordReady && (!state.history || !state.history.messages.length) &&
+              state.open) await loadWelcome(generation);
         }
       }
-      return currentGeneration(generation) && !state.switching ? generation : null;
+      return currentGeneration(generation) && !state.switching && state.recordReady
+        ? generation : null;
     }
 
     async function loadWelcome(generation) {
       if (state.welcomeRenderGeneration === generation) return;
       state.welcomeRenderGeneration = generation;
       try {
-        var w = await welcomeData();
+        var w = await welcomeData(state.recordHeaders, generation);
         if (!currentGeneration(generation)) return;
-        applyWelcomeUX(w); applyEnvironmentLabel(w); setSensitiveChrome(false);
+        applyWelcomeUX(w); applyEnvironmentLabel(w); setGovernedChrome(null);
         var b = bubble("a");
         b.innerHTML = "<p>" + esc(w.greeting) + "</p><p><b>" + esc(w.emergency_note) + "</b></p>";
         var d = document.createElement("div"); d.className = "cnp-cite cnp-welcome-disc";
@@ -509,7 +686,10 @@
         chips.innerHTML = "";
         (w.paths || []).forEach(function (p) {
           var c = document.createElement("div"); c.className = "cnp-chip"; c.textContent = p.label;
-          c.onclick = function () { input.value = p.message; input.focus(); };
+          c.onclick = function () {
+            if (!currentGeneration(generation) || !state.recordReady) return;
+            input.value = p.message; input.focus();
+          };
           chips.appendChild(c);
         });
       } catch (error) {
@@ -520,21 +700,29 @@
       }
     }
 
-    function render(b, d, recordId) {
+    function render(b, d, recordId, generation, hydrated) {
+      var presentation = governedPresentation(d.presentation);
+      if (!presentation) throw new Error("assistant presentation is invalid");
+      var suppressed = new Set(presentation.suppress);
       var html = "";
-      setSensitiveChrome(d.intent === "sensitive_disclosure");
-      if (d.intent === "emergency") { b.classList.add("cnp-emg"); html += '<div class="cnp-emg-h">⚠ This may be an emergency</div>'; }
-      else if (d.intent) html += '<span class="cnp-badge">' + esc(d.intent.replace(/_/g, " ")) + "</span>";
-      if (d.structured && d.structured.tier === "sandbox" && d.structured.sandbox_label)
+      setGovernedChrome(presentation);
+      if (presentation.mode === "emergency") {
+        b.classList.add("cnp-emg");
+        html += '<div class="cnp-emg-h">⚠ This may be an emergency</div>';
+      } else if (!suppressed.has("intent_badge") && d.intent) {
+        html += '<span class="cnp-badge">' + esc(d.intent.replace(/_/g, " ")) + "</span>";
+      }
+      if (!suppressed.has("structured_cards") && d.structured &&
+          d.structured.tier === "sandbox" && d.structured.sandbox_label)
         html += '<div class="cnp-sandbox">' + esc(d.structured.sandbox_label) + "</div>";
       html += md(d.answer || "");
       b.innerHTML = html;
       var cites = (d.citations || []).map(function (c) { return c.source; }).filter(Boolean);
-      if (cites.length) {
+      if (!suppressed.has("citations") && cites.length) {
         var e = document.createElement("div"); e.className = "cnp-cite";
         e.textContent = "Sources: " + Array.from(new Set(cites)).join(" · "); b.appendChild(e);
       }
-      if (d.doctrinal_review) {
+      if (!suppressed.has("doctrinal_badge") && d.doctrinal_review) {
         var t = document.createElement("div"); t.className = "cnp-trust";
         t.textContent = d.doctrinal_review.conforms
           ? "✓ Reviewed for conformity with Catholic teaching"
@@ -542,7 +730,7 @@
         b.appendChild(t);
       }
       var comp = d.structured && d.structured.computed;
-      if (comp && Object.keys(comp).length) {
+      if (!suppressed.has("structured_cards") && comp && Object.keys(comp).length) {
         var c2 = document.createElement("div"); c2.className = "cnp-calc";
         c2.innerHTML = '<div class="cnp-calc-t">✓ Verified calculations (computed, not generated)</div>';
         formatComputed(comp).forEach(function (line) {
@@ -553,7 +741,8 @@
         b.appendChild(c2);
       }
       var trend = d.structured && d.structured.trend;
-      if (trend && trend.points && trend.points.length >= 2) {
+      if (!suppressed.has("structured_cards") && trend &&
+          trend.points && trend.points.length >= 2) {
         var chart = trendChart(trend, root, ownedTips, listen);
         if (chart) b.appendChild(chart);
       }
@@ -561,127 +750,268 @@
       var ofmt = d.structured && d.structured.output_format;
       function act(label, fn) {
         var x = document.createElement("button"); x.className = "cnp-act";
-        x.textContent = label; x.onclick = fn; bar.appendChild(x);
+        x.textContent = label;
+        x.onclick = function () {
+          if (!currentGeneration(generation) || !state.recordReady ||
+              state.clientId !== recordId) return;
+          return fn(x);
+        };
+        bar.appendChild(x);
       }
-      if (ofmt === "note" || ofmt === "document")
+      if (!hydrated && !suppressed.has("feature_actions") &&
+          (ofmt === "note" || ofmt === "document"))
         act("Copy", function () { navigator.clipboard.writeText(d.answer || ""); });
-      if (ofmt === "document")
+      if (!hydrated && !suppressed.has("feature_actions") && ofmt === "document")
         act("Download .md", function () {
           var a = document.createElement("a");
           a.href = URL.createObjectURL(new Blob([d.answer || ""], { type: "text/markdown" }));
           a.download = "cosmaneura-" + (d.intent || "output") + ".md"; a.click();
         });
-      if (opts.onInsert && (ofmt === "note" || (d.structured && d.structured.feature === "visit_prep")))
-        act("Insert into note", function () { opts.onInsert(d.answer || "", d, recordId); });
-      if (opts.onSave && d.structured && d.structured.feature)
-        act("Save", function () { opts.onSave(d.answer || "", d, recordId); });
+      if (!hydrated && !suppressed.has("feature_actions") && opts.onInsert &&
+          (ofmt === "note" || (d.structured && d.structured.feature === "visit_prep")))
+        act("Insert into note", function () { opts.onInsert(d.answer || "", d); });
+      if (!hydrated && !suppressed.has("feature_actions") && opts.onSave &&
+          d.structured && d.structured.feature)
+        act("Save", function () { opts.onSave(d.answer || "", d); });
+      if (presentation.human_contact) {
+        var contact = presentation.human_contact;
+        act(contact.label, function (button) {
+          Promise.resolve().then(function () {
+            if (!currentGeneration(generation) || !state.recordReady ||
+                state.clientId !== recordId) return;
+            return opts.onHumanContact(contact);
+          }).catch(function () {
+            if (!currentGeneration(generation) || !state.recordReady ||
+                state.clientId !== recordId) return;
+            button.disabled = true;
+            var fallback = document.createElement("div");
+            fallback.className = "cnp-cite";
+            fallback.textContent = contact.fallback_text;
+            b.appendChild(fallback);
+          });
+        });
+      }
       if (bar.children.length) b.appendChild(bar);
+    }
+
+    async function safeProblem(response) {
+      try {
+        var value = await response.json();
+        if (value && typeof value === "object" &&
+            typeof value.code === "string" &&
+            typeof value.retryable === "boolean") {
+          if (value.safety_fallback != null) {
+            var fallback = value.safety_fallback;
+            if (!closedObject(fallback, ["failure_stage", "answer", "presentation"]) ||
+                ["user_accepted", "final_response"].indexOf(fallback.failure_stage) < 0 ||
+                typeof fallback.answer !== "string" || fallback.answer.length < 1 ||
+                fallback.answer.length > 1000 ||
+                !governedPresentation(fallback.presentation) ||
+                fallback.presentation.mode !== "sensitive_disclosure" ||
+                response.status !== 503 || value.code !== "SERVICE_UNAVAILABLE" ||
+                value.retryable !== false) return null;
+          }
+          return value;
+        }
+      } catch (_error) {}
+      return null;
+    }
+
+    async function headersForAttempt(attempt) {
+      var headers;
+      if (attempt.initialHeaders) {
+        headers = attempt.initialHeaders;
+        attempt.initialHeaders = null;
+      } else {
+        // Explicit retry preserves the request body/UUID/draft but reacquires
+        // token and context together so rotation never freezes an old bearer.
+        var refreshed = await Promise.all([opts.getContext(), freshBearerHeaders()]);
+        if (!currentGeneration(attempt.generation)) throw new DOMException("stale", "AbortError");
+        if (!governedContext(refreshed[0], attempt.recordId)) {
+          loadThreadFor(null);
+          throw new DOMException("record mismatch", "AbortError");
+        }
+        headers = refreshed[1];
+      }
+      headers = Object.assign({}, headers);
+      headers["content-type"] = "application/json";
+      headers["x-cosmaneura-client-turn-id"] = attempt.clientTurnId;
+      return headers;
+    }
+
+    function paintAttemptFailure(b, attempt, message, allowRetry) {
+      b.innerHTML = "<p>" + esc(message) + "</p>";
+      input.value = attempt.text;
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight, 110) + "px";
+      state.retryAttempt = attempt;
+      if (!allowRetry) return;
+      var retry = document.createElement("button");
+      retry.className = "cnp-retry";
+      retry.textContent = "Retry this exact request";
+      retry.onclick = function () {
+        if (state.busy || state.switching || state.destroyed ||
+            !currentGeneration(attempt.generation)) return;
+        input.value = attempt.text;
+        return runAttempt(attempt, b);
+      };
+      b.appendChild(retry);
+    }
+
+    async function runAttempt(attempt, b) {
+      if (!currentGeneration(attempt.generation) || state.switching) return;
+      state.busy = true; syncControls();
+      b.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
+      var controller = new AbortController();
+      state.chatController = controller;
+      try {
+        // There is deliberately one fetch per user action. An explicit retry
+        // reuses the same serialized body, UUID, draft, and record generation
+        // while acquiring a fresh bearer for token rotation.
+        var requestHeaders = await headersForAttempt(attempt);
+        if (!currentGeneration(attempt.generation)) return;
+        var r = await fetch(attempt.url, {
+          method: "POST",
+          headers: requestHeaders,
+          body: attempt.body,
+          signal: controller.signal,
+        });
+        if (!currentGeneration(attempt.generation) ||
+            state.chatController !== controller) return;
+        if (r.headers.get("x-cosmaneura-embed-version") !== embedVersion) {
+          paintAttemptFailure(
+            b, attempt,
+            "The assistant integration version could not be verified. Reload this page.",
+            false
+          );
+          return;
+        }
+        if (!r.ok) {
+          var problem = await safeProblem(r);
+          if (!currentGeneration(attempt.generation) ||
+              state.chatController !== controller) return;
+          if (problem && problem.safety_fallback) {
+            render(b, {
+              answer: problem.safety_fallback.answer,
+              presentation: problem.safety_fallback.presentation,
+              citations: [], doctrinal_review: null, structured: {}, safety_notice: null,
+            }, attempt.recordId, attempt.generation, false);
+            state.retryAttempt = null;
+            return;
+          }
+          if (r.status === 409 && problem &&
+              problem.code === "RECORD_CONTEXT_MISMATCH") {
+            loadThreadFor(null);
+            return;
+          }
+          var canRetry = Boolean(
+            r.status === 401 ||
+            (problem && problem.retryable === true &&
+             (r.status === 429 || r.status === 503))
+          );
+          var message;
+          if (r.status === 401) {
+            message = "Your assistant session is no longer available. Sign in or reload before continuing.";
+          } else if (r.status === 426) {
+            message = "This assistant integration needs to be updated. Reload this page.";
+          } else if (r.status === 503 && problem && problem.retryable === false) {
+            message = "This turn is still pending. Your draft and turn identifier are preserved; reload its governed history later before starting a new request.";
+          } else if (canRetry) {
+            message = "The assistant is temporarily unavailable. Your exact draft is preserved.";
+          } else {
+            message = "That request could not be completed. Your draft is preserved.";
+          }
+          paintAttemptFailure(b, attempt, message, canRetry);
+          return;
+        }
+        var d = await r.json();
+        if (!currentGeneration(attempt.generation) ||
+            state.chatController !== controller) return;
+        if (d.client_turn_id !== attempt.clientTurnId) {
+          paintAttemptFailure(
+            b, attempt,
+            "The assistant response could not be matched to this turn. Reload its governed history.",
+            false
+          );
+          return;
+        }
+        render(b, d, attempt.recordId, attempt.generation, false);
+        state.retryAttempt = null;
+        if (input.value === attempt.text) input.value = "";
+      } catch (error) {
+        if (currentGeneration(attempt.generation) && error.name !== "AbortError") {
+          paintAttemptFailure(
+            b, attempt,
+            error instanceof TypeError
+              ? "The connection was interrupted. Your exact draft is preserved."
+              : "The assistant request could not be verified. Your draft is preserved.",
+            error instanceof TypeError
+          );
+        }
+      } finally {
+        if (currentGeneration(attempt.generation) &&
+            state.chatController === controller) {
+          state.chatController = null;
+          state.busy = false; syncControls();
+          thread.scrollTop = thread.scrollHeight; input.focus();
+        }
+      }
     }
 
     async function ask() {
       var text = input.value.trim();
-      if (!text || state.busy || state.switching || state.destroyed) return;
+      if (!text || state.busy || state.switching || state.destroyed ||
+          !state.recordReady || state.clientId === null) return;
       var generation = state.generation;
-      var controller = null;
       var b = null;
-      state.busy = true; syncControls();
-      input.value = ""; input.style.height = "auto";
+      var handedOff = false;
+      state.busy = true; state.retryAttempt = null; syncControls();
 
-      var ctx = {};
       try {
-        // Persona is a response-derived presentation hint, never a mount claim.
-        // Waiting for welcome here also makes the first chat deterministic when
-        // the user submits before the bootstrap request has completed.
-        var welcome = await welcomeData();
+        var pair = await Promise.all([opts.getContext(), freshBearerHeaders()]);
         if (!currentGeneration(generation)) return;
-        applyWelcomeUX(welcome); applyEnvironmentLabel(welcome);
-
-        ctx = opts.getContext ? (await opts.getContext()) || {} : {};
-        if (!currentGeneration(generation)) return;
-        // Resolve the record BEFORE painting this turn. loadThreadFor advances
-        // the generation and aborts any older record work.
-        var contextRecordId = ctx.clientId == null ? null : String(ctx.clientId);
-        if (contextRecordId && contextRecordId !== state.clientId) {
-          state.busy = false; syncControls();
-          var loadedGeneration = await loadThreadFor(contextRecordId);
-          // Bind to this exact switch, not merely the same record id. A host
-          // may issue a second setRecord(B) while this B load is pending.
-          if (loadedGeneration == null ||
-              !currentGeneration(loadedGeneration) || state.switching ||
-              state.clientId !== contextRecordId) return;
-          generation = loadedGeneration;
-          state.busy = true; syncControls();
-        }
-        if (!currentGeneration(generation)) return;
-
-        // Bind every side effect to the record/generation that originated the
-        // turn. Never read state.clientId again when saving this response.
         var recordId = state.clientId;
-        var requestPersona = state.persona;
-        var historyForRequest = state.history.slice(-20);
+        var context = governedContext(pair[0], recordId);
+        if (!context) {
+          loadThreadFor(null);
+          return;
+        }
         var meta = { output_format: fmt.value };
-        ["journey_digest", "care_model", "terminology", "case_context", "labs",
-         "patient_metrics", "calorie_target", "macro_split", "note_template",
-         "patient_profile", "intake_summary",
-         "record_ref", "analyte"].forEach(function (k) {
-          if (ctx[k] != null && ctx[k] !== "") meta[k] = ctx[k];
+        ["clientId", "thread_ref", "context_snapshot_ref", "digest_ref",
+         "terminology", "care_model"].forEach(function (key) {
+          if (context[key] != null && context[key] !== "") meta[key] = context[key];
         });
-        // Temporary host compatibility: normalize the old open-record key to
-        // the contract's canonical name. Never forward a patient display name.
-        if (meta.record_ref == null && ctx.patient_ref != null && ctx.patient_ref !== "")
-          meta.record_ref = ctx.patient_ref;
-        var prior = budgetSessions(ctx.prior_sessions);
-        if (prior) meta.prior_sessions = prior;
-
-        var headers = { "content-type": "application/json" };
-        var token = opts.getAuthToken ? await opts.getAuthToken() : null;
-        if (!currentGeneration(generation)) return;
-        if (token) headers["authorization"] = "Bearer " + token;
+        var clientTurnId = freshClientTurnId();
+        var body = JSON.stringify({
+          client_turn_id: clientTurnId,
+          message: text,
+          metadata: meta,
+        });
 
         bubble("u").textContent = text;
         b = bubble("a");
-        b.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
-        controller = new AbortController();
-        state.chatController = controller;
-        var r = await fetch(url + "/chat", {
-          method: "POST", headers: headers,
-          signal: controller.signal,
-          body: JSON.stringify({
-            persona: requestPersona, message: text,
-            history: historyForRequest, metadata: meta,
-            session_id: recordId ? String(recordId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || null : null,
-          }),
-        });
-        if (!currentGeneration(generation) || state.chatController !== controller) return;
-        if (!r.ok) {
-          b.innerHTML = "<p>That request couldn’t be completed (" + r.status + "). " +
-                        (r.status === 401 ? "Please sign in again." : "Please try again.") + "</p>";
-        } else {
-          var d = await r.json();
-          if (!currentGeneration(generation) || state.chatController !== controller) return;
-          render(b, d, recordId);
-          state.history.push({ role: "user", content: text },
-                             { role: "assistant", content: d.answer || "" });
-          var historySnapshot = state.history.slice();
-          if (opts.saveHistory && recordId) {
-            // Defer invocation too: a synchronous host persistence failure must
-            // never replace an already-rendered successful assistant response.
-            Promise.resolve().then(function () {
-              return opts.saveHistory(recordId, historySnapshot);
-            }).catch(function () {});
-          }
-        }
+        var attempt = {
+          url: url + "/chat",
+          initialHeaders: pair[1],
+          body: body,
+          text: text,
+          clientTurnId: clientTurnId,
+          recordId: recordId,
+          generation: generation,
+        };
+        state.retryAttempt = attempt;
+        input.value = ""; input.style.height = "auto";
+        handedOff = true;
+        await runAttempt(attempt, b);
       } catch (error) {
         if (currentGeneration(generation) && error.name !== "AbortError") {
           if (!b) b = bubble("a");
-          b.innerHTML = "<p>Couldn’t reach the assistant. Is the Sovereign service up?</p>";
+          input.value = text;
+          b.innerHTML = "<p>Couldn’t initialize the assistant request. Your draft is preserved.</p>";
         }
       } finally {
-        if (currentGeneration(generation) &&
-            (!controller || state.chatController === controller)) {
-          if (state.chatController === controller) state.chatController = null;
-          state.busy = false; syncControls();
-          thread.scrollTop = thread.scrollHeight; input.focus();
+        if (!handedOff && currentGeneration(generation)) {
+          state.busy = false; syncControls(); input.focus();
         }
       }
     }
@@ -703,10 +1033,10 @@
         document.body.style.paddingRight = savedPad;
         savedPad = null;
       }
-      if (open && !thread.children.length && !state.switching) {
+      if (open && state.recordReady && !thread.children.length && !state.switching) {
         loadWelcome(state.generation);
       }
-      if (open) input.focus();
+      if (open && state.recordReady) input.focus();
     }
 
     function destroy() {
@@ -717,7 +1047,9 @@
       abort(state.welcomeController);
       state.chatController = null; state.recordController = null;
       state.welcomeController = null;
-      state.history = []; state.clientId = null; state.welcomePromise = null;
+      state.history = null; state.clientId = null; state.welcomePromise = null;
+      state.recordReady = false; state.contextSnapshot = null; state.recordHeaders = null;
+      state.retryAttempt = null;
       if (savedPad !== null) {
         document.body.style.paddingRight = savedPad;
         savedPad = null;
@@ -737,6 +1069,7 @@
     listen(input, "input", function () {
       input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 110) + "px";
     });
+    syncControls();
 
     return {
       open: function () { setOpen(true); },

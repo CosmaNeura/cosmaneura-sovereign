@@ -13,7 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 from pydantic import (
     BaseModel,
@@ -291,6 +291,7 @@ class LabsReadAccess:
     profile: ComplianceProfile
     audit: AuditLogger
     record_scope_source: Literal["platform_signed_open_record", "platform"]
+    on_source_attempt: Optional[Callable[[], None]] = None
 
 
 def _mock_payload(as_of: date) -> list[LabReport]:
@@ -452,6 +453,8 @@ class LabsClient:
             details=_audit_before_details(request),
         )
         try:
+            if access.on_source_attempt is not None:
+                access.on_source_attempt()
             reports = await self._reports(request)
             response = _allowlisted_response(request, reports)
         except asyncio.CancelledError:

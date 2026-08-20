@@ -58,7 +58,9 @@ class DoctrinalArbiter:
     async def answer_doctrinal(self, question: str) -> DoctrinalVerdict:
         """Direct doctrinal answer (Magisterium speaks)."""
         text, citations = await self.magisterium.ask(
-            system=_ANSWER_SYSTEM, user_content=question
+            system=_ANSWER_SYSTEM,
+            user_content=question,
+            usage_purpose="doctrinal_answer",
         )
         return DoctrinalVerdict(conforms=True, rationale="Direct doctrinal answer.",
                                 revised_content=text, citations=citations)
@@ -82,6 +84,7 @@ class DoctrinalArbiter:
             system=_REVIEW_SYSTEM,
             user_content=(f"DRAFT ANSWER:\n{deidentified_draft}\n\n"
                           "Does this conform? If not, give the corrected version."),
+            usage_purpose="doctrinal_review",
         )
 
         # Use the fast model only to turn Magisterium's prose verdict into a flag.
@@ -90,6 +93,7 @@ class DoctrinalArbiter:
                     "reviewer's assessment and decide if the draft conforms."),
             prompt=(f"Reviewer assessment:\n{review_text}\n\n"
                     "Fields: conforms (bool), needs_revision (bool)."),
+            usage_purpose="doctrinal_verdict_parse",
         )
         # FAIL CLOSED: if the verdict can't be parsed (malformed output, or a
         # prompt injection in upstream text breaking the parser), treat the

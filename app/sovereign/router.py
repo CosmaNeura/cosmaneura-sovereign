@@ -81,14 +81,23 @@ class Router:
             # hops already scrub; this keeps literal mode to the same invariant).
             scrubbed_context = deidentify(context).text
             guidance, _ = await self.magisterium.ask(
-                system=_LITERAL_ROUTE_SYSTEM, user_content=scrubbed_context
+                system=_LITERAL_ROUTE_SYSTEM,
+                user_content=scrubbed_context,
+                usage_purpose="doctrinal_routing",
             )
             result = await self.llm.classify_json(
                 system=_SYSTEM,
                 prompt=f"{context}\nDoctrinal authority's read: {guidance}",
+                usage_call_kind="routing",
+                usage_purpose="intent_routing",
             )
         else:  # HYBRID (default): fast LLM distributes the task.
-            result = await self.llm.classify_json(system=_SYSTEM, prompt=context)
+            result = await self.llm.classify_json(
+                system=_SYSTEM,
+                prompt=context,
+                usage_call_kind="routing",
+                usage_purpose="intent_routing",
+            )
 
         return self._parse(result)
 

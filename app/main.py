@@ -8,20 +8,24 @@ an authority input.
 from __future__ import annotations
 
 import ipaddress
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.compliance import safety
 from app.clients.labs import SANDBOX_LABEL
 from app.config import (MountProfile, Persona, get_settings,
                         validate_deployment_configuration)
-from app.schemas import (ChatRequest, ChatResponse, DigestRequest,
-                         DigestResponse, Intent)
+from app.schemas import (ChatRequest, ChatResponse,
+                         CompassionateSafetyFallback, DigestRequest,
+                         DigestResponse, EmbedChatRequest, EmbedChatResponse,
+                         Intent, SovereignProblemDetails)
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
 from app.security.mount import MountResolutionError
 from app.security.rate_limit import TokenBucketRateLimiter
@@ -39,40 +43,378 @@ _public_chat_limiter = TokenBucketRateLimiter(
     max_clients=_settings.public_chat_rate_limit_max_clients,
 )
 
-# auto_error=False so "disabled" mode tolerates a missing header; we enforce
-# presence ourselves in the dependency for dev/oidc modes.
-_bearer = HTTPBearer(auto_error=False)
+_EMBED_VERSION = "1.0"
+_EMBED_VERSION_HEADER = "X-Cosmaneura-Embed-Version"
+_PROTECTED_EMBED_PATHS = frozenset({"/welcome", "/chat", "/digest"})
+ProblemCode = Literal[
+    "CONTEXT_REQUIRED",
+    "CONTEXT_INVALID",
+    "CONTEXT_EXPIRED",
+    "CAPABILITY_DENIED",
+    "RECORD_CONTEXT_MISMATCH",
+    "EMBED_VERSION_UNSUPPORTED",
+    "VALIDATION_FAILED",
+    "RATE_LIMITED",
+    "SERVICE_UNAVAILABLE",
+    "INTERNAL_ERROR",
+]
+
+_PROBLEM_COPY: dict[ProblemCode, tuple[str, str]] = {
+    "CONTEXT_REQUIRED": (
+        "Context required",
+        "A current assistant context is required.",
+    ),
+    "CONTEXT_INVALID": (
+        "Context unavailable",
+        "The current assistant context cannot be used.",
+    ),
+    "CONTEXT_EXPIRED": (
+        "Context expired",
+        "A fresh assistant context is required.",
+    ),
+    "CAPABILITY_DENIED": (
+        "Action unavailable",
+        "This action is not available in the current context.",
+    ),
+    "RECORD_CONTEXT_MISMATCH": (
+        "Record context mismatch",
+        "The current record context cannot safely support this action.",
+    ),
+    "EMBED_VERSION_UNSUPPORTED": (
+        "Embed version unsupported",
+        "The supported assistant embed version is required.",
+    ),
+    "VALIDATION_FAILED": (
+        "Validation failed",
+        "The integration request could not be accepted.",
+    ),
+    "RATE_LIMITED": (
+        "Rate limited",
+        "The assistant is temporarily rate limited.",
+    ),
+    "SERVICE_UNAVAILABLE": (
+        "Service unavailable",
+        "The assistant is temporarily unavailable.",
+    ),
+    "INTERNAL_ERROR": (
+        "Internal error",
+        "The assistant could not complete the request.",
+    ),
+}
 
 
-async def get_principal(
-    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
-) -> Optional[Principal]:
-    """Verify the bearer token (if required by AUTH_MODE) and return a Principal."""
-    return _principal_from_credentials(creds)
+class SovereignHTTPError(RuntimeError):
+    """A pre-normalized, value-free error for the public embed boundary."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        code: ProblemCode,
+        retryable: bool = False,
+        retry_after_seconds: Optional[int] = None,
+        headers: Optional[dict[str, str]] = None,
+    ):
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+        self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
+        self.headers = headers or {}
 
 
-def _principal_from_credentials(
-    creds: Optional[HTTPAuthorizationCredentials],
-) -> Optional[Principal]:
+def _problem_response(
+    *,
+    status_code: int,
+    code: ProblemCode,
+    retryable: bool = False,
+    retry_after_seconds: Optional[int] = None,
+    trace_id: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+    safety_fallback: Optional[CompassionateSafetyFallback] = None,
+) -> JSONResponse:
+    """Render the closed embed problem schema without request/upstream values."""
+    title, detail = _PROBLEM_COPY[code]
+    problem = SovereignProblemDetails(
+        type=f"https://contracts.cosmaneura.com/problems/{code.lower()}",
+        title=title,
+        status=status_code,
+        code=code,
+        detail=detail,
+        trace_id=trace_id or uuid.uuid4().hex,
+        retryable=retryable,
+        retry_after_seconds=retry_after_seconds,
+        safety_fallback=safety_fallback,
+    )
+    safe_headers = dict(headers or {})
+    safe_headers["X-Trace-ID"] = problem.trace_id
+    if retry_after_seconds is not None:
+        safe_headers["Retry-After"] = str(retry_after_seconds)
+    return JSONResponse(
+        status_code=status_code,
+        content=problem.model_dump(mode="json", exclude_none=True),
+        headers=safe_headers,
+        media_type="application/problem+json",
+    )
+
+
+def _problem_for_http_status(status_code: int) -> ProblemCode:
+    if status_code == 401:
+        return "CONTEXT_INVALID"
+    if status_code == 403:
+        return "CAPABILITY_DENIED"
+    if status_code == 426:
+        return "EMBED_VERSION_UNSUPPORTED"
+    if status_code == 429:
+        return "RATE_LIMITED"
+    if status_code in {502, 503, 504}:
+        return "SERVICE_UNAVAILABLE"
+    if status_code >= 500:
+        return "INTERNAL_ERROR"
+    return "VALIDATION_FAILED"
+
+
+def _problem_for_mount_error(error: MountResolutionError) -> tuple[int, ProblemCode]:
+    """Normalize all internal/platform policy names to the ratified public set."""
+    name = error.code.upper()
+    if name in {
+        "INVALID_WORKLOAD_TOKEN",
+        "WORKLOAD_NOT_ALLOWED",
+        "INTERACTION_REQUIRED",
+        "INTERACTION_INVALID",
+        "INTERACTION_EXPIRED",
+        "PLATFORM_UNAVAILABLE",
+        "PLATFORM_TIMEOUT",
+        "INTERNAL_ERROR",
+    }:
+        return 503, "SERVICE_UNAVAILABLE"
+    if "EXPIRED" in name and "CONTEXT" in name:
+        return 401, "CONTEXT_EXPIRED"
+    if name in {"MOUNT_CONTEXT_REQUIRED", "CONTEXT_REQUIRED"}:
+        return 401, "CONTEXT_REQUIRED"
+    if any(part in name for part in ("CLIENT_TURN", "CONFLICT", "SCHEMA")):
+        return (409 if error.status_code == 409 else 422), "VALIDATION_FAILED"
+    if any(part in name for part in ("SCOPE", "SUBJECT", "RECORD_CONTEXT")):
+        return 409, "RECORD_CONTEXT_MISMATCH"
+    if any(part in name for part in ("CAPABILITY", "SURFACE_MISMATCH", "PROVIDER_ACTOR")):
+        return 403, "CAPABILITY_DENIED"
+    if error.status_code == 401:
+        return 401, "CONTEXT_INVALID"
+    if error.status_code == 403:
+        return 403, "CAPABILITY_DENIED"
+    if error.status_code == 409:
+        return 409, "VALIDATION_FAILED"
+    if error.status_code == 429:
+        return 429, "RATE_LIMITED"
+    return 503, "SERVICE_UNAVAILABLE"
+
+
+@app.exception_handler(SovereignHTTPError)
+async def _sovereign_http_error(
+    _request: Request,
+    error: SovereignHTTPError,
+) -> JSONResponse:
+    return _problem_response(
+        status_code=error.status_code,
+        code=error.code,
+        retryable=error.retryable,
+        retry_after_seconds=error.retry_after_seconds,
+        headers=error.headers,
+    )
+
+
+@app.exception_handler(MountResolutionError)
+async def _mount_resolution_error(
+    _request: Request,
+    error: MountResolutionError,
+) -> JSONResponse:
+    status_code, code = _problem_for_mount_error(error)
+    headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
+    fallback = (
+        error.safety_fallback
+        if code == "SERVICE_UNAVAILABLE"
+        and status_code == 503
+        and not error.retryable
+        and isinstance(error.safety_fallback, CompassionateSafetyFallback)
+        else None
+    )
+    return _problem_response(
+        status_code=status_code,
+        code=code,
+        retryable=(error.retryable and code in {"RATE_LIMITED", "SERVICE_UNAVAILABLE"}),
+        headers=headers,
+        safety_fallback=fallback,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _value_free_validation_error(
+    _request: Request,
+    _error: RequestValidationError,
+) -> JSONResponse:
+    """Keep validation failures from reflecting submitted PHI or credentials."""
+    return _problem_response(
+        status_code=422,
+        code="VALIDATION_FAILED",
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _value_free_http_error(
+    _request: Request,
+    error: StarletteHTTPException,
+) -> JSONResponse:
+    """Normalize legacy FastAPI errors without reflecting their detail."""
+    code = _problem_for_http_status(error.status_code)
+    retry_after = None
+    if error.status_code == 429 and error.headers:
+        try:
+            parsed = int(error.headers.get("Retry-After", ""))
+            retry_after = parsed if parsed >= 1 else None
+        except ValueError:
+            retry_after = None
+    headers = None
+    if error.status_code == 401:
+        headers = {"WWW-Authenticate": "Bearer"}
+    return _problem_response(
+        status_code=error.status_code,
+        code=code,
+        retryable=(code in {"RATE_LIMITED", "SERVICE_UNAVAILABLE"}),
+        retry_after_seconds=retry_after,
+        headers=headers,
+    )
+
+
+@app.exception_handler(Exception)
+async def _value_free_internal_error(
+    _request: Request,
+    _error: Exception,
+) -> JSONResponse:
+    """Never let an exception string or default HTML cross the embed boundary."""
+    return _problem_response(
+        status_code=500,
+        code="INTERNAL_ERROR",
+        retryable=False,
+    )
+
+
+def _raw_bearer(authorization: Optional[str]) -> Optional[str]:
+    """Extract one bearer without interpreting or echoing its sensitive value."""
+    if authorization is None:
+        return None
+    scheme, separator, token = authorization.partition(" ")
+    if (
+        separator != " "
+        or scheme.casefold() != "bearer"
+        or not token
+        or len(token) > 8192
+        or token != token.strip()
+        or any(character.isspace() for character in token)
+    ):
+        raise SovereignHTTPError(
+            status_code=401,
+            code="CONTEXT_INVALID",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
+
+
+def _one_raw_header(request: Request, name: str) -> Optional[str]:
+    """Read one unconstrained header after safety checks, rejecting ambiguity."""
+    values = request.headers.getlist(name)
+    if len(values) > 1:
+        if name.casefold() == "authorization":
+            raise SovereignHTTPError(
+                status_code=401,
+                code="CONTEXT_INVALID",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        raise MountResolutionError(
+            status_code=400,
+            code="CLIENT_TURN_INVALID",
+            retryable=False,
+        )
+    return values[0] if values else None
+
+
+def _principal_from_token(token: Optional[str]) -> Optional[Principal]:
     """Resolve actor identity after any pre-auth emergency short-circuit."""
-    token = creds.credentials if creds else None
     try:
         return resolve_principal(token, _verifier, _settings)
     except AuthError:
         # 401 with a generic reason — never echo token contents or library detail.
-        raise HTTPException(status_code=401, detail="Not authenticated.",
-                            headers={"WWW-Authenticate": "Bearer"})
+        raise SovereignHTTPError(
+            status_code=401,
+            code="CONTEXT_INVALID",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None
 
 
-def _mount_http_exception(error: MountResolutionError) -> HTTPException:
-    """Normalize resolver failures without exposing internal policy details."""
-    status_code = error.status_code if error.status_code in {401, 403} else 503
-    headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
-    return HTTPException(
-        status_code=status_code,
-        detail="Assistant surface is not available.",
-        headers=headers,
-    )
+def _require_embed_version(request: Request) -> None:
+    """Require one exact v1 protocol header without reflecting its value."""
+    values = request.headers.getlist(_EMBED_VERSION_HEADER)
+    if values != [_EMBED_VERSION]:
+        raise SovereignHTTPError(
+            status_code=426,
+            code="EMBED_VERSION_UNSUPPORTED",
+            retryable=False,
+        )
+
+
+def _client_turn_uuid(value: Optional[str], *, required: bool) -> Optional[uuid.UUID]:
+    """Parse only canonical random UUIDs without reflecting rejected input."""
+    if value is None:
+        if required:
+            raise MountResolutionError(
+                status_code=400,
+                code="CLIENT_TURN_REQUIRED",
+                retryable=False,
+            )
+        return None
+    if len(value) != 36:
+        parsed = None
+    else:
+        try:
+            parsed = uuid.UUID(value)
+        except (AttributeError, ValueError):
+            parsed = None
+    if (
+        parsed is None
+        or parsed.version != 4
+        or parsed.variant != uuid.RFC_4122
+        or str(parsed) != value
+    ):
+        raise MountResolutionError(
+            status_code=400,
+            code="CLIENT_TURN_INVALID",
+            retryable=False,
+        )
+    return parsed
+
+
+def _matched_client_turn_id(
+    *,
+    header_value: Optional[str],
+    body_value: Optional[uuid.UUID],
+    required: bool,
+) -> Optional[uuid.UUID]:
+    """Enforce byte-for-byte canonical equality at the browser boundary."""
+    header_id = _client_turn_uuid(header_value, required=required)
+    if not required:
+        return header_id or body_value
+    if body_value is None:
+        raise MountResolutionError(
+            status_code=400,
+            code="CLIENT_TURN_REQUIRED",
+            retryable=False,
+        )
+    if header_id != body_value:
+        raise MountResolutionError(
+            status_code=409,
+            code="CLIENT_TURN_CONFLICT",
+            retryable=False,
+        )
+    return header_id
 
 
 # CORS: deny by default. A browser-facing deployment must set
@@ -83,7 +425,17 @@ if _settings.cors_allow_origins:
         allow_origins=_settings.cors_allow_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST"],
-        allow_headers=["content-type", "authorization"],
+        allow_headers=[
+            "content-type",
+            "authorization",
+            "x-cosmaneura-client-turn-id",
+            "x-cosmaneura-embed-version",
+        ],
+        expose_headers=[
+            "x-cosmaneura-embed-version",
+            "x-trace-id",
+            "retry-after",
+        ],
     )
 
 # Reject oversized bodies before they are parsed (defense-in-depth on top of the
@@ -93,14 +445,71 @@ _MAX_BODY_BYTES = 256 * 1024
 
 @app.middleware("http")
 async def _security_middleware(request: Request, call_next):
-    cl = request.headers.get("content-length")
-    if cl is not None:
+    content_lengths = request.headers.getlist("content-length")
+    transfer_encodings = request.headers.getlist("transfer-encoding")
+    declared_length: Optional[int] = None
+    if (
+        (content_lengths and transfer_encodings)
+        or len(transfer_encodings) > 1
+        or (transfer_encodings and transfer_encodings[0].casefold() != "chunked")
+    ):
+        response = _problem_response(
+            status_code=400,
+            code="VALIDATION_FAILED",
+        )
+        if request.url.path in _PROTECTED_EMBED_PATHS:
+            response.headers[_EMBED_VERSION_HEADER] = _EMBED_VERSION
+        return response
+    if content_lengths:
         try:
-            if int(cl) > _MAX_BODY_BYTES:
-                return JSONResponse(status_code=413, content={"detail": "Request too large."})
+            if len(content_lengths) != 1 or not content_lengths[0].isdigit():
+                raise ValueError
+            declared_length = int(content_lengths[0])
         except ValueError:
-            return JSONResponse(status_code=400, content={"detail": "Bad Content-Length."})
+            response = _problem_response(
+                status_code=400,
+                code="VALIDATION_FAILED",
+            )
+            if request.url.path in _PROTECTED_EMBED_PATHS:
+                response.headers[_EMBED_VERSION_HEADER] = _EMBED_VERSION
+            return response
+        if declared_length > _MAX_BODY_BYTES:
+            response = _problem_response(
+                status_code=413,
+                code="VALIDATION_FAILED",
+            )
+            if request.url.path in _PROTECTED_EMBED_PATHS:
+                response.headers[_EMBED_VERSION_HEADER] = _EMBED_VERSION
+            return response
+
+    # Content-Length is only a hint. Count the actual ASGI request chunks so
+    # chunked and HTTP/2 bodies cannot bypass the 256 KiB boundary. Caching the
+    # bounded bytes lets FastAPI/Pydantic consume exactly the verified body.
+    chunks: list[bytes] = []
+    actual_length = 0
+    async for chunk in request.stream():
+        actual_length += len(chunk)
+        if actual_length > _MAX_BODY_BYTES:
+            response = _problem_response(
+                status_code=413,
+                code="VALIDATION_FAILED",
+            )
+            if request.url.path in _PROTECTED_EMBED_PATHS:
+                response.headers[_EMBED_VERSION_HEADER] = _EMBED_VERSION
+            return response
+        chunks.append(chunk)
+    request._body = b"".join(chunks)  # Starlette's documented body cache slot.
+    if declared_length is not None and declared_length != actual_length:
+        response = _problem_response(
+            status_code=400,
+            code="VALIDATION_FAILED",
+        )
+        if request.url.path in _PROTECTED_EMBED_PATHS:
+            response.headers[_EMBED_VERSION_HEADER] = _EMBED_VERSION
+        return response
     response = await call_next(request)
+    if request.url.path in _PROTECTED_EMBED_PATHS:
+        response.headers[_EMBED_VERSION_HEADER] = _EMBED_VERSION
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -112,7 +521,8 @@ async def _security_middleware(request: Request, call_next):
 async def healthz() -> dict:
     return {"status": "ok", "mock_mode": _settings.mock_mode,
             "auth_mode": _settings.auth_mode.value,
-            "mount_profile": _settings.mount_profile.value}
+            "mount_profile": _settings.mount_profile.value,
+            "platform_agent_api_enabled": _settings.platform_agent_api_enabled}
 
 
 def _client_ip(request: Request) -> str:
@@ -137,29 +547,58 @@ def _client_ip(request: Request) -> str:
     return "unknown"
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=EmbedChatResponse)
 async def chat(
-    request: ChatRequest,
+    request: EmbedChatRequest,
     http_request: Request,
-    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
 ) -> ChatResponse:
+    pipeline_request = ChatRequest(
+        client_turn_id=request.client_turn_id,
+        persona=request.persona or Persona.PATIENT,
+        message=request.message,
+        metadata=request.metadata.model_dump(exclude_none=True),
+        session_id=request.session_id,
+    )
     # The only pre-context exception is deterministic acute-emergency guidance.
     # Do not let missing/invalid auth suppress 911/988 instructions.
     if safety.detect_emergency(request.message):
-        return await _sovereign.handle(request)
+        response = await _sovereign.handle(pipeline_request)
+        return response.model_copy(
+            update={"client_turn_id": request.client_turn_id}
+        )
+    _require_embed_version(http_request)
     if _settings.mount_profile == MountProfile.PUBLIC:
         decision = _public_chat_limiter.check(_client_ip(http_request))
         if not decision.allowed:
-            raise HTTPException(
+            raise SovereignHTTPError(
                 status_code=429,
-                detail="Too many requests. Please try again shortly.",
-                headers={"Retry-After": str(decision.retry_after_seconds)},
+                code="RATE_LIMITED",
+                retryable=True,
+                retry_after_seconds=decision.retry_after_seconds,
             )
-    principal = _principal_from_credentials(creds)
-    try:
-        return await _sovereign.handle(request, principal=principal)
-    except MountResolutionError as error:
-        raise _mount_http_exception(error) from None
+    authorization = _one_raw_header(http_request, "Authorization")
+    client_turn_value = _one_raw_header(
+        http_request, "X-Cosmaneura-Client-Turn-ID"
+    )
+    bearer = _raw_bearer(authorization)
+    if _settings.platform_agent_api_enabled:
+        principal = None
+        mount_context_token = bearer
+    else:
+        principal = _principal_from_token(bearer)
+        mount_context_token = None
+    client_turn_id = _matched_client_turn_id(
+        header_value=client_turn_value,
+        body_value=request.client_turn_id,
+        required=_settings.platform_agent_api_enabled,
+    )
+    response = await _sovereign.handle(
+        pipeline_request,
+        principal=principal,
+        mount_context_token=mount_context_token,
+        client_turn_id=client_turn_id,
+    )
+    return response.model_copy(update={"client_turn_id": client_turn_id})
 
 
 # The AI speaks first (see INTERACTION_DESIGN.md). Deterministic, config-served
@@ -213,9 +652,25 @@ def _required_capability_for_path(path: dict) -> Optional[str]:
 
 
 @app.get("/welcome")
-async def welcome() -> dict:
+async def welcome(http_request: Request) -> dict:
+    _require_embed_version(http_request)
     name = _settings.partner_name
-    mount = _settings.deployment_mount
+    if _settings.platform_agent_api_enabled:
+        authorization = _one_raw_header(http_request, "Authorization")
+        mount_context_token = _raw_bearer(authorization)
+        resolution = await _sovereign.resolve_mount_context(
+            mount_context_token=mount_context_token,
+            client_turn_id=uuid.uuid4(),
+        )
+        mount = resolution.context
+        if mount.surface != "provider_assistant":
+            raise MountResolutionError(
+                status_code=403,
+                code="MOUNT_SURFACE_MISMATCH",
+                retryable=False,
+            )
+    else:
+        mount = _settings.deployment_mount
     persona = (
         Persona.PROVIDER
         if mount.surface == "provider_assistant"
@@ -233,8 +688,13 @@ async def welcome() -> dict:
                     "replacement for it.")
     candidates = _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS
     granted = set(mount.capabilities)
+    if _settings.platform_agent_api_enabled:
+        # The provider-first activation deliberately omits the labs lane even
+        # if an unexpectedly broad platform response carries the future grant.
+        granted.discard("ehr:labs:read")
     labs_sandbox = (
         persona == Persona.PROVIDER
+        and not _settings.platform_agent_api_enabled
         and _settings.feature_athena_labs
         and _settings.athena_env == "preview"
         and _settings.athena_practice_id == "195900"
@@ -245,34 +705,64 @@ async def welcome() -> dict:
         if _required_capability_for_path(path) in granted
         and (path["intent"] != "lab_review" or labs_sandbox)
     ]
-    return {
+    payload = {
         "partner_name": name,
         "persona": persona.value,
         "greeting": greeting,
         "paths": paths,
         "disclaimer": safety.disclaimer_for(persona),
         "emergency_note": "If this is an emergency, call 911 now.",
-        "labs_tier": "sandbox" if labs_sandbox else None,
-        "labs_label": SANDBOX_LABEL if labs_sandbox else None,
     }
+    if not _settings.platform_agent_api_enabled:
+        # Temporary legacy-only sandbox labeling. The ratified v1 platform
+        # WelcomeResponse is closed and intentionally carries neither field.
+        payload["labs_tier"] = "sandbox" if labs_sandbox else None
+        payload["labs_label"] = SANDBOX_LABEL if labs_sandbox else None
+    return payload
 
 
-# Journey digest: the host app (Cosmas dashboard / website) calls this once
-# per session at note-write time; the returned digest is stored per patient
-# and later sent to /chat as one compact metadata.journey_digest field. This
-# is how multi-visit context scales without shipping N transcripts per chat
-# message. Same actor + mount capability gates as /chat; BAA tripwire inside.
+# Legacy journey-digest bridge. Platform mode refuses before mount resolution
+# because the first provider capability set omits the ratified platform-owned
+# snapshot/digest path; it must never run an unpersisted model call.
 @app.post("/digest", response_model=DigestResponse)
-async def digest(request: DigestRequest,
-                 principal=Depends(get_principal)) -> DigestResponse:
+async def digest(
+    request: DigestRequest,
+    http_request: Request,
+) -> DigestResponse:
+    _require_embed_version(http_request)
+    if _settings.platform_agent_api_enabled:
+        # The first platform capability set deliberately omits digest writes.
+        # Refuse before reading credentials or opening an interaction lineage.
+        raise SovereignHTTPError(
+            status_code=503,
+            code="SERVICE_UNAVAILABLE",
+            retryable=False,
+        )
+    authorization = _one_raw_header(http_request, "Authorization")
+    client_turn_value = _one_raw_header(
+        http_request, "X-Cosmaneura-Client-Turn-ID"
+    )
+    bearer = _raw_bearer(authorization)
+    principal = _principal_from_token(bearer)
+    client_turn_id = _matched_client_turn_id(
+        header_value=client_turn_value,
+        body_value=request.client_turn_id,
+        required=False,
+    )
     try:
-        return await _sovereign.digest(request, principal=principal)
-    except MountResolutionError as error:
-        raise _mount_http_exception(error) from None
+        response = await _sovereign.digest(
+            request,
+            principal=principal,
+            mount_context_token=None,
+            client_turn_id=client_turn_id,
+        )
     except PermissionError:
-        raise HTTPException(status_code=403,
-                            detail="This deployment is not configured to "
-                                   "accept provider (PHI) requests.")
+        raise SovereignHTTPError(
+            status_code=403,
+            code="CAPABILITY_DENIED",
+            retryable=False,
+        ) from None
+    return response.model_copy(update={"client_turn_id": client_turn_id})
 
 
 # Drop-in panel component (reference implementation). Static JS, no secrets —

@@ -6,13 +6,18 @@ identity provider). This just lets you exercise the authenticated /chat flow
 without standing up an IdP.
 
 Usage:
-    AUTH_DEV_SECRET=devsecret python tools/mint_dev_token.py --role provider
+    AUTH_DEV_SECRET=dev-secret-at-least-thirty-two-bytes \
+      python tools/mint_dev_token.py --role provider
     # then:
+    TURN_ID=$(python -c 'import uuid; print(uuid.uuid4())')
     curl -s localhost:8000/chat \
       -H "Authorization: Bearer <token>" \
+      -H 'X-Cosmaneura-Embed-Version: 1.0' \
+      -H "X-Cosmaneura-Client-Turn-ID: $TURN_ID" \
       -H 'content-type: application/json' \
-      -d '{"persona":"patient","message":"help me understand my labs"}'
-    # (persona in the body is ignored; the token's role decides.)
+      -d "{\"client_turn_id\":\"$TURN_ID\",\"persona\":\"patient\",\"message\":\"help me prepare questions for a visit\"}"
+    # The deployment-pinned mount decides the surface; the verified role only
+    # binds the actor. This helper never mints a platform mount-context token.
 """
 from __future__ import annotations
 

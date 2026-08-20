@@ -45,7 +45,7 @@ cheap while the Sovereign's full chain backs the moments that matter.
 
 Replicates the ChatGPT workflow natively, with three things the side-channel
 can never offer: **BAA containment** (transcripts go only to the BAA-covered
-LLM), the **audit chain** (every prep is hash-logged), and the **Catholic
+LLM), **platform-owned durable lineage**, and the **Catholic
 overlay** (drafts pass the arbitration gate like everything else).
 
 - **Input:** the request plus `metadata.prior_sessions` (most recent
@@ -157,7 +157,8 @@ The dashboard chatbot in app.cosmaneura.com calls the same single endpoint:
 
 ```
 POST /chat
-Authorization: Bearer <provider-role JWT> → provider persona (verified)
+Authorization: Bearer <opaque platform mount token>
+X-Cosmaneura-Client-Turn-ID: <fresh canonical UUIDv4>
 {
   "persona": "provider",
   "message": "<what the clinician typed>",
@@ -170,16 +171,20 @@ Authorization: Bearer <provider-role JWT> → provider persona (verified)
 }
 ```
 
+The host obtains the bearer by exchanging its authenticated Clerk session at
+the platform. Platform mount resolution, not the body persona, binds the actor,
+tenant, provider surface, and capabilities. A legacy platform-disabled build
+may still verify a Clerk provider JWT directly.
+
 The response's `intent` tells the UI which lane answered; `structured` and
 `citations` carry the machine-readable payload (ERD/PubMed references for
 consults, prep metadata for visit prep).
 
-**Patient-journey stringing is solved off the hot path:** the host calls
-`POST /digest` once per session when the note lands, maintaining a compact
-rolling journey digest per client (stored host-side; the Sovereign stays
-stateless). Chat requests then send `metadata.journey_digest` plus the latest
-note — constant-size context regardless of journey length. See
-`UI_UX_DESIGN.md` §3.
+**Patient-journey stringing is solved off the hot path:** in platform mode the
+host uses the governed platform digest workflow at note-write time and passes
+only the resulting opaque reference to authorized consumers. Sovereign's
+legacy `POST /digest` is intentionally unavailable in platform mode so it
+cannot create an orphan lineage or second PHI store. See `UI_UX_DESIGN.md` §3.
 
 ## 6. Scaffolded here vs. next
 

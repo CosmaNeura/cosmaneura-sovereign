@@ -252,7 +252,6 @@ const RECORDS = [
 ];
 
 let currentId = "rdelgado";
-const threads = {};                    // stands in for Cosmas thread persistence
 const byId = id => RECORDS.find(r => r.id === id);
 
 function esc(s){ return String(s??"").replace(/[&<>"']/g, c =>
@@ -294,21 +293,11 @@ function renderNote(){
 // the panel never scrapes the page.
 function buildContext(){
   const r = byId(currentId);
-  const noteText = r.sections.map(([h, t]) => h + ": " + t).join("\n");
-  const ctx = {
+  return {
     clientId: r.id,
     terminology: r.terminology,
-    care_model: r.care_model,
-    patient_profile: r.profile,
-    journey_digest: r.journey_digest,
-    prior_sessions: noteText          // the note IS the compressed session
+    care_model: r.care_model
   };
-  if (r.labs) ctx.labs = r.labs;
-  // A real provider host obtains a fresh actor-bound record grant from its
-  // backend for each turn. This static demo deliberately cannot mint one.
-  if (r.patient_metrics) ctx.patient_metrics = r.patient_metrics;
-  if (r.calorie_target) ctx.calorie_target = r.calorie_target;
-  return ctx;
 }
 
 function renderCtxStrip(){
@@ -328,12 +317,14 @@ document.getElementById("ctxtoggle").onclick = function(){
 };
 
 const panel = CosmaNeuraPanel.mount({
-  sovereignUrl: "",                     // same origin in this harness
-  // Demo runs with AUTH_MODE=disabled, so there is no token. In production
-  // this returns the provider's verified Clerk JWT. The panel derives its
-  // presentation hint from the server-resolved /welcome response.
-  getAuthToken: async () => null,
+  sovereignUrl: window.location.origin, // this harness must be served over HTTPS
+  embedVersion: "1.0",
+  // A real host returns its exchanged opaque platform mount token. This
+  // same-origin, auth-disabled harness uses a non-secret local placeholder.
+  getAuthToken: async () => "local-demo-context-token",
   getContext: async () => buildContext(),
+  // This static demo deliberately cannot mint or resolve a real contact path.
+  onHumanContact: () => alert("Open the configured human-contact path."),
   // Raised so the launcher clears the existing "Report a Bug" pill.
   fabBottom: "84px",
   onInsert: (text) => {
@@ -345,9 +336,7 @@ const panel = CosmaNeuraPanel.mount({
     box.appendChild(document.createTextNode(text));
     document.getElementById("body").appendChild(box);
   },
-  onSave: () => alert("Saved to this visit (demo)."),
-  loadHistory: async (id) => threads[id] || [],
-  saveHistory: async (id, h) => { threads[id] = h; }
+  onSave: () => alert("Saved to this visit (demo).")
 });
 
 render();

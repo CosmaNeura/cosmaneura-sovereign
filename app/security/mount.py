@@ -1,13 +1,14 @@
 """Server-resolved mount authority for Sovereign requests.
 
-The active interim resolver pins exactly one mount in deployment
-configuration (ADR 0014). The platform resolver implements the ratified agent
-API call but is intentionally not selected until that endpoint is deployed.
+The legacy resolver pins exactly one mount in deployment configuration
+(ADR 0014). The provider-first profile selects the platform resolver and
+uses its ratified interaction lineage as the sole authority source.
 Neither resolver accepts surface, tier, capability, tenant, or actor values
 from a chat request body.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import uuid
@@ -30,6 +31,23 @@ _CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)+$")
 _OPAQUE_REF_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{8,160}$")
 _INTERACTION_REF_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{16,256}$")
 _TRACE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{16,128}$")
+_SAFE_PLATFORM_PROBLEM_CODES = frozenset({
+    "CONTEXT_REQUIRED",
+    "CONTEXT_INVALID",
+    "CONTEXT_EXPIRED",
+    "CAPABILITY_DENIED",
+    "SCOPE_DENIED",
+    "CLIENT_TURN_CONFLICT",
+    "RATE_LIMITED",
+    "INVALID_WORKLOAD_TOKEN",
+    "WORKLOAD_NOT_ALLOWED",
+    "INTERACTION_REQUIRED",
+    "INTERACTION_INVALID",
+    "INTERACTION_EXPIRED",
+    "PLATFORM_UNAVAILABLE",
+    "PLATFORM_TIMEOUT",
+    "INTERNAL_ERROR",
+})
 
 
 class MountContext(BaseModel):
@@ -105,11 +123,19 @@ class MountResolution:
 class MountResolutionError(RuntimeError):
     """Safe failure at the mount-resolution boundary."""
 
-    def __init__(self, *, status_code: int, code: str, retryable: bool = False):
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        code: str,
+        retryable: bool = False,
+        safety_fallback: object | None = None,
+    ):
         super().__init__(code)
         self.status_code = status_code
         self.code = code
         self.retryable = retryable
+        self.safety_fallback = safety_fallback
 
 
 class MountResolver(ABC):
@@ -210,10 +236,16 @@ class PlatformResolver(MountResolver):
     async def _post(self, headers: dict[str, str]) -> httpx.Response:
         try:
             if self._client is not None:
-                return await self._client.post(self._endpoint, headers=headers)
+                return await asyncio.wait_for(
+                    self._client.post(self._endpoint, headers=headers),
+                    timeout=self._timeout_seconds,
+                )
             async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
-                return await client.post(self._endpoint, headers=headers)
-        except httpx.TransportError:
+                return await asyncio.wait_for(
+                    client.post(self._endpoint, headers=headers),
+                    timeout=self._timeout_seconds,
+                )
+        except (httpx.TransportError, asyncio.TimeoutError):
             raise MountResolutionError(
                 status_code=503, code="MOUNT_RESOLUTION_UNAVAILABLE", retryable=True,
             ) from None
@@ -233,10 +265,17 @@ class PlatformResolver(MountResolver):
                 status_code=503, code="MOUNT_RESOLUTION_INVALID", retryable=False,
             )
         try:
-            workload_token = await self._workload_token_provider()
-        except Exception:
+            workload_token = await asyncio.wait_for(
+                self._workload_token_provider(),
+                timeout=self._timeout_seconds,
+            )
+        except asyncio.TimeoutError:
             raise MountResolutionError(
                 status_code=503, code="WORKLOAD_TOKEN_UNAVAILABLE", retryable=True,
+            ) from None
+        except Exception:
+            raise MountResolutionError(
+                status_code=503, code="WORKLOAD_TOKEN_UNAVAILABLE", retryable=False,
             ) from None
         if not workload_token or "\n" in workload_token or "\r" in workload_token:
             raise MountResolutionError(
@@ -249,12 +288,31 @@ class PlatformResolver(MountResolver):
             "X-Trace-ID": request.trace_id,
         })
         if response.status_code != 200:
-            retryable = response.status_code in {429, 503, 504}
             status = response.status_code if 400 <= response.status_code <= 599 else 503
+            safe_code = None
+            upstream_retryable = False
+            try:
+                problem = response.json()
+                if isinstance(problem, dict):
+                    candidate = problem.get("code")
+                    if candidate in _SAFE_PLATFORM_PROBLEM_CODES:
+                        safe_code = candidate
+                    upstream_retryable = problem.get("retryable") is True
+            except (TypeError, ValueError):
+                pass
+            retryable = (
+                status in {429, 503, 504}
+                and upstream_retryable
+            )
             raise MountResolutionError(
                 status_code=status,
-                code="MOUNT_RESOLUTION_REJECTED" if status < 500
-                else "MOUNT_RESOLUTION_UNAVAILABLE",
+                code=(
+                    safe_code
+                    or (
+                        "MOUNT_RESOLUTION_REJECTED" if status < 500
+                        else "MOUNT_RESOLUTION_UNAVAILABLE"
+                    )
+                ),
                 retryable=retryable,
             )
         try:
@@ -262,14 +320,19 @@ class PlatformResolver(MountResolver):
             if context.auth_tier == "provider" and context.actor_id is None:
                 raise ValueError
             interaction_ref = response.headers["X-Cosmaneura-Interaction-Ref"]
-            echoed_turn = uuid.UUID(response.headers["X-Cosmaneura-Client-Turn-ID"])
+            echoed_turn_text = response.headers["X-Cosmaneura-Client-Turn-ID"]
+            echoed_turn = uuid.UUID(echoed_turn_text)
             returned_trace = response.headers["X-Trace-ID"]
             reused_text = response.headers[
                 "X-Cosmaneura-Interaction-Reused"
             ].lower()
             if not _INTERACTION_REF_PATTERN.fullmatch(interaction_ref):
                 raise ValueError
-            if echoed_turn != request.client_turn_id or reused_text not in {"true", "false"}:
+            if (
+                echoed_turn != request.client_turn_id
+                or echoed_turn_text != str(request.client_turn_id)
+                or reused_text not in {"true", "false"}
+            ):
                 raise ValueError
             if not _TRACE_ID_PATTERN.fullmatch(returned_trace):
                 raise ValueError

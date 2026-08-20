@@ -14,6 +14,8 @@ PROVIDER_PUBLIC = {
     "MOCK_MODE", "SOVEREIGN_MODE", "MOUNT_PROFILE", "MOUNT_TENANT_ID",
     "AUTH_MODE", "OIDC_ISSUER", "OIDC_JWKS_URL", "OIDC_AUDIENCE",
     "OIDC_ALGORITHMS", "AUTH_ROLE_CLAIM", "AUTH_PROVIDER_ROLE",
+    "PLATFORM_AGENT_API_ENABLED", "PLATFORM_AGENT_API_BASE_URL",
+    "PLATFORM_AGENT_API_SCOPE",
     "ALLOW_PROVIDER_PERSONA", "BAA_ATTESTED", "DEID_PROVIDER",
     "LLM_PROVIDER", "AZURE_OPENAI_API_VERSION",
     "AZURE_OPENAI_ENDPOINT", "REASONING_MODEL", "FAST_MODEL",
@@ -58,6 +60,7 @@ ONEPASSWORD_VAULTS = {"prod": "Production", "staging": "Staging"}
 # production must continue to take its distinct issuer and JWKS URL from the
 # reviewed production deployment file.
 STAGING_PROVIDER_AUTH = {
+    "AUTH_MODE": "disabled",
     "OIDC_ISSUER": "https://resolved-emu-53.clerk.accounts.dev",
     "OIDC_JWKS_URL": (
         "https://resolved-emu-53.clerk.accounts.dev/.well-known/jwks.json"
@@ -65,6 +68,24 @@ STAGING_PROVIDER_AUTH = {
     "OIDC_AUDIENCE": "cosmaneura-sovereign",
     "AUTH_ROLE_CLAIM": "roles",
     "AUTH_PROVIDER_ROLE": "provider",
+    "PLATFORM_AGENT_API_ENABLED": "true",
+    "PLATFORM_AGENT_API_BASE_URL": "https://staging-app.cosmaneura.com",
+    "PLATFORM_AGENT_API_SCOPE": (
+        "api://af957741-0342-498b-8496-e93706af9e99/.default"
+    ),
+    "FEATURE_ATHENA_LABS": "false",
+    "AUDIT_SINK": "stdout",
+}
+
+PRODUCTION_PROVIDER_AUTHORITY = {
+    "AUTH_MODE": "oidc",
+    "PLATFORM_AGENT_API_ENABLED": "false",
+    "PLATFORM_AGENT_API_BASE_URL": "https://app.cosmaneura.com",
+    "PLATFORM_AGENT_API_SCOPE": (
+        "api://af957741-0342-498b-8496-e93706af9e99/.default"
+    ),
+    "FEATURE_ATHENA_LABS": "true",
+    "AUDIT_SINK": "file",
 }
 
 FIXED = {
@@ -72,7 +93,6 @@ FIXED = {
         "MOCK_MODE": "false",
         "SOVEREIGN_MODE": "hybrid",
         "MOUNT_PROFILE": "provider_assistant",
-        "AUTH_MODE": "oidc",
         "OIDC_AUDIENCE": "cosmaneura-sovereign",
         "AUTH_ROLE_CLAIM": "roles",
         "AUTH_PROVIDER_ROLE": "provider",
@@ -81,8 +101,6 @@ FIXED = {
         "DEID_PROVIDER": "azure",
         "LLM_PROVIDER": "azure_openai",
         "MAGISTERIUM_MCP_ENABLED": "false",
-        "AUDIT_SINK": "file",
-        "FEATURE_ATHENA_LABS": "true",
         "ATHENA_ENV": "preview",
         "ATHENA_PRACTICE_ID": "195900",
         "LABS_ALLOW_PATIENT_SEARCH": "false",
@@ -98,6 +116,7 @@ FIXED = {
 
 URL_KEYS = {
     "OIDC_ISSUER", "OIDC_JWKS_URL", "AZURE_OPENAI_ENDPOINT",
+    "PLATFORM_AGENT_API_BASE_URL",
     "MAGISTERIUM_BASE_URL", "NPPES_BASE_URL",
     "CLINICALTRIALS_BASE_URL",
 }
@@ -233,6 +252,12 @@ def validate(environment: str, mount: str, values: dict[str, str]) -> None:
             if values[name] != expected:
                 raise ConfigError(
                     f"{name} must match the accepted staging Clerk contract"
+                )
+    if environment == "prod" and mount == "provider":
+        for name, expected in PRODUCTION_PROVIDER_AUTHORITY.items():
+            if values[name] != expected:
+                raise ConfigError(
+                    f"{name} must match the production authority activation gate"
                 )
     for name in URL_KEYS & values.keys():
         _https_url(name, values[name])

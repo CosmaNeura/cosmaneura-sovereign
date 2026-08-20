@@ -1,20 +1,27 @@
 """Mount authority regression tests (offline, credential-free)."""
 import asyncio
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import httpx
+import pytest
 from pydantic import ValidationError
 
 from app.config import AuthMode, MountProfile, Persona, Settings
-from app.schemas import (AgentResult, ChatRequest, DoctrinalSensitivity,
-                         DoctrinalVerdict, Intent)
+from app.clients.platform_conversation import ConversationReceipt
+from app.clients.platform_usage import UsageDeliveryError, UsageWriteReceipt
+from app.schemas import (AgentResult, ChatRequest, ChatResponse,
+                         DoctrinalSensitivity, DoctrinalVerdict, Intent,
+                         StandardPresentation)
 from app.security.auth import Principal
 from app.security.mount import (MountContext, MountResolution,
                                 MountResolutionError, MountResolveRequest,
                                 MountResolver, PinnedResolver,
                                 PlatformResolver)
 from app.sovereign.orchestrator import INTENT_CAPABILITIES, Sovereign
+
+EMBED_HEADERS = {"X-Cosmaneura-Embed-Version": "1.0"}
 
 
 def _run(coro):
@@ -195,6 +202,7 @@ def test_http_emergency_precedes_missing_or_invalid_auth():
             with patch.object(main_module, "_sovereign", sovereign):
                 client = TestClient(main_module.app)
                 body = {
+                    "client_turn_id": str(uuid.uuid4()),
                     "persona": "provider",
                     "message": "I have crushing chest pain right now",
                 }
@@ -202,13 +210,451 @@ def test_http_emergency_precedes_missing_or_invalid_auth():
                     response = client.post("/chat", json=body, headers=headers)
                     assert response.status_code == 200
                     assert response.json()["intent"] == "emergency"
+                    assert response.json()["presentation"]["mode"] == "emergency"
                     assert "911" in response.json()["answer"]
 
-                denied = client.post("/chat", json={
-                    "persona": "patient",
-                    "message": "hello",
-                })
+                denied = client.post(
+                    "/chat",
+                    json={"client_turn_id": str(uuid.uuid4()),
+                          "persona": "patient", "message": "hello"},
+                    headers=EMBED_HEADERS,
+                )
                 assert denied.status_code == 401
+
+
+def test_platform_http_emergency_precedes_raw_header_parsing_and_errors_are_value_free():
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+
+    sentinel = "secret-header-sentinel"
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+    )
+    sovereign = Sovereign(settings)
+    with patch.object(main_module, "_settings", settings):
+        with patch.object(main_module, "_sovereign", sovereign):
+            client = TestClient(main_module.app)
+            emergency = client.post(
+                "/chat",
+                json={
+                    "client_turn_id": str(uuid.uuid4()),
+                    "persona": "provider",
+                    "message": "I have crushing chest pain right now",
+                },
+                headers={
+                    **EMBED_HEADERS,
+                    "Authorization": f"Basic {sentinel}",
+                    "X-Cosmaneura-Client-Turn-ID": sentinel,
+                },
+            )
+            assert emergency.status_code == 200
+            assert emergency.json()["intent"] == "emergency"
+            assert emergency.json()["presentation"]["mode"] == "emergency"
+
+            bad_auth = client.post(
+                "/chat",
+                json={"client_turn_id": str(uuid.uuid4()),
+                      "persona": "provider", "message": "hello"},
+                headers={
+                    **EMBED_HEADERS,
+                    "Authorization": f"Basic {sentinel}",
+                },
+            )
+            assert bad_auth.status_code == 401
+            assert sentinel not in bad_auth.text
+
+            bad_turn = client.post(
+                "/chat",
+                json={
+                    "client_turn_id": str(uuid.uuid4()),
+                    "persona": "provider",
+                    "message": "hello",
+                },
+                headers={
+                    **EMBED_HEADERS,
+                    "Authorization": "Bearer opaque-mount-token-123456",
+                    "X-Cosmaneura-Client-Turn-ID": sentinel,
+                },
+            )
+            assert bad_turn.status_code == 422
+            assert sentinel not in bad_turn.text
+
+            oversized_auth = client.post(
+                "/chat",
+                json={"client_turn_id": str(uuid.uuid4()),
+                      "persona": "provider", "message": "hello"},
+                headers={
+                    **EMBED_HEADERS,
+                    "Authorization": "Bearer " + sentinel + "x" * 8200,
+                },
+            )
+            assert oversized_auth.status_code == 401
+            assert sentinel not in oversized_auth.text
+
+            oversized_turn = client.post(
+                "/chat",
+                json={
+                    "client_turn_id": str(uuid.uuid4()),
+                    "persona": "provider",
+                    "message": "hello",
+                },
+                headers={
+                    **EMBED_HEADERS,
+                    "Authorization": "Bearer opaque-mount-token-123456",
+                    "X-Cosmaneura-Client-Turn-ID": sentinel + "x" * 8192,
+                },
+            )
+            assert oversized_turn.status_code == 422
+            assert sentinel not in oversized_turn.text
+
+            emergency_with_oversized_headers = client.post(
+                "/chat",
+                json={
+                    "client_turn_id": str(uuid.uuid4()),
+                    "persona": "provider",
+                    "message": "I have crushing chest pain right now",
+                },
+                headers={
+                    "Authorization": "Bearer " + sentinel + "x" * 8200,
+                    "X-Cosmaneura-Client-Turn-ID": sentinel + "x" * 8192,
+                },
+            )
+            assert emergency_with_oversized_headers.status_code == 200
+            assert emergency_with_oversized_headers.json()["intent"] == "emergency"
+
+
+def test_actual_body_limit_rejects_no_length_stream_and_conflicting_lengths():
+    from app import main as main_module
+
+    sentinel = "chunked-body-sentinel-phi"
+
+    class OversizedBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield sentinel.encode()
+            yield b"x" * (256 * 1024)
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=main_module.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="https://sovereign.example",
+        ) as client:
+            chunked = await client.post(
+                "/chat",
+                headers={
+                    **EMBED_HEADERS,
+                    "content-type": "application/json",
+                },
+                content=OversizedBody(),
+            )
+            conflicting = await client.post(
+                "/chat",
+                headers=[
+                    ("content-type", "application/json"),
+                    ("content-length", "2"),
+                    ("content-length", "3"),
+                ],
+                content=b"{}",
+            )
+            mixed_framing = await client.post(
+                "/chat",
+                headers=[
+                    ("content-type", "application/json"),
+                    ("content-length", "2"),
+                    ("transfer-encoding", "chunked"),
+                ],
+                content=b"{}",
+            )
+            return chunked, conflicting, mixed_framing
+
+    chunked, conflicting, mixed_framing = _run(exercise())
+    assert chunked.status_code == 413
+    assert chunked.json()["code"] == "VALIDATION_FAILED"
+    assert sentinel not in chunked.text
+    assert conflicting.status_code == 400
+    assert conflicting.json()["code"] == "VALIDATION_FAILED"
+    assert mixed_framing.status_code == 400
+    assert mixed_framing.json()["code"] == "VALIDATION_FAILED"
+
+
+def test_http_validation_errors_never_reflect_submitted_phi_or_values():
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+
+    sentinel = "PHI-SENTINEL-Jane-Doe-555-0100"
+    client = TestClient(main_module.app)
+    invalid_requests = (
+        {
+            "client_turn_id": str(uuid.uuid4()),
+            "persona": "provider",
+            "message": sentinel * 400,
+        },
+        {
+            "client_turn_id": str(uuid.uuid4()),
+            "persona": "provider",
+            "message": "hello",
+            "session_id": sentinel + "@example.com",
+        },
+        {
+            "client_turn_id": str(uuid.uuid4()),
+            "persona": "not-a-persona-" + sentinel,
+            "message": "hello",
+        },
+        {
+            "client_turn_id": str(uuid.uuid4()),
+            "message": "hello",
+            "metadata": {"note_template": sentinel},
+        },
+    )
+    for body in invalid_requests:
+        response = client.post("/chat", json=body)
+        assert response.status_code == 422
+        assert response.json()["code"] == "VALIDATION_FAILED"
+        assert response.json()["status"] == 422
+        assert response.json()["retryable"] is False
+        assert response.headers["content-type"].startswith("application/problem+json")
+        assert sentinel not in response.text
+
+    malformed = client.post(
+        "/chat",
+        content='{"persona":"provider","message":"' + sentinel,
+        headers={"Content-Type": "application/json"},
+    )
+    assert malformed.status_code == 422
+    assert malformed.json()["code"] == "VALIDATION_FAILED"
+    assert sentinel not in malformed.text
+
+    too_large = client.post(
+        "/chat",
+        content='{"message":"' + sentinel + "x" * (256 * 1024),
+        headers={"Content-Type": "application/json"},
+    )
+    assert too_large.status_code == 413
+    assert sentinel not in too_large.text
+
+
+def test_platform_digest_fails_before_header_parsing_or_orchestrator():
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+
+    class _NoDigest:
+        async def digest(self, *_args, **_kwargs):
+            raise AssertionError("platform digest must fail before orchestration")
+
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+    )
+    sentinel = "digest-secret-header-sentinel"
+    with patch.object(main_module, "_settings", settings):
+        with patch.object(main_module, "_sovereign", _NoDigest()):
+            response = TestClient(main_module.app).post(
+                "/digest",
+                json={"persona": "provider", "sessions": ["synthetic note"]},
+                headers={
+                    **EMBED_HEADERS,
+                    "Authorization": f"Basic {sentinel}",
+                    "X-Cosmaneura-Client-Turn-ID": sentinel,
+                },
+            )
+    assert response.status_code == 503
+    assert response.json()["code"] == "SERVICE_UNAVAILABLE"
+    assert response.json()["retryable"] is False
+    assert sentinel not in response.text
+
+
+def test_embed_version_is_required_echoed_and_never_reflects_values():
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+
+    client = TestClient(main_module.app)
+    sentinel = "PHI-version-sentinel-Jane-Doe"
+    for headers in (
+        {},
+        {"X-Cosmaneura-Embed-Version": sentinel},
+    ):
+        response = client.get("/welcome", headers=headers)
+        assert response.status_code == 426
+        assert response.json()["code"] == "EMBED_VERSION_UNSUPPORTED"
+        assert response.json()["retryable"] is False
+        assert response.headers["x-cosmaneura-embed-version"] == "1.0"
+        assert response.headers["content-type"].startswith(
+            "application/problem+json"
+        )
+        assert sentinel not in response.text
+
+    success = client.get("/welcome", headers=EMBED_HEADERS)
+    assert success.status_code == 200
+    assert success.headers["x-cosmaneura-embed-version"] == "1.0"
+
+
+def test_platform_chat_requires_exact_header_body_turn_and_echoes_it():
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+    )
+
+    class CapturingSovereign:
+        def __init__(self):
+            self.calls = []
+
+        async def handle(self, request, **kwargs):
+            self.calls.append((request, kwargs))
+            return ChatResponse(
+                answer="synthetic answer",
+                intent=Intent.SMALL_TALK,
+                persona=Persona.PROVIDER,
+                citations=[],
+                doctrinal_review=None,
+                structured={},
+                safety_notice=None,
+                presentation=StandardPresentation(
+                    mode="standard", suppress=[], human_contact=None,
+                ),
+            )
+
+    sovereign = CapturingSovereign()
+    turn_id = str(uuid.uuid4())
+    base_headers = {
+        **EMBED_HEADERS,
+        "Authorization": "Bearer opaque-mount-context-token",
+    }
+    body = {
+        "client_turn_id": turn_id,
+        "persona": "provider",
+        "message": "synthetic question",
+    }
+    with patch.object(main_module, "_settings", settings):
+        with patch.object(main_module, "_sovereign", sovereign):
+            client = TestClient(main_module.app)
+            success = client.post(
+                "/chat",
+                json=body,
+                headers={
+                    **base_headers,
+                    "X-Cosmaneura-Client-Turn-ID": turn_id,
+                },
+            )
+            mismatch = client.post(
+                "/chat",
+                json=body,
+                headers={
+                    **base_headers,
+                    "X-Cosmaneura-Client-Turn-ID": str(uuid.uuid4()),
+                },
+            )
+            missing_body = client.post(
+                "/chat",
+                json={"persona": "provider", "message": "synthetic question"},
+                headers={
+                    **base_headers,
+                    "X-Cosmaneura-Client-Turn-ID": turn_id,
+                },
+            )
+
+    assert success.status_code == 200
+    assert success.json()["client_turn_id"] == turn_id
+    assert success.headers["x-cosmaneura-embed-version"] == "1.0"
+    assert sovereign.calls[0][1]["mount_context_token"] == (
+        "opaque-mount-context-token"
+    )
+    assert sovereign.calls[0][1]["principal"] is None
+    assert sovereign.calls[0][1]["client_turn_id"] == uuid.UUID(turn_id)
+    assert mismatch.status_code == 409
+    assert mismatch.json()["code"] == "VALIDATION_FAILED"
+    assert missing_body.status_code == 422
+    assert missing_body.json()["code"] == "VALIDATION_FAILED"
+    assert len(sovereign.calls) == 1
+
+
+def test_platform_welcome_uses_sole_bearer_resolution_and_hard_hides_labs():
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+        feature_athena_labs=True,
+    )
+
+    class CapturingSovereign:
+        def __init__(self):
+            self.calls = []
+
+        async def resolve_mount_context(self, **kwargs):
+            self.calls.append(kwargs)
+            return MountResolution(
+                context=MountContext(
+                    surface="provider_assistant",
+                    auth_tier="provider",
+                    capabilities=("visit-prep:run", "ehr:labs:read"),
+                    tenant_id="tenant_test",
+                    actor_id="authority_actor_123456",
+                ),
+                client_turn_id=kwargs["client_turn_id"],
+                trace_id=uuid.uuid4().hex,
+                interaction_ref="interaction_ref_123456",
+            )
+
+    sovereign = CapturingSovereign()
+    with patch.object(main_module, "_settings", settings):
+        with patch.object(main_module, "_sovereign", sovereign):
+            response = TestClient(main_module.app).get(
+                "/welcome?persona=patient",
+                headers={
+                    **EMBED_HEADERS,
+                    "Authorization": "Bearer opaque-mount-context-token",
+                    # The browser never needs this server-to-server header.
+                    "X-Cosmaneura-Mount-Context": "ignored-second-token",
+                },
+            )
+
+    assert response.status_code == 200
+    assert response.json()["persona"] == "provider"
+    assert {path["intent"] for path in response.json()["paths"]} == {
+        "visit_prep"
+    }
+    assert "labs_tier" not in response.json()
+    assert "labs_label" not in response.json()
+    assert response.headers["x-cosmaneura-embed-version"] == "1.0"
+    assert len(sovereign.calls) == 1
+    assert set(sovereign.calls[0]) == {
+        "mount_context_token",
+        "client_turn_id",
+    }
+    assert sovereign.calls[0]["mount_context_token"] == (
+        "opaque-mount-context-token"
+    )
+    assert isinstance(sovereign.calls[0]["client_turn_id"], uuid.UUID)
 
 
 def test_client_turn_uuid_is_fresh_and_not_derived_from_session_id():
@@ -241,6 +687,403 @@ def test_client_turn_uuid_is_fresh_and_not_derived_from_session_id():
     assert str(resolver.request.client_turn_id) != "legacy-session-key"
     assert resolver.request.trace_id != "legacy-session-key"
     assert 16 <= len(resolver.request.trace_id) <= 128
+
+
+def test_platform_client_turn_requires_canonical_lowercase_uuid4():
+    from app.main import _client_turn_uuid
+
+    value = str(uuid.uuid4())
+    assert _client_turn_uuid(value, required=True) == uuid.UUID(value)
+    for invalid in (
+        value.upper(),
+        str(uuid.uuid1()),
+        "{" + value + "}",
+        "not-a-uuid",
+    ):
+        with pytest.raises(MountResolutionError) as caught:
+            _client_turn_uuid(invalid, required=True)
+        assert caught.value.status_code == 400
+        assert caught.value.retryable is False
+
+
+def test_provider_turn_writes_one_hash_only_platform_observation():
+    turn_id = uuid.uuid4()
+
+    class _ProviderResolver(MountResolver):
+        async def resolve(self, request):
+            assert request.mount_context_token == "mount-context-token-123456"
+            assert request.client_turn_id == turn_id
+            return MountResolution(
+                context=MountContext(
+                    surface="provider_assistant",
+                    auth_tier="provider",
+                    capabilities=("education:answer",),
+                    tenant_id="tenant_test",
+                    actor_id="authority_actor_123456",
+                ),
+                client_turn_id=request.client_turn_id,
+                trace_id=request.trace_id,
+                interaction_ref="interaction_ref_123456",
+            )
+
+    class _AuditClient:
+        def __init__(self):
+            self.calls = []
+
+        async def write(self, *, turn, observation):
+            self.calls.append((turn, observation))
+
+    class _ConversationClient:
+        async def write_user_accepted(self, *, turn, message):
+            return ConversationReceipt(
+                client_turn_id=turn.client_turn_id,
+                turn_ref="conversation_turn_123456",
+                phase="user_accepted",
+                state="accepted",
+                recorded_at=datetime(2026, 8, 19, tzinfo=UTC),
+                replayed=False,
+            )
+
+        async def write_final_response(self, *, turn, expected_turn_ref, **kwargs):
+            assert expected_turn_ref == "conversation_turn_123456"
+            return ConversationReceipt(
+                client_turn_id=turn.client_turn_id,
+                turn_ref=expected_turn_ref,
+                phase="final_response",
+                state="completed",
+                recorded_at=datetime(2026, 8, 19, tzinfo=UTC),
+                replayed=False,
+            )
+
+    class _UsageClient:
+        async def report(self, **kwargs):
+            raise AssertionError("patched model path must have no usage calls")
+
+    audit_client = _AuditClient()
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+    )
+    sov = Sovereign(
+        settings,
+        mount_resolver=_ProviderResolver(),
+        platform_audit_client=audit_client,  # type: ignore[arg-type]
+        platform_conversation_client=_ConversationClient(),  # type: ignore[arg-type]
+        platform_usage_client=_UsageClient(),  # type: ignore[arg-type]
+    )
+
+    async def route(request):
+        return await _fixed_route(Intent.SMALL_TALK)
+
+    async def complete(**kwargs):
+        return "answer sentinel"
+
+    sov.router.route = route
+    sov.llm.complete = complete
+    response = _run(sov.handle(
+        ChatRequest(persona=Persona.PROVIDER, message="question sentinel"),
+        principal=_provider_principal(),
+        mount_context_token="mount-context-token-123456",
+        client_turn_id=turn_id,
+    ))
+
+    assert response.intent == Intent.SMALL_TALK
+    assert len(audit_client.calls) == 1
+    audit_turn, observation = audit_client.calls[0]
+    assert audit_turn.interaction_ref == "interaction_ref_123456"
+    assert observation.observation_status == "completed"
+    assert observation.route == observation.intent == "small_talk"
+    assert len(observation.content_sha256 or "") == 64
+    serialized = str(observation.model_dump(mode="json"))
+    assert "question sentinel" not in serialized
+    assert "answer sentinel" not in serialized
+
+
+def test_exact_top_level_retry_never_reruns_model_or_tool_work():
+    turn_id = uuid.uuid4()
+
+    class Resolver(MountResolver):
+        async def resolve(self, request):
+            return MountResolution(
+                context=MountContext(
+                    surface="provider_assistant",
+                    auth_tier="provider",
+                    capabilities=("education:answer", "ehr:labs:read"),
+                    tenant_id="tenant_test",
+                    actor_id="authority_actor_123456",
+                ),
+                client_turn_id=request.client_turn_id,
+                trace_id=request.trace_id,
+                interaction_ref="interaction_ref_123456",
+                interaction_reused=True,
+            )
+
+    class Conversation:
+        async def write_user_accepted(self, *, turn, message):
+            return ConversationReceipt(
+                client_turn_id=turn.client_turn_id,
+                turn_ref="conversation_turn_123456",
+                phase="user_accepted",
+                state="accepted",
+                recorded_at=datetime(2026, 8, 19, tzinfo=UTC),
+                replayed=True,
+            )
+
+    class MustNotRun:
+        async def write(self, **_kwargs):
+            raise AssertionError("audit must not run for an accepted retry")
+
+        async def report(self, **_kwargs):
+            raise AssertionError("usage must not run for an accepted retry")
+
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+    )
+    sov = Sovereign(
+        settings,
+        mount_resolver=Resolver(),
+        platform_audit_client=MustNotRun(),  # type: ignore[arg-type]
+        platform_conversation_client=Conversation(),  # type: ignore[arg-type]
+        platform_usage_client=MustNotRun(),  # type: ignore[arg-type]
+    )
+
+    async def must_not_route(_request):
+        raise AssertionError("accepted retry must stop before routing")
+
+    sov.router.route = must_not_route
+    with pytest.raises(MountResolutionError) as caught:
+        _run(sov.handle(
+            ChatRequest(persona=Persona.PROVIDER, message="review labs"),
+            mount_context_token="mount-context-token-123456",
+            client_turn_id=turn_id,
+        ))
+    assert caught.value.status_code == 503
+    assert caught.value.code == "CANONICAL_TURN_INCOMPLETE"
+    assert caught.value.retryable is False
+
+
+def test_initial_platform_activation_hard_disables_labs_despite_capability():
+    turn_id = uuid.uuid4()
+
+    class Resolver(MountResolver):
+        async def resolve(self, request):
+            return MountResolution(
+                context=MountContext(
+                    surface="provider_assistant",
+                    auth_tier="provider",
+                    capabilities=("education:answer", "ehr:labs:read"),
+                    tenant_id="tenant_test",
+                    actor_id="authority_actor_123456",
+                ),
+                client_turn_id=request.client_turn_id,
+                trace_id=request.trace_id,
+                interaction_ref="interaction_ref_123456",
+            )
+
+    class Conversation:
+        def __init__(self):
+            self.final_calls = []
+
+        async def write_user_accepted(self, *, turn, message):
+            return ConversationReceipt(
+                client_turn_id=turn.client_turn_id,
+                turn_ref="conversation_turn_123456",
+                phase="user_accepted",
+                state="accepted",
+                recorded_at=datetime(2026, 8, 19, tzinfo=UTC),
+                replayed=False,
+            )
+
+        async def write_final_response(self, **kwargs):
+            self.final_calls.append(kwargs)
+            turn = kwargs["turn"]
+            return ConversationReceipt(
+                client_turn_id=turn.client_turn_id,
+                turn_ref=kwargs["expected_turn_ref"],
+                phase="final_response",
+                state="completed",
+                recorded_at=datetime(2026, 8, 19, tzinfo=UTC),
+                replayed=False,
+            )
+
+    class Audit:
+        def __init__(self):
+            self.calls = []
+
+        async def write(self, **kwargs):
+            self.calls.append(kwargs)
+
+    class UsageMustNotRun:
+        async def report(self, **_kwargs):
+            raise AssertionError("no model call may occur in this test")
+
+    class LabsMustNotRun:
+        async def run(self, *_args, **_kwargs):
+            raise AssertionError("initial activation must never enter labs")
+
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+        feature_athena_labs=True,
+    )
+    conversation = Conversation()
+    audit = Audit()
+    sov = Sovereign(
+        settings,
+        mount_resolver=Resolver(),
+        platform_audit_client=audit,  # type: ignore[arg-type]
+        platform_conversation_client=conversation,  # type: ignore[arg-type]
+        platform_usage_client=UsageMustNotRun(),  # type: ignore[arg-type]
+    )
+    sov.agents[Intent.LAB_REVIEW] = LabsMustNotRun()
+
+    async def route(_request):
+        return Intent.LAB_REVIEW, DoctrinalSensitivity.LOW, "fixed"
+
+    sov.router.route = route
+    response = _run(sov.handle(
+        ChatRequest(persona=Persona.PROVIDER, message="review the synthetic labs"),
+        mount_context_token="mount-context-token-123456",
+        client_turn_id=turn_id,
+    ))
+
+    assert response.intent == Intent.LAB_REVIEW
+    assert response.safety_notice == "capability_denied"
+    assert len(conversation.final_calls) == 1
+    assert conversation.final_calls[0]["outcome"] == "refused"
+    assert len(audit.calls) == 1
+
+
+def test_terminal_observation_uses_ordered_model_usage_refs_and_stays_pending_on_failure():
+    turn_id = uuid.uuid4()
+
+    class Resolver(MountResolver):
+        async def resolve(self, request):
+            return MountResolution(
+                context=MountContext(
+                    surface="provider_assistant",
+                    auth_tier="provider",
+                    capabilities=("education:answer",),
+                    tenant_id="tenant_test",
+                    actor_id="authority_actor_123456",
+                ),
+                client_turn_id=request.client_turn_id,
+                trace_id=request.trace_id,
+                interaction_ref="interaction_ref_123456",
+            )
+
+    class Conversation:
+        def __init__(self):
+            self.final_calls = 0
+
+        async def write_user_accepted(self, *, turn, message):
+            return ConversationReceipt(
+                client_turn_id=turn.client_turn_id,
+                turn_ref="conversation_turn_123456",
+                phase="user_accepted",
+                state="accepted",
+                recorded_at=datetime(2026, 8, 19, tzinfo=UTC),
+                replayed=False,
+            )
+
+        async def write_final_response(self, **kwargs):
+            self.final_calls += 1
+            turn = kwargs["turn"]
+            return ConversationReceipt(
+                client_turn_id=turn.client_turn_id,
+                turn_ref="conversation_turn_123456",
+                phase="final_response",
+                state="completed",
+                recorded_at=datetime(2026, 8, 19, tzinfo=UTC),
+                replayed=False,
+            )
+
+    class Audit:
+        def __init__(self):
+            self.observations = []
+
+        async def write(self, *, turn, observation):
+            self.observations.append(observation)
+
+    class Usage:
+        def __init__(self, fail):
+            self.fail = fail
+            self.requests = []
+
+        async def report(self, *, turn, request):
+            self.requests.append(request)
+            if self.fail:
+                raise UsageDeliveryError("unavailable", retryable=True)
+            return UsageWriteReceipt(
+                record_ref=f"model_usage_{request.call_sequence:06d}",
+                recorded_at=datetime(2026, 8, 19, tzinfo=UTC),
+            )
+
+    def exercise(fail):
+        settings = Settings(
+            mount_profile=MountProfile.PROVIDER_ASSISTANT,
+            mount_tenant_id="tenant_test",
+            auth_mode=AuthMode.DISABLED,
+            platform_agent_api_enabled=True,
+            platform_agent_api_base_url="https://platform.example",
+            platform_agent_api_scope="api://platform-app/.default",
+            platform_workload_client_id="provider-uai-client-id",
+        )
+        audit = Audit()
+        usage = Usage(fail)
+        conversation = Conversation()
+        sov = Sovereign(
+            settings,
+            mount_resolver=Resolver(),
+            platform_audit_client=audit,  # type: ignore[arg-type]
+            platform_conversation_client=conversation,  # type: ignore[arg-type]
+            platform_usage_client=usage,  # type: ignore[arg-type]
+        )
+
+        async def route(_request):
+            return await _fixed_route(Intent.SMALL_TALK)
+
+        sov.router.route = route
+        response = _run(sov.handle(
+            ChatRequest(persona=Persona.PROVIDER, message="hello"),
+            mount_context_token="mount-context-token-123456",
+            client_turn_id=turn_id,
+        ))
+        return response, audit, usage, conversation
+
+    response, audit, usage, conversation = exercise(False)
+    assert response.intent == Intent.SMALL_TALK
+    assert conversation.final_calls == 1
+    assert [request.call_sequence for request in usage.requests] == [1]
+    assert len(audit.observations) == 1
+    assert [(reference.kind, reference.ref) for reference in (
+        audit.observations[0].platform_refs
+    )] == [
+        ("conversation_turn", "conversation_turn_123456"),
+        ("model_usage", "model_usage_000001"),
+    ]
+
+    response, audit, usage, conversation = exercise(True)
+    assert response.intent == Intent.SMALL_TALK
+    assert conversation.final_calls == 1
+    assert len(usage.requests) == 1
+    assert audit.observations == []
 
 
 def test_provider_pinned_mount_requires_verified_actor_each_request():
@@ -345,13 +1188,17 @@ def test_http_provider_mount_normalizes_non_provider_denial():
         secret,
         algorithm="HS256",
     )
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {
+        **EMBED_HEADERS,
+        "Authorization": f"Bearer {token}",
+    }
     with patch.object(main_module, "_settings", settings):
         with patch.object(main_module, "_verifier", TokenVerifier(settings)):
             with patch.object(main_module, "_sovereign", Sovereign(settings)):
                 client = TestClient(main_module.app)
                 responses = (
                     client.post("/chat", json={
+                        "client_turn_id": str(uuid.uuid4()),
                         "persona": "provider",
                         "message": "open the chart",
                     }, headers=headers),
@@ -362,7 +1209,8 @@ def test_http_provider_mount_normalizes_non_provider_denial():
                 )
     for response in responses:
         assert response.status_code == 403
-        assert response.json() == {"detail": "Assistant surface is not available."}
+        assert response.json()["code"] == "CAPABILITY_DENIED"
+        assert response.json()["retryable"] is False
         assert "PROVIDER_ACTOR_REQUIRED" not in response.text
 
 
@@ -495,6 +1343,48 @@ def test_platform_resolver_accepts_trusted_private_https_origin():
     assert resolver._endpoint == (
         "https://10.0.0.5/service/v1/agent/mount-context/resolve"
     )
+
+
+def test_platform_provider_process_rejects_a_public_mount_resolution():
+    class PublicResolver(MountResolver):
+        async def resolve(self, request):
+            return MountResolution(
+                context=MountContext(
+                    surface="public",
+                    auth_tier="anonymous",
+                    capabilities=("education:answer",),
+                    tenant_id=None,
+                    actor_id=None,
+                ),
+                client_turn_id=request.client_turn_id,
+                trace_id=request.trace_id,
+                interaction_ref="interaction_ref_123456",
+            )
+
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+    )
+    sov = Sovereign(
+        settings,
+        mount_resolver=PublicResolver(),
+        platform_audit_client=object(),  # type: ignore[arg-type]
+        platform_conversation_client=object(),  # type: ignore[arg-type]
+        platform_usage_client=object(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(MountResolutionError) as caught:
+        _run(sov.handle(
+            ChatRequest(persona=Persona.PATIENT, message="hello"),
+            mount_context_token="mount-context-token-123456",
+            client_turn_id=uuid.uuid4(),
+        ))
+    assert caught.value.status_code == 403
+    assert caught.value.code == "MOUNT_SURFACE_MISMATCH"
 
 
 def test_platform_resolver_requires_interaction_reused_header():
@@ -675,6 +1565,64 @@ def test_platform_resolver_rejects_non_exact_body_without_leaking_token():
     except MountResolutionError as exc:
         assert exc.code == "MOUNT_RESOLUTION_INVALID"
         assert mount_token not in str(exc)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "platform_code", "retryable", "public_status", "public_code"),
+    (
+        (401, "CONTEXT_EXPIRED", False, 401, "CONTEXT_EXPIRED"),
+        (403, "SCOPE_DENIED", False, 409, "RECORD_CONTEXT_MISMATCH"),
+        (409, "CLIENT_TURN_CONFLICT", False, 409, "VALIDATION_FAILED"),
+        (429, "RATE_LIMITED", True, 429, "RATE_LIMITED"),
+        (403, "WORKLOAD_NOT_ALLOWED", False, 503, "SERVICE_UNAVAILABLE"),
+    ),
+)
+def test_platform_resolver_preserves_only_safe_problem_categories(
+    status_code,
+    platform_code,
+    retryable,
+    public_status,
+    public_code,
+):
+    from app.main import _problem_for_mount_error
+
+    sentinel = "upstream-PHI-body-sentinel"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            json={
+                "code": platform_code,
+                "retryable": retryable,
+                "detail": sentinel,
+            },
+        )
+
+    async def scenario():
+        async def workload_token():
+            return "workload-token"
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            resolver = PlatformResolver(
+                platform_base_url="https://platform.example",
+                workload_token_provider=workload_token,
+                client=client,
+            )
+            return await resolver.resolve(MountResolveRequest(
+                client_turn_id=uuid.uuid4(),
+                trace_id="sovereign-trace-1234",
+                mount_context_token="opaque-mount-token-1234567890",
+            ))
+
+    with pytest.raises(MountResolutionError) as caught:
+        _run(scenario())
+    assert caught.value.code == platform_code
+    assert caught.value.retryable is retryable
+    assert sentinel not in str(caught.value)
+    assert _problem_for_mount_error(caught.value) == (
+        public_status,
+        public_code,
+    )
 
 
 if __name__ == "__main__":
