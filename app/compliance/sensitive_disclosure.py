@@ -97,6 +97,24 @@ SENSITIVE_DISCLOSURE_RESPONSE = (
     "or pastoral care person? I can help you decide whom to reach out to."
 )
 
+# Governed, deterministic presentation copy. These values are intentionally
+# static: no model, persistence result, or case detail may influence the
+# safety fallback or its action descriptor.
+SENSITIVE_HUMAN_CONTACT_ACTION = {
+    "label": "Contact someone you trust",
+    "action_id": "human-contact",
+    "fallback_text": (
+        "Please contact someone you trust, your clinician, or a chaplain "
+        "or pastoral care person."
+    ),
+}
+
+SENSITIVE_SAFETY_FALLBACK_RESPONSE = (
+    "I'm so sorry you're going through this. You don't have to carry it alone. "
+    "Please reach out to someone you trust, your clinician, or a chaplain or "
+    "pastoral care person."
+)
+
 
 def detect_sensitive_disclosure(text: str) -> bool:
     """Return whether ``text`` contains a supported personal disclosure."""

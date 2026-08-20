@@ -90,7 +90,8 @@ The script fetches the Azure OpenAI key, starts the server, and opens
   so the assistant may add a note in keeping with Catholic teaching before the
   provider list.
 - This is a local demo on real data; it is **not** the hardened production build
-  (no auth, no BAA attestation, no WORM audit — see `SETUP_AND_HANDOFF.md`).
+  (no auth, no BAA attestation, and no platform reporting — see
+  `SETUP_AND_HANDOFF.md`).
 
 ## Stop it
 `Ctrl-C` in the terminal running the script.

@@ -175,6 +175,11 @@ resource "azurerm_container_app" "sovereign" {
         value = azurerm_user_assigned_identity.provider_runtime.client_id
       }
 
+      env {
+        name  = "PLATFORM_WORKLOAD_CLIENT_ID"
+        value = azurerm_user_assigned_identity.provider_runtime.client_id
+      }
+
       # This is derived from the environment-owned DeID resource. Keeping it
       # outside the file export prevents staging from reusing a production URL.
       env {

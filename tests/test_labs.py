@@ -1201,11 +1201,15 @@ def test_record_grant_secret_is_redacted_from_settings_repr():
 
 
 def test_welcome_and_panel_label_sandbox_persistently_and_per_result():
+    from fastapi.testclient import TestClient
+
     provider = _mock_provider_settings()
     original = main_module._settings
     try:
         main_module._settings = provider
-        welcome = _run(main_module.welcome())
+        client = TestClient(main_module.app)
+        headers = {"X-Cosmaneura-Embed-Version": "1.0"}
+        welcome = client.get("/welcome", headers=headers).json()
         assert welcome["labs_tier"] == "sandbox"
         assert welcome["labs_label"] == SANDBOX_LABEL
         assert any(path["intent"] == "lab_review" for path in welcome["paths"])
@@ -1213,7 +1217,7 @@ def test_welcome_and_panel_label_sandbox_persistently_and_per_result():
         main_module._settings = provider.model_copy(
             update={"feature_athena_labs": False}
         )
-        disabled = _run(main_module.welcome())
+        disabled = client.get("/welcome", headers=headers).json()
         assert disabled["labs_tier"] is None
         assert all(path["intent"] != "lab_review" for path in disabled["paths"])
     finally:
@@ -1221,11 +1225,11 @@ def test_welcome_and_panel_label_sandbox_persistently_and_per_result():
 
     panel = (Path(__file__).resolve().parents[1] / "app" / "panel.js").read_text()
     assert "Environment not verified" in panel
-    assert "welcomeData().then(function (w)" in panel
+    assert "welcomeData(handshake[1], generation)" in panel
     assert 'd.structured.tier === "sandbox"' in panel
     assert "d.structured.sandbox_label" in panel
-    assert "meta.record_ref = ctx.patient_ref" in panel
-    assert '"patient_ref", "patient_name"' not in panel
+    assert "meta.record_ref" not in panel
+    assert "ctx.patient_ref" not in panel
 
 
 def test_smoke_is_one_bounded_known_record_read_without_name_search():

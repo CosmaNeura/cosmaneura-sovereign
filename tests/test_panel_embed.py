@@ -1,14 +1,20 @@
-"""Versioned panel delivery and cross-record browser-safety regressions."""
+"""Versioned panel delivery and ratified browser-contract regressions."""
 from pathlib import Path
+import shutil
+import subprocess
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.main import app
+from app.schemas import EmbedChatRequest, EmbedChatResponse
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PANEL_PATH = ROOT / "app" / "panel.js"
 DEMO_PATH = ROOT / "app" / "demo_dashboard.html"
+PANEL_HARNESS_PATH = ROOT / "tests" / "panel_contract_harness.js"
 
 
 def _panel_source() -> str:
@@ -30,34 +36,46 @@ def test_versioned_panel_and_deprecated_alias_are_byte_identical():
     )
 
 
-def test_welcome_sends_no_persona_and_drives_mount_specific_ux():
+def test_mount_validates_exact_https_origin_and_required_governed_callbacks():
     panel = _panel_source()
 
+    assert "var url = exactHttpsOrigin(opts.sovereignUrl)" in panel
+    assert 'parsed.protocol !== "https:"' in panel
+    assert "parsed.username || parsed.password" in panel
+    assert 'parsed.pathname !== "/" || parsed.search || parsed.hash' in panel
+    assert "parsed.origin !== value" in panel
+    assert 'typeof opts.getContext !== "function"' in panel
+    assert 'typeof opts.onHumanContact !== "function"' in panel
     assert 'fetch(url + "/welcome", {' in panel
     assert '"/welcome?' not in panel
+    assert '"x-cosmaneura-embed-version": embedVersion' in panel
     assert "opts.persona" not in panel
     assert 'state.persona = w.persona === "provider"' in panel
-    assert "persona: requestPersona" in panel
+    assert "welcomeData().then" not in panel
 
 
-def test_sensitive_response_hides_welcome_disclaimer_and_guided_chrome():
+def test_presentation_is_governed_and_never_inferred_from_intent():
     panel = _panel_source()
 
-    # There is no permanent disclaimer stapled beneath every response.
     assert "Educational information — not medical advice." not in panel
     assert "cnp-disc" not in panel
-    # The ordinary welcome notice remains, but disappears with the chips as
-    # soon as a sensitive-disclosure response is rendered.
-    assert "cnp-welcome-disc" in panel
-    assert 'setSensitiveChrome(d.intent === "sensitive_disclosure")' in panel
-    assert "notice.hidden = sensitive" in panel
-    assert "chips.hidden = sensitive" in panel
+    assert "function governedPresentation(value)" in panel
+    assert 'presentation.mode === "emergency"' in panel
+    assert 'd.intent === "emergency"' not in panel
+    assert 'd.intent === "sensitive_disclosure"' not in panel
+    assert 'suppressed.has("disclaimer")' in panel
+    assert 'suppressed.has("guided_paths")' in panel
+    assert 'suppressed.has("feature_actions")' in panel
+    assert "SUPPRESSION_NAMES.some" in panel
+    assert "return opts.onHumanContact(contact)" in panel
+    assert "fallback.textContent = contact.fallback_text" in panel
 
 
-def test_record_switch_uses_generation_abort_and_record_bound_saves():
+def test_record_switch_is_null_safe_and_rehydrates_governed_history_only():
     panel = _panel_source()
 
     assert "generation: 0" in panel
+    assert "recordReady: false" in panel
     assert "var generation = ++state.generation" in panel
     assert "var recordController = new AbortController()" in panel
     assert "state.recordController = recordController" in panel
@@ -65,19 +83,62 @@ def test_record_switch_uses_generation_abort_and_record_bound_saves():
     assert "controller = new AbortController()" in panel
     assert "signal: controller.signal" in panel
     assert "abort(state.chatController); abort(state.recordController)" in panel
-    assert "if (!currentGeneration(generation)) return" in panel
-    assert "var loadedGeneration = await loadThreadFor(contextRecordId)" in panel
-    assert "generation = loadedGeneration" in panel
-    assert "loadedGeneration == null" in panel
-    assert "state.clientId !== contextRecordId" in panel
+    assert "abort(state.welcomeController)" in panel
+    assert "Promise.all([opts.getContext(), freshBearerHeaders()])" in panel
+    assert "var loaded = results[1] === null ? null : governedHistory(results[1])" in panel
+    assert "Array.isArray(loaded)" not in panel
+    assert "loaded.messages" in panel
+    assert "presentation: m.presentation" in panel
+    assert "opts.onHistoryUpdated(recordId, loaded)" in panel
     assert 'thread.innerHTML = ""; chips.innerHTML = ""' in panel
-    assert "state.switching = true" in panel
-    assert "input.disabled = disabled" in panel
-    assert "opts.saveHistory(recordId, historySnapshot)" in panel
-    assert "Promise.resolve().then(function ()" in panel
-    assert "Promise.resolve(opts.saveHistory" not in panel
-    assert "opts.saveHistory(state.clientId" not in panel
-    assert "opts.onSave(d.answer || \"\", d, recordId)" in panel
+    assert "state.recordReady = false" in panel
+    assert "state.clientId = null" in panel
+    assert '!state.recordReady || state.clientId === null' in panel
+    assert 'problem.code === "RECORD_CONTEXT_MISMATCH"' in panel
+    assert "loadThreadFor(null)" in panel
+    assert "opts.saveHistory(" not in panel
+    assert "state.history.push" not in panel
+    assert "state.history.slice" not in panel
+    assert "state.clientId !== recordId" in panel
+
+
+def test_platform_turn_transport_uses_fresh_bearer_and_explicit_exact_retry():
+    panel = _panel_source()
+
+    assert "getMountContext" not in panel
+    assert "x-cosmaneura-mount-context" not in panel.lower()
+    assert 'opts.embedVersion !== "1.0"' in panel
+    assert 'typeof opts.getAuthToken !== "function"' in panel
+    assert '"authorization": "Bearer " + token' in panel
+    assert 'headers["x-cosmaneura-client-turn-id"] = attempt.clientTurnId' in panel
+    assert "client_turn_id: clientTurnId" in panel
+    assert "fetchWithOneExactNetworkRetry" not in panel
+    assert "await fetch(attempt.url" in panel
+    assert "headers: requestHeaders" in panel
+    assert "body: attempt.body" in panel
+    assert "Retry this exact request" in panel
+    assert "runAttempt(attempt, b)" in panel
+    assert "state.retryAttempt = attempt" in panel
+    assert "input.value = attempt.text" in panel
+    assert "error instanceof TypeError" in panel
+    assert 'problem.retryable === true' in panel
+    assert 'problem.retryable === false' in panel
+    assert "d.client_turn_id !== attempt.clientTurnId" in panel
+    assert "var refreshed = await Promise.all([opts.getContext(), freshBearerHeaders()])" in panel
+    assert "attempt.initialHeaders = null" in panel
+    assert "initialHeaders: pair[1]" in panel
+
+
+def test_non_2xx_safety_fallback_is_validated_and_not_committed_as_success():
+    panel = _panel_source()
+
+    assert "problem && problem.safety_fallback" in panel
+    assert 'fallback.presentation.mode !== "sensitive_disclosure"' in panel
+    assert 'response.status !== 503 || value.code !== "SERVICE_UNAVAILABLE"' in panel
+    assert "problem.safety_fallback.answer" in panel
+    assert "problem.safety_fallback.presentation" in panel
+    assert "state.history.push" not in panel
+    assert "opts.onHistoryUpdated(attempt" not in panel
 
 
 def test_destroy_aborts_work_and_removes_record_tooltips():
@@ -90,38 +151,105 @@ def test_destroy_aborts_work_and_removes_record_tooltips():
     assert "clearEventHandlers()" in panel
     assert "removeEventListener(item.event, item.handler)" in panel
     assert "node.onclick = null" in panel
-    assert 'state.history = []; state.clientId = null' in panel
+    assert 'state.history = null; state.clientId = null' in panel
     assert 'root.innerHTML = ""' in panel
     assert "tipHost.appendChild(tip); ownedTips.push(tip)" in panel
     assert "root.remove(); style.remove()" in panel
 
 
-def test_context_allowlist_and_sandbox_marking_survive_embed_hardening():
+def test_initial_v1_context_is_refs_only_and_raw_clinical_bridges_are_absent():
     panel = _panel_source()
 
-    assert '"record_ref", "analyte"' in panel
-    assert "meta[k] = ctx[k]" in panel
+    assert '"clientId", "thread_ref", "context_snapshot_ref", "digest_ref"' in panel
+    assert "meta[key] = context[key]" in panel
     assert "Object.assign(meta, ctx)" not in panel
     assert "...ctx" not in panel
-    assert 'w.labs_tier === "sandbox"' in panel
-    assert 'd.structured.tier === "sandbox"' in panel
-    assert "d.structured.sandbox_label" in panel
+    request_builder = panel[
+        panel.index("var meta = { output_format: fmt.value }"):
+        panel.index("var clientTurnId = freshClientTurnId()")
+    ]
+    for forbidden in (
+        "journey_digest", "prior_sessions", "case_context", "labs",
+        "patient_metrics", "calorie_target", "macro_split", "note_template",
+        "patient_profile", "intake_summary", "record_ref", "analyte",
+        "patient_ref", "patient_name",
+    ):
+        assert forbidden not in request_builder
+    assert "history: historyForRequest" not in panel
+    assert "persona: requestPersona" not in panel
+    assert "session_id:" not in panel
     assert 'sandboxBadge.textContent = "Environment not verified"' in panel
-    assert "sandboxBadge.hidden = false" in panel
     assert "applyEnvironmentLabel(w)" in panel
     assert 'path.intent === "lab_review"' in panel
-    assert 'w.persona === "patient"' in panel
-    assert 'w.persona === "provider"' in panel
-    assert "!hasLabsPath && !w.labs_tier && !w.labs_label" in panel
+
+
+def test_v1_request_schema_is_closed_requires_turn_and_makes_persona_optional():
+    turn_id = "123e4567-e89b-42d3-a456-426614174000"
+    request = EmbedChatRequest(
+        client_turn_id=turn_id,
+        message="synthetic",
+        metadata={"thread_ref": "thread_opaque"},
+    )
+    assert request.persona is None
+
+    with pytest.raises(ValidationError):
+        EmbedChatRequest(message="synthetic")
+    with pytest.raises(ValidationError):
+        EmbedChatRequest(
+            client_turn_id=turn_id,
+            message="synthetic",
+            metadata={"note_template": "sentinel PHI"},
+        )
+    with pytest.raises(ValidationError):
+        EmbedChatRequest(
+            client_turn_id=turn_id,
+            message="synthetic",
+            unknown="forbidden",
+        )
+
+
+def test_v1_response_schema_requires_governed_presentation_and_closed_fields():
+    schema = EmbedChatResponse.model_json_schema()
+    assert set(schema["required"]) >= {
+        "answer", "intent", "client_turn_id", "citations",
+        "doctrinal_review", "structured", "safety_notice", "presentation",
+    }
+    assert schema["additionalProperties"] is False
+    for name in (
+        "StandardPresentation",
+        "EmergencyPresentation",
+        "SensitiveDisclosurePresentation",
+        "HumanContactAction",
+    ):
+        assert schema["$defs"][name]["additionalProperties"] is False
+    sensitive = schema["$defs"]["SensitiveDisclosurePresentation"]
+    assert set(sensitive["required"]) == {"mode", "suppress", "human_contact"}
+    assert sensitive["properties"]["suppress"]["minItems"] == 7
+    assert sensitive["properties"]["suppress"]["maxItems"] == 7
+    assert sensitive["properties"]["suppress"]["uniqueItems"] is True
+
+
+def test_panel_first_send_exact_retry_success_and_record_reset_runtime():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable")
+    subprocess.run(
+        [node, str(PANEL_HARNESS_PATH), str(PANEL_PATH)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_dashboard_demo_pins_version_and_binds_initial_and_changed_records():
     demo = DEMO_PATH.read_text()
 
     assert '<script src="/embed/v1/panel.js"></script>' in demo
+    assert 'embedVersion: "1.0"' in demo
+    assert "onHumanContact:" in demo
     assert "panel.setRecord(r.id);" in demo
     assert "panel.setRecord(currentId);" in demo
     assert 'persona: "provider"' not in demo
     assert "ctx.record_ref = r.record_ref" not in demo
-    assert "static demo deliberately cannot mint one" in demo
+    assert "static demo deliberately cannot mint" in demo.lower()
     assert "ctx.patient_ref" not in demo

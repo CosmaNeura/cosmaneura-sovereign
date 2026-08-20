@@ -140,7 +140,9 @@ async function loadWelcome(){
   document.getElementById('fmt').style.display =
     personaSel.value==='provider' ? '' : 'none';
   try{
-    const r = await fetch('/welcome?persona='+personaSel.value);
+    const r = await fetch('/welcome?persona='+personaSel.value, {
+      headers: {'X-Cosmaneura-Embed-Version':'1.0'}
+    });
     const w = await r.json();
     const b = bubble('a');
     b.innerHTML = '<p>'+esc(w.greeting)+'</p>'+
@@ -252,8 +254,13 @@ form.addEventListener('submit', async e=>{
     const meta={};
     if(personaSel.value==='provider')
       meta.output_format=document.getElementById('fmt').value;
-    const r=await fetch('/chat',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({persona:personaSel.value,message:text,metadata:meta})});
+    const clientTurnId=crypto.randomUUID();
+    const r=await fetch('/chat',{method:'POST',headers:{
+      'content-type':'application/json',
+      'X-Cosmaneura-Embed-Version':'1.0',
+      'X-Cosmaneura-Client-Turn-ID':clientTurnId
+    }, body:JSON.stringify({client_turn_id:clientTurnId,
+      persona:personaSel.value,message:text,metadata:meta})});
     if(!r.ok){
       b.innerHTML='<p class="err">This question needs a service that isn’t enabled in this demo '+
         '(e.g. the doctrinal review for morally-weighted topics). Try asking me to <b>find a doctor</b> — '+

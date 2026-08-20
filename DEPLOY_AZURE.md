@@ -18,16 +18,17 @@ Apps).
   pipeline** — same nixpacks → ACR → `az containerapp update` pattern the main
   app already uses.
 - **Two deployments, one image:** an anonymous `public` mount and an authenticated
-  `provider_assistant` mount. Their deployment-pinned mount profiles, not a body
-  persona, determine capabilities and PHI posture.
-- **The Clerk seam is implemented but not provisioned:** the provider host asks
-  Clerk for a named JWT template and Sovereign validates issuer, audience, and a
-  provider role claim. The template, exact claim mapping, and real-token smoke
-  test remain operator work; do not enable the provider mount before they pass.
-- **Pinned resolver for this pilot:** these two processes resolve their fixed
-  public/provider mount in server deployment config. The platform Agent API is
-  not a dependency for the synthetic Preview rollout; real-PHI/multi-tenant EHR
-  authorization remains prohibited and out of scope.
+  `provider_assistant` mount. The public deployment profile and the provider's
+  platform-resolved context—not a body persona—determine capabilities and PHI posture.
+- **Platform authority for the provider mount:** the host authenticates the user
+  with Clerk, exchanges that session at the platform for an opaque, short-lived
+  mount token, and sends that token as the sole bearer to Sovereign. Sovereign
+  never interprets a Clerk JWT in this mode; the platform resolves actor, tenant,
+  surface, and capabilities on every turn.
+- **Feature-limited first activation:** the provider deployment uses the
+  platform Agent API for mount resolution, canonical conversation, model-usage,
+  and observational audit. Its initial capability set deliberately omits labs;
+  real-PHI and production EHR authorization remain prohibited and out of scope.
 - **PHI boundary drives the topology:** both mounts live in the dedicated
   Sovereign resource group, with separate Container App Environments, Log
   Analytics workspaces, runtime identities, and Key Vaults.
@@ -71,7 +72,7 @@ Resource Group: cosmaneura-sovereign           ← NEW, isolated for HIPAA
 
 ---
 
-## 2. The identity contract (Clerk ↔ Sovereign OIDC)
+## 2. The identity contract (Clerk → platform → Sovereign)
 
 This is the integration seam between the two services, and it is the most
 important thing to get right. The Sovereign already supports it natively — there
@@ -79,60 +80,55 @@ is **no IdP to stand up**.
 
 ### How it works
 
-The main app uses Clerk for identity. Clerk can mint a template-specific JWT;
-Sovereign's provider deployment validates its RS256 signature against the
-configured JWKS plus issuer, audience, expiry, and provider role. The public
-deployment does not use this lane.
+The main app uses Clerk for browser identity. The platform validates that
+identity and provider authority during the context-token exchange, then mints
+an opaque mount token. The platform-enabled Sovereign process treats that token
+as an opaque credential and forwards it to the Agent API for authoritative
+resolution. The public deployment does not use this lane.
 
 ```
   Browser (web/, Clerk session)
-        │  fetch sovereign token (Clerk JWT template)
+        │  exchange authenticated session at platform
         ▼
-  Authorization: Bearer <clerk-jwt>
+  Platform /embed/v1/context-tokens/exchange
+        │  opaque mount token
         │
         ▼
-  Sovereign /chat  ──verify──▶ Clerk JWKS (RS256, iss, aud, exp)
+  Sovereign /chat  ──resolve──▶ Platform Agent API
+  Authorization: Bearer <opaque-mount-token>
         │
-        └─ verified actor + role must match the pinned provider mount
+        └─ authoritative actor + tenant + surface + capabilities
 ```
 
-A token cannot elevate the deployment by sending a persona, capability, surface,
-tenant, or actor hint in the body. The pinned mount context is authoritative.
+A token cannot elevate the deployment through persona, capability, surface,
+tenant, or actor hints in the body. Platform resolution is authoritative.
 
 ### What to configure
 
-Create the Clerk JWT template named **`cosmaneura-sovereign`**. Set
-`aud = "cosmaneura-sovereign"` and the template claim to
-`roles: ["{{user.public_metadata.sovereign_role}}"]`. An administrator sets
-`user.public_metadata.sovereign_role = "provider"` only for approved pilot
-users; never stamp a static provider role into every session. Then configure:
+Configure the platform exchange to accept only the reviewed Clerk instance and
+provider-role mapping. An administrator sets provider authority only for
+approved pilot users; never grant it statically to every session. Configure the
+platform-enabled Sovereign deployment as follows:
 
 | Sovereign var | Value | Source |
 |---|---|---|
-| `AUTH_MODE` | `oidc` | — |
-| `OIDC_ISSUER` | your Clerk Frontend API / instance issuer URL | Clerk dashboard |
-| `OIDC_JWKS_URL` | Clerk instance JWKS URL | Clerk dashboard |
-| `OIDC_AUDIENCE` | `cosmaneura-sovereign` | canonical template audience |
-| `OIDC_ALGORITHMS` | `["RS256"]` | Clerk signs RS256 |
-| `AUTH_ROLE_CLAIM` | `roles` | canonical template claim |
-| `AUTH_PROVIDER_ROLE` | `provider` | admin-managed `sovereign_role` value |
+| `AUTH_MODE` | `disabled` | direct browser JWT verification is off |
+| `PLATFORM_AGENT_API_ENABLED` | `true` | enables platform authority |
+| `PLATFORM_AGENT_API_BASE_URL` | exact platform HTTPS origin | environment contract |
+| `PLATFORM_AGENT_API_SCOPE` | exact Agent API Entra scope | environment contract |
+| `PLATFORM_WORKLOAD_CLIENT_ID` | provider UAI client ID | Terraform injection |
 | `ALLOW_PROVIDER_PERSONA` | `false` | legacy body-persona elevation stays disabled |
 
-For the isolated staging rehearsal, the accepted non-secret authority is
-`https://resolved-emu-53.clerk.accounts.dev` and its JWKS URL is
-`https://resolved-emu-53.clerk.accounts.dev/.well-known/jwks.json`. Those
-staging values do not apply to production; production must use its own reviewed
-Clerk instance while preserving the audience/claim/provider values above.
+The staging Clerk issuer and role mapping remain inputs to the platform host's
+exchange boundary, not Sovereign's runtime verifier. A legacy deployment with
+`PLATFORM_AGENT_API_ENABLED=false` may still use direct Clerk OIDC; that lane
+requires `AUTH_MODE=oidc`, exact issuer/JWKS/audience, and a provider-role claim.
 
 The current `Doctor` row carries `clerk_id` but has no canonical organization
-spine. Do not infer a provider role from that row alone. Provision an exact Clerk
-template/claim and verify it against the authenticated, doctor-scoped platform
-request before enabling the host integration.
-
-The interim pinned resolver verifies a generic provider role and fixes the
-tenant from deployment config; it does not prove the Clerk subject belongs to
-that tenant. Restrict template issuance to the one controlled synthetic pilot.
-Do not use this seam for a multi-tenant or real-PHI deployment.
+spine. Do not infer provider authority from that row alone. The platform
+exchange must bind the authenticated Clerk subject to the doctor-scoped pilot
+authority, and Agent API resolution must return the same provider actor and
+tenant for each turn.
 
 ### Clerk checks before activation
 - Verify the host requests `getToken({template: "cosmaneura-sovereign"})`.
@@ -140,9 +136,8 @@ Do not use this seam for a multi-tenant or real-PHI deployment.
   with a different/missing value is denied, and no caller can self-edit that
   metadata. The deploy transaction repeats correct-role and wrong-role checks.
 
-> Token verification is necessary but not sufficient. This rollout is limited
-> to vendor-owned synthetic Athena Preview practice `195900`. The pinned pilot
-> requires no platform mount-context call, but it grants no real-PHI or
+> Token exchange and mount resolution are necessary but not sufficient. This
+> rollout is limited to synthetic traffic; it grants no real-PHI or
 > multi-tenant production authority.
 
 ---
@@ -280,8 +275,9 @@ That is the recorded operational basis for asserting `BAA_ATTESTED=true` only
 on this synthetic Preview staging rehearsal. It is not a legal opinion, proof of
 full HIPAA compliance, or permission to process real PHI. Before real-PHI use,
 the applicable agreement and every PHI-bearing service must be validated for
-this subscription; V7/V8 durable audit, production EHR authorization, counsel
-review, and the remaining production gates below must also be complete.
+this subscription; live proof of platform reporting, production EHR
+authorization, counsel review, and the remaining production gates below must
+also be complete.
 
 ---
 
@@ -290,10 +286,10 @@ review, and the remaining production gates below must also be complete.
 The design's hard invariant — *PHI must never reach Magisterium, NPPES,
 ClinicalTrials.gov, or any non-BAA hop* — translates to a few Azure controls:
 
-- **Audit durability is deferred.** The local sink records value-free pre/post
-  operation events but is not durable across replicas. That V7/V8 limitation
-  must be reported and fixed before claiming production audit durability; it is
-  not a platform dependency for this tightly controlled synthetic Preview pilot.
+- **Platform reporting.** In platform mode Sovereign writes canonical
+  conversation phases, model-usage facts, and closed observations to the Agent
+  API and retains no production file or chain head. External integrity
+  verification and retention assurance remain separate production controls.
 - **Separate Log Analytics.** The main environment's Log Analytics isn't under a
   HIPAA retention policy; give the Sovereign environment its own workspace so PHI-
   adjacent operational logs aren't commingled.
@@ -311,19 +307,19 @@ ClinicalTrials.gov, or any non-BAA hop* — translates to a few Azure controls:
 
 ## 7. Remaining production gates
 
-1. Provision and verify the exact Clerk JWT template, audience, and provider
-   claim; run positive and wrong-role real-token smokes. Restrict the pilot
-   template to the controlled synthetic tenant.
+1. Verify the exact Clerk instance and provider authority at the platform
+   exchange; run positive and wrong-role real-token smokes. Restrict the pilot
+   authority to the controlled synthetic tenant.
 2. Provision the authoritative host-open synthetic Preview record mapping and
    actor-bound, 60-second record-grant issuer.
-   Platform Agent API mode is not used by these pinned deployments.
+   Keep the labs capability absent during the first platform activation.
 3. For future production claims, choose and ratify the centralized audit
    ledger's external integrity anchor and retention duration. Container logs
    and local JSONL are not substitutes.
 4. Seed both Key Vaults, establish immutable baseline revisions, and keep the
    deployment kill switch off until paired rollback is exercised.
-5. Real-PHI/multi-tenant EHR authorization and Agent API wrapper mapping remain
-   future work and are not part of this Preview-only deployment.
+5. Real-PHI/multi-tenant EHR authorization remains future work and is not part
+   of this Preview-only deployment.
 
 ---
 

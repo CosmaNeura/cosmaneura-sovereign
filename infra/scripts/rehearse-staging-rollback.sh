@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
-# Run both live smokes on a second staging digest, intentionally fail only
-# afterward, prove deploy-dual restored both prior revisions, and retain a
-# secret-free JSON evidence record.
+# Run the enabled live smokes on a second staging digest, intentionally fail
+# only afterward, prove deploy-dual restored both prior revisions, and retain
+# a secret-free JSON evidence record.
 set -euo pipefail
 umask 077
 
 : "${IMAGE_REF:?IMAGE_REF is required}"
 : "${REVISION_SUFFIX:?REVISION_SUFFIX is required}"
 : "${REHEARSAL_EVIDENCE_PATH:?REHEARSAL_EVIDENCE_PATH is required}"
-: "${SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED:?SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED is required}"
+: "${SOVEREIGN_PLATFORM_URL:?SOVEREIGN_PLATFORM_URL is required}"
+
+SOVEREIGN_RUN_LABS_SMOKE="${SOVEREIGN_RUN_LABS_SMOKE:-false}"
+if [[ "$SOVEREIGN_RUN_LABS_SMOKE" == "true" ]]; then
+  : "${SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED:?SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED is required}"
+  : "${SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF:?SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF is required}"
+elif [[ "$SOVEREIGN_RUN_LABS_SMOKE" != "false" ]]; then
+  echo "SOVEREIGN_RUN_LABS_SMOKE must be true or false" >&2
+  exit 2
+fi
 
 # Keep smoke credentials out of every command invoked by this wrapper.
 provider_smoke_token="${SOVEREIGN_PROVIDER_TOKEN:-}"
@@ -126,6 +135,9 @@ set +e
 SOVEREIGN_PROVIDER_TOKEN="$provider_smoke_token" \
 SOVEREIGN_NON_PROVIDER_TOKEN="$non_provider_smoke_token" \
 SOVEREIGN_SYNTHETIC_RECORD_GRANT="$record_smoke_grant" \
+SOVEREIGN_PLATFORM_URL="$SOVEREIGN_PLATFORM_URL" \
+SOVEREIGN_RUN_LABS_SMOKE="$SOVEREIGN_RUN_LABS_SMOKE" \
+SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF="${SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF:-}" \
 SOVEREIGN_REHEARSAL_FORCE_ROLLBACK=true \
 DEPLOYMENT_ENVIRONMENT="$DEPLOYMENT_ENVIRONMENT" \
 RESOURCE_GROUP="$RESOURCE_GROUP" \

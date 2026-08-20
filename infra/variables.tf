@@ -109,6 +109,10 @@ variable "sovereign_public_vars" {
     # auth (bound to Clerk via OIDC — see ../DEPLOY_AZURE.md §2)
     "AUTH_MODE", "OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS_URL",
     "OIDC_ALGORITHMS", "AUTH_ROLE_CLAIM", "AUTH_PROVIDER_ROLE",
+    # Provider-first platform authority + observational audit. The UAI
+    # client ID is injected directly from Terraform, never operator supplied.
+    "PLATFORM_AGENT_API_ENABLED", "PLATFORM_AGENT_API_BASE_URL",
+    "PLATFORM_AGENT_API_SCOPE",
     # compliance gates
     "ALLOW_PROVIDER_PERSONA", "BAA_ATTESTED",
     # clinical de-id; the endpoint is derived in deid.tf, never operator input
@@ -123,7 +127,7 @@ variable "sovereign_public_vars" {
     # Synthetic lab pilot; startup pins these to Preview practice 195900.
     "FEATURE_ATHENA_LABS", "ATHENA_ENV", "ATHENA_PRACTICE_ID",
     "ATHENA_DEPARTMENT_ID", "LABS_ALLOW_PATIENT_SEARCH",
-    # audit + web
+    # value-free operational breadcrumbs + web; durable audit is platform-owned
     "AUDIT_SINK", "AUDIT_PATH", "CORS_ALLOW_ORIGINS",
   ]
 }

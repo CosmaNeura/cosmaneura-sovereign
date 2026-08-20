@@ -75,13 +75,13 @@ PYTHONPATH=. python -m pytest tests/ -q   # como corre CI (pytest, no el target 
 
 - **Entrypoint:** `app/main.py` → singleton `Sovereign` en `app/sovereign/orchestrator.py`.
 - **Pipeline (`Sovereign.handle`):** check de emergencia (corta a 911/988 antes de cualquier gate
-  de auth) → resolución de persona (el principal JWT verificado sobreescribe la persona del body)
-  → gate de seguridad (provider/PHI requiere identidad verificada o el switch dev
-  `allow_provider_persona` + `baa_attested`) → ruteo (intent + tier de sensibilidad doctrinal;
+  de auth) → resolución de mount (Agent API en modo plataforma; JWT verificado solo en modo
+  legacy) → gate de seguridad (provider/PHI requiere actor/capabilities resueltos y
+  `baa_attested`) → persistencia canónica de `user_accepted` → ruteo (intent + tier doctrinal;
   ETHICS_CONSULT fuerza tier HIGH siempre) → dispatch (DOCTRINAL → Magisterium directo;
   REFERRAL/CONCIERGE/ENGAGEMENT/ETHICS_CONSULT/VISIT_PREP/PLAN_WORKBENCH/LAB_REVIEW → agente; SMALL_TALK →
   LLM) → arbitraje doctrinal por Magisterium sobre una copia **con PHI removido** → disclaimer de
-  seguridad → auditoría con hash de contenido → egress.
+  seguridad → persistencia canónica de `final_response` → auditoría/uso de modelo en plataforma → egress.
 - **La frontera de PHI es central:** `ComplianceProfile.phi_boundary_enforced` significa que los
   identificadores se de-identifican antes de que cualquier llamada salga de la frontera cubierta
   por BAA (Magisterium, ClinicalTrials.gov, NPPES). Magisterium NO es business associate: solo ve

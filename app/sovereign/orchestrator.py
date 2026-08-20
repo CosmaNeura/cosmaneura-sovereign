@@ -25,6 +25,8 @@ it is shown to Magisterium, because Magisterium is not a business associate.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 import uuid
 from datetime import date, timedelta
@@ -40,6 +42,27 @@ from app.agents.plan_workbench_agent import PlanWorkbenchAgent
 from app.agents.referral_agent import ReferralAgent
 from app.agents.visit_prep_agent import VisitPrepAgent
 from app.clients.llm import LLMClient
+from app.clients.platform_audit import (
+    AuditDeliveryError,
+    AuditTurn,
+    ManagedIdentityTokenProvider,
+    ObservationStatus,
+    PlatformAuditClient,
+    PlatformReference,
+)
+from app.clients.platform_conversation import (
+    ConversationDeliveryError,
+    ConversationReceipt,
+    PlatformConversationClient,
+    PlatformTurn,
+)
+from app.clients.platform_usage import (
+    PlatformUsageClient,
+    activate_usage_context,
+    deactivate_usage_context,
+    successful_usage_refs,
+    usage_reporting_complete,
+)
 from app.clients.labs import (
     LabsCategory,
     LabsPurpose,
@@ -54,11 +77,16 @@ from app.compliance.audit import AuditLogger
 from app.compliance.baa import require_baa_covered_llm
 from app.compliance.phi import deidentify
 from app.config import ComplianceProfile, Persona, Settings, get_settings
-from app.schemas import (ChatRequest, ChatResponse, Citation, DigestRequest,
-                         DigestResponse, DoctrinalSensitivity, Intent)
+from app.schemas import (ALL_PRESENTATION_SUPPRESSIONS, ChatRequest,
+                         ChatResponse, Citation, CompassionateSafetyFallback,
+                         DigestRequest, DigestResponse, DoctrinalSensitivity,
+                         EmergencyPresentation, Intent,
+                         SensitiveDisclosurePresentation,
+                         StandardPresentation)
 from app.security.auth import Principal
 from app.security.mount import (MountResolveRequest, MountResolver,
-                                MountResolutionError, PinnedResolver)
+                                MountResolutionError, PinnedResolver,
+                                PlatformResolver)
 from app.security.record_grant import (
     RecordGrantConfigurationError,
     RecordGrantRejected,
@@ -83,6 +111,26 @@ INTENT_CAPABILITIES: dict[Intent, str] = {
     Intent.DOCTRINAL: "values:answer",
     Intent.SMALL_TALK: "education:answer",
 }
+
+
+def _sensitive_presentation() -> SensitiveDisclosurePresentation:
+    """Return the closed, governed presentation for humane disclosure UI."""
+    return SensitiveDisclosurePresentation(
+        mode="sensitive_disclosure",
+        suppress=list(ALL_PRESENTATION_SUPPRESSIONS),
+        human_contact=sensitive_disclosure.SENSITIVE_HUMAN_CONTACT_ACTION,
+    )
+
+
+def _sensitive_fallback(
+    stage: str,
+) -> CompassionateSafetyFallback:
+    """Build the only permitted non-problem content on sensitive 503s."""
+    return CompassionateSafetyFallback(
+        failure_stage=stage,
+        answer=sensitive_disclosure.SENSITIVE_SAFETY_FALLBACK_RESPONSE,
+        presentation=_sensitive_presentation(),
+    )
 
 # Authority-shaped values are transport/server concerns. Hosts may still send
 # them during migration, but they are discarded before any router, model, or
@@ -158,6 +206,8 @@ _AFFIRMATIVE_OR_DIRECTIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 
 def _value_safe_lab_review_projection(answer: str, structured: dict) -> str:
     """Project the actual draft into a provably value-free policy posture.
@@ -217,14 +267,60 @@ def _without_authority_metadata(metadata: dict) -> dict:
 
 class Sovereign:
     def __init__(self, settings: Optional[Settings] = None, *,
-                 mount_resolver: Optional[MountResolver] = None):
+                 mount_resolver: Optional[MountResolver] = None,
+                 platform_audit_client: Optional[PlatformAuditClient] = None,
+                 platform_conversation_client: Optional[
+                     PlatformConversationClient
+                 ] = None,
+                 platform_usage_client: Optional[PlatformUsageClient] = None):
         self.s = settings or get_settings()
         self.llm = LLMClient(self.s)
         self.magisterium = MagisteriumClient(self.s)
         self.router = Router(self.s, self.llm, self.magisterium)
         self.arbiter = DoctrinalArbiter(self.s, magisterium=self.magisterium, llm=self.llm)
         self.audit = AuditLogger(self.s)
-        self.mount_resolver = mount_resolver or PinnedResolver.from_settings(self.s)
+        if self.s.platform_agent_api_enabled:
+            token_provider = (
+                ManagedIdentityTokenProvider(
+                    client_id=self.s.platform_workload_client_id or "",
+                    scope=self.s.platform_agent_api_scope or "",
+                )
+                if (
+                    mount_resolver is None
+                    or platform_audit_client is None
+                    or platform_conversation_client is None
+                    or platform_usage_client is None
+                )
+                else None
+            )
+            self.mount_resolver = mount_resolver or PlatformResolver(
+                platform_base_url=self.s.platform_agent_api_base_url or "",
+                workload_token_provider=token_provider,  # type: ignore[arg-type]
+                timeout_seconds=self.s.request_timeout_seconds,
+            )
+            self.platform_audit = platform_audit_client or PlatformAuditClient(
+                platform_base_url=self.s.platform_agent_api_base_url or "",
+                workload_token_provider=token_provider,  # type: ignore[arg-type]
+                timeout_seconds=self.s.platform_write_timeout_seconds,
+            )
+            self.platform_conversation = (
+                platform_conversation_client
+                or PlatformConversationClient(
+                    platform_base_url=self.s.platform_agent_api_base_url or "",
+                    workload_token_provider=token_provider,  # type: ignore[arg-type]
+                    timeout_seconds=self.s.platform_write_timeout_seconds,
+                )
+            )
+            self.platform_usage = platform_usage_client or PlatformUsageClient(
+                platform_base_url=self.s.platform_agent_api_base_url or "",
+                workload_token_provider=token_provider,  # type: ignore[arg-type]
+                timeout_seconds=self.s.platform_write_timeout_seconds,
+            )
+        else:
+            self.mount_resolver = mount_resolver or PinnedResolver.from_settings(self.s)
+            self.platform_audit = platform_audit_client
+            self.platform_conversation = platform_conversation_client
+            self.platform_usage = platform_usage_client
         self.agents = {
             Intent.REFERRAL: ReferralAgent(self.s, self.llm),
             Intent.CONCIERGE: ConciergeAgent(self.s, self.llm),
@@ -235,6 +331,26 @@ class Sovereign:
             Intent.LAB_REVIEW: LabReviewAgent(self.s, self.llm),
         }
 
+    async def resolve_mount_context(
+        self,
+        *,
+        mount_context_token: Optional[str],
+        client_turn_id: uuid.UUID,
+        principal: Optional[Principal] = None,
+    ):
+        """Resolve a protected bootstrap without model, tool, or content work."""
+        trace_id = uuid.uuid4().hex
+        return await self.mount_resolver.resolve(MountResolveRequest(
+            client_turn_id=client_turn_id,
+            trace_id=trace_id,
+            mount_context_token=mount_context_token,
+            verified_actor_id=principal.subject if principal is not None else None,
+            verified_actor_is_provider=(
+                principal is not None
+                and self.s.auth_provider_role in principal.roles
+            ),
+        ))
+
     async def handle(
         self,
         request: ChatRequest,
@@ -243,10 +359,13 @@ class Sovereign:
         mount_context_token: Optional[str] = None,
         client_turn_id: Optional[uuid.UUID] = None,
     ) -> ChatResponse:
+        # Each top-level request gets an isolated model-call sequence. Clearing
+        # first also prevents a caught prior-request failure in the same task
+        # from donating lineage to a later request.
+        deactivate_usage_context()
         # Fresh transport correlation only; session_id is business/display
         # state and must never become the platform trace identifier.
         trace_id = uuid.uuid4().hex
-        turn_id = client_turn_id or uuid.uuid4()
 
         # 0) Safety first -- BEFORE any security gate. A person describing an
         # emergency must get emergency guidance even if their request would
@@ -257,8 +376,20 @@ class Sovereign:
             self.audit.record(trace_id=trace_id, profile=profile, event="emergency_shortcircuit")
             return ChatResponse(
                 answer=safety.EMERGENCY_MESSAGE, intent=Intent.EMERGENCY,
-                persona=profile.persona, safety_notice="emergency", trace_id=trace_id,
+                persona=profile.persona, citations=[], doctrinal_review=None,
+                structured={}, safety_notice="emergency", trace_id=trace_id,
+                presentation=EmergencyPresentation(
+                    mode="emergency", suppress=[], human_contact=None,
+                ),
             )
+
+        if self.s.platform_agent_api_enabled and client_turn_id is None:
+            raise MountResolutionError(
+                status_code=400,
+                code="CLIENT_TURN_REQUIRED",
+                retryable=False,
+            )
+        turn_id = client_turn_id or uuid.uuid4()
 
         # 1) Resolve the sole authority axis. A Principal can contribute an
         # authenticated actor identifier; its persona/roles cannot select a
@@ -276,30 +407,140 @@ class Sovereign:
         ))
         trace_id = resolution.trace_id
         mount = resolution.context
+        if (
+            self.s.platform_agent_api_enabled
+            and mount.surface != "provider_assistant"
+        ):
+            raise MountResolutionError(
+                status_code=403,
+                code="MOUNT_SURFACE_MISMATCH",
+                retryable=False,
+            )
         if mount.auth_tier == "provider" and mount.actor_id is None:
             raise MountResolutionError(
                 status_code=401, code="VERIFIED_ACTOR_REQUIRED", retryable=False,
             )
+        if self.s.platform_agent_api_enabled and "ehr:labs:read" in mount.capabilities:
+            # Initial platform activation is intentionally feature-limited.
+            # Preserve the ratified labs implementation for a later switch,
+            # but never honor an accidentally over-broad capability today.
+            mount = mount.model_copy(update={
+                "capabilities": tuple(
+                    value for value in mount.capabilities
+                    if value != "ehr:labs:read"
+                ),
+            })
         effective_persona = mount.persona_hint
         profile = ComplianceProfile(effective_persona)
+        sensitive_mode = (
+            effective_persona == Persona.PATIENT
+            and sensitive_disclosure.detect_sensitive_disclosure(request.message)
+        )
+        platform_turn: Optional[PlatformTurn] = None
+        user_receipt: Optional[ConversationReceipt] = None
+        audit_turn: Optional[AuditTurn] = None
+        if self.s.platform_agent_api_enabled:
+            if (
+                self.platform_conversation is None
+                or self.platform_audit is None
+                or resolution.interaction_ref is None
+                or mount_context_token is None
+            ):
+                raise MountResolutionError(
+                    status_code=503,
+                    code="PLATFORM_PERSISTENCE_UNAVAILABLE",
+                    retryable=True,
+                )
+            try:
+                platform_turn = PlatformTurn(
+                    interaction_ref=resolution.interaction_ref,
+                    client_turn_id=resolution.client_turn_id,
+                    trace_id=trace_id,
+                    mount_context_token=mount_context_token,
+                )
+                user_receipt = await self.platform_conversation.write_user_accepted(
+                    turn=platform_turn,
+                    message=request.message,
+                )
+                if user_receipt.replayed:
+                    # A prior top-level request already crossed canonical
+                    # acceptance. V1 has no ratified turn-status/final-response
+                    # read, so neither rerun model/tool work nor synthesize a
+                    # final phase. Platform reconciliation owns the visibly
+                    # incomplete lineage; the host keeps this UUID and draft.
+                    raise MountResolutionError(
+                        status_code=503,
+                        code="CANONICAL_TURN_INCOMPLETE",
+                        retryable=False,
+                    )
+                audit_turn = AuditTurn(
+                    interaction_ref=resolution.interaction_ref,
+                    client_turn_id=resolution.client_turn_id,
+                    trace_id=trace_id,
+                    observed_at=user_receipt.recorded_at,
+                    conversation_turn_ref=user_receipt.turn_ref,
+                    mount_context_token=mount_context_token,
+                )
+                if self.platform_usage is None:
+                    raise ValueError("platform usage writer is unavailable")
+                activate_usage_context(
+                    turn=platform_turn,
+                    client=self.platform_usage,
+                )
+            except MountResolutionError:
+                raise
+            except ConversationDeliveryError as error:
+                raise self._delivery_mount_error(
+                    error=error,
+                    owner="conversation",
+                    trace_id=trace_id,
+                    safety_fallback=(
+                        _sensitive_fallback("user_accepted")
+                        if sensitive_mode else None
+                    ),
+                ) from None
+            except ValueError:
+                error = ConversationDeliveryError("schema", retryable=False)
+                raise self._delivery_mount_error(
+                    error=error,
+                    owner="conversation",
+                    trace_id=trace_id,
+                    safety_fallback=(
+                        _sensitive_fallback("user_accepted")
+                        if sensitive_mode else None
+                    ),
+                ) from None
+            except Exception:
+                error = ConversationDeliveryError("unavailable", retryable=False)
+                raise self._delivery_mount_error(
+                    error=error,
+                    owner="conversation",
+                    trace_id=trace_id,
+                    safety_fallback=(
+                        _sensitive_fallback("user_accepted")
+                        if sensitive_mode else None
+                    ),
+                ) from None
 
         # A non-acute sensitive disclosure is a deterministic patient-mode
         # response. The mount-derived persona, never the request body, decides
         # whether this patient path exists. Resolve authority first, but do not
         # route, call a model or agent, or send the disclosure to arbitration.
-        if (effective_persona == Persona.PATIENT
-                and sensitive_disclosure.detect_sensitive_disclosure(request.message)):
+        if sensitive_mode:
             self.audit.record(
                 trace_id=trace_id,
                 profile=profile,
                 event="sensitive_disclosure",
                 details={"intent": Intent.SENSITIVE_DISCLOSURE.value},
             )
-            return self._finalize(
+            return await self._finalize(
                 sensitive_disclosure.SENSITIVE_DISCLOSURE_RESPONSE,
                 Intent.SENSITIVE_DISCLOSURE,
                 profile,
                 trace_id,
+                audit_turn=audit_turn,
+                platform_turn=platform_turn,
+                user_receipt=user_receipt,
                 sensitive_mode=True,
             )
 
@@ -360,11 +601,14 @@ class Sovereign:
                 details={"intent": intent.value,
                          "required": required_capability or "unmapped"},
             )
-            return self._finalize(
+            return await self._finalize(
                 "That request isn't available on this assistant surface.",
                 intent,
                 profile,
                 trace_id,
+                audit_turn=audit_turn,
+                platform_turn=platform_turn,
+                user_receipt=user_receipt,
                 safety_notice="capability_denied",
             )
 
@@ -373,7 +617,10 @@ class Sovereign:
             # Magisterium answers directly; scrub the question first (non-BAA).
             verdict = await self.arbiter.answer_doctrinal(deidentify(request.message).text)
             answer = verdict.revised_content or verdict.rationale
-            return self._finalize(answer, intent, profile, trace_id,
+            return await self._finalize(answer, intent, profile, trace_id,
+                                  audit_turn=audit_turn,
+                                  platform_turn=platform_turn,
+                                  user_receipt=user_receipt,
                                   citations=verdict.citations, doctrinal=verdict)
 
         if intent == Intent.SMALL_TALK:
@@ -383,25 +630,42 @@ class Sovereign:
                         "explain a condition, or explore options."),
                 prompt=request.message, max_tokens=300,
             )
-            return self._finalize(answer, intent, profile, trace_id)
+            return await self._finalize(
+                answer, intent, profile, trace_id, audit_turn=audit_turn,
+                platform_turn=platform_turn, user_receipt=user_receipt,
+            )
 
         agent = self.agents.get(intent)
         if agent is None:
             self.audit.record(trace_id=trace_id, profile=profile,
                               event="dispatch_denied",
                               details={"intent": intent.value})
-            return self._finalize(
+            return await self._finalize(
                 "That request isn't available on this assistant surface.",
                 intent,
                 profile,
                 trace_id,
+                audit_turn=audit_turn,
+                platform_turn=platform_turn,
+                user_receipt=user_receipt,
                 safety_notice="capability_denied",
             )
         if intent == Intent.LAB_REVIEW:
             labs_request = None
             labs_access = None
             record_value = None
-            if isinstance(host_record_grant, str) and principal is not None:
+            lab_source_started = False
+
+            def mark_lab_source_started() -> None:
+                nonlocal lab_source_started
+                lab_source_started = True
+
+            grant_actor_ref = (
+                mount.actor_id
+                if self.s.platform_agent_api_enabled
+                else principal.subject if principal is not None else None
+            )
+            if isinstance(host_record_grant, str) and grant_actor_ref is not None:
                 try:
                     grant_key = configured_record_grant_key(
                         self.s.sovereign_record_grant_secret.get_secret_value()
@@ -411,7 +675,7 @@ class Sovereign:
                     verified_grant = verify_record_grant(
                         host_record_grant,
                         key=grant_key,
-                        expected_actor_ref=principal.subject,
+                        expected_actor_ref=grant_actor_ref,
                     )
                 except RecordGrantConfigurationError:
                     self.audit.record(
@@ -470,13 +734,67 @@ class Sovereign:
                         profile=profile,
                         audit=self.audit,
                         record_scope_source="platform_signed_open_record",
+                        on_source_attempt=mark_lab_source_started,
                     )
-            result = await agent.run(
-                request,
-                profile,
-                labs_request=labs_request,
-                labs_access=labs_access,
+            try:
+                result = await agent.run(
+                    request,
+                    profile,
+                    labs_request=labs_request,
+                    labs_access=labs_access,
+                )
+            except asyncio.CancelledError:
+                if lab_source_started:
+                    await self._write_platform_observation(
+                        audit_turn=audit_turn,
+                        event_type="sovereign.ehr_labs_read.failed",
+                        status="failed",
+                        route=Intent.LAB_REVIEW.value,
+                        intent=Intent.LAB_REVIEW.value,
+                        content=None,
+                        required=True,
+                    )
+                raise
+            except Exception:
+                if lab_source_started:
+                    await self._write_platform_observation(
+                        audit_turn=audit_turn,
+                        event_type="sovereign.ehr_labs_read.failed",
+                        status="failed",
+                        route=Intent.LAB_REVIEW.value,
+                        intent=Intent.LAB_REVIEW.value,
+                        content=None,
+                        required=True,
+                    )
+                raise MountResolutionError(
+                    status_code=503,
+                    code="LABS_READ_UNAVAILABLE",
+                    retryable=False,
+                ) from None
+            lab_read_completed = (
+                result.data.get("tier") == LabsTier.SANDBOX.value
+                and isinstance(result.data.get("access"), dict)
             )
+            if lab_source_started and lab_read_completed:
+                await self._write_platform_observation(
+                    audit_turn=audit_turn,
+                    event_type="sovereign.ehr_labs_read.completed",
+                    status="completed",
+                    route=Intent.LAB_REVIEW.value,
+                    intent=Intent.LAB_REVIEW.value,
+                    content=None,
+                    required=True,
+                )
+            elif lab_source_started:
+                await self._write_platform_observation(
+                    audit_turn=audit_turn,
+                    event_type="sovereign.ehr_labs_read.failed",
+                    status="failed",
+                    route=Intent.LAB_REVIEW.value,
+                    intent=Intent.LAB_REVIEW.value,
+                    content=None,
+                    required=True,
+                )
         else:
             result = await agent.run(request, profile)
         self.audit.record(trace_id=trace_id, profile=profile, event="agent_complete",
@@ -530,7 +848,11 @@ class Sovereign:
                 )
 
         citations = list(result.citations) + list(verdict.citations)
-        return self._finalize(answer, intent, profile, trace_id, citations=citations,
+        return await self._finalize(answer, intent, profile, trace_id,
+                              audit_turn=audit_turn,
+                              platform_turn=platform_turn,
+                              user_receipt=user_receipt,
+                              citations=citations,
                               doctrinal=verdict, structured=result.data)
 
     # ------------------------------------------------------------------
@@ -559,6 +881,16 @@ class Sovereign:
         mount_context_token: Optional[str] = None,
         client_turn_id: Optional[uuid.UUID] = None,
     ) -> DigestResponse:
+        deactivate_usage_context()
+        if self.s.platform_agent_api_enabled:
+            # Provider-first platform mounts deliberately omit this capability.
+            # Refuse before resolving a mount so no orphan interaction lineage
+            # or unpersisted model call can be created.
+            raise MountResolutionError(
+                status_code=503,
+                code="JOURNEY_DIGEST_UNAVAILABLE",
+                retryable=False,
+            )
         trace_id = uuid.uuid4().hex
         resolution = await self.mount_resolver.resolve(MountResolveRequest(
             client_turn_id=client_turn_id or uuid.uuid4(),
@@ -602,25 +934,211 @@ class Sovereign:
                           content_for_hash=text)
         return DigestResponse(digest=text, trace_id=trace_id)
 
+    async def _write_platform_observation(
+        self,
+        *,
+        audit_turn: Optional[AuditTurn],
+        event_type: str,
+        status: ObservationStatus,
+        route: Optional[str],
+        intent: Optional[str],
+        content: Optional[str],
+        required: bool,
+        platform_refs: tuple[PlatformReference, ...] = (),
+    ) -> None:
+        if audit_turn is None or self.platform_audit is None:
+            if required and self.s.platform_agent_api_enabled:
+                raise MountResolutionError(
+                    status_code=503,
+                    code="PLATFORM_AUDIT_UNAVAILABLE",
+                    retryable=True,
+                )
+            return
+        try:
+            observation = audit_turn.observation(
+                event_type=event_type,
+                status=status,
+                route=route,
+                intent=intent,
+                content=content,
+                platform_refs=(
+                    PlatformReference(
+                        kind="conversation_turn",
+                        ref=audit_turn.conversation_turn_ref,
+                    ),
+                    *platform_refs,
+                ),
+            )
+        except (TypeError, ValueError, ValidationError):
+            error = AuditDeliveryError("schema", retryable=False)
+            if required:
+                raise self._delivery_mount_error(
+                    error=error,
+                    owner="audit",
+                    trace_id=audit_turn.trace_id,
+                ) from None
+            _LOGGER.warning(
+                "platform observational audit remains pending",
+                extra={
+                    "trace_id": audit_turn.trace_id,
+                    "category": error.category,
+                    "retryable": error.retryable,
+                },
+            )
+            return
+        try:
+            await self.platform_audit.write(
+                turn=audit_turn,
+                observation=observation,
+            )
+        except AuditDeliveryError as error:
+            if required:
+                raise self._delivery_mount_error(
+                    error=error,
+                    owner="audit",
+                    trace_id=audit_turn.trace_id,
+                ) from None
+            _LOGGER.warning(
+                "platform observational audit remains pending",
+                extra={
+                    "trace_id": audit_turn.trace_id,
+                    "category": error.category,
+                    "retryable": error.retryable,
+                },
+            )
+        except Exception:
+            error = AuditDeliveryError("unavailable", retryable=False)
+            if required:
+                raise self._delivery_mount_error(
+                    error=error,
+                    owner="audit",
+                    trace_id=audit_turn.trace_id,
+                ) from None
+            _LOGGER.warning(
+                "platform observational audit remains pending",
+                extra={
+                    "trace_id": audit_turn.trace_id,
+                    "category": error.category,
+                    "retryable": error.retryable,
+                },
+            )
+
+    @staticmethod
+    def _delivery_mount_error(
+        *,
+        error: ConversationDeliveryError | AuditDeliveryError,
+        owner: str,
+        trace_id: str,
+        safety_fallback: Optional[CompassionateSafetyFallback] = None,
+    ) -> MountResolutionError:
+        """Map a value-free platform category without logging body or token."""
+        _LOGGER.warning(
+            "platform delivery failed",
+            extra={
+                "trace_id": trace_id,
+                "owner": owner,
+                "category": error.category,
+                "retryable": error.retryable,
+            },
+        )
+        prefix = "CANONICAL_TURN" if owner == "conversation" else "PLATFORM_AUDIT"
+        status_code = 409 if error.category == "conflict" else 503
+        fallback = safety_fallback if status_code == 503 else None
+        return MountResolutionError(
+            status_code=status_code,
+            code=f"{prefix}_{error.category.upper()}",
+            retryable=(error.retryable and fallback is None),
+            safety_fallback=fallback,
+        )
+
     # ------------------------------------------------------------------
-    def _finalize(
+    async def _finalize(
         self, answer: str, intent: Intent, profile: ComplianceProfile, trace_id: str,
         *, citations: Optional[list[Citation]] = None, doctrinal=None,
         structured: Optional[dict] = None, safety_notice: Optional[str] = None,
-        sensitive_mode: bool = False,
+        sensitive_mode: bool = False, audit_turn: Optional[AuditTurn] = None,
+        platform_turn: Optional[PlatformTurn] = None,
+        user_receipt: Optional[ConversationReceipt] = None,
     ) -> ChatResponse:
         if sensitive_mode and intent != Intent.SENSITIVE_DISCLOSURE:
             raise ValueError("sensitive mode requires sensitive-disclosure intent")
         if sensitive_mode:
             final = answer
+            presentation = _sensitive_presentation()
         else:
             disclaimer = safety.disclaimer_for(profile.persona)
             final = f"{answer}\n\n— {disclaimer}"
+            presentation = StandardPresentation(
+                mode="standard", suppress=[], human_contact=None,
+            )
+        if platform_turn is not None:
+            if self.platform_conversation is None or user_receipt is None:
+                raise MountResolutionError(
+                    status_code=503,
+                    code="CANONICAL_TURN_UNAVAILABLE",
+                    retryable=True,
+                )
+            outcome = "refused" if safety_notice == "capability_denied" else "completed"
+            try:
+                await self.platform_conversation.write_final_response(
+                    turn=platform_turn,
+                    expected_turn_ref=user_receipt.turn_ref,
+                    answer=final,
+                    outcome=outcome,
+                    presentation=presentation.model_dump(mode="json"),
+                )
+            except ConversationDeliveryError as error:
+                deactivate_usage_context()
+                raise self._delivery_mount_error(
+                    error=error,
+                    owner="conversation",
+                    trace_id=trace_id,
+                    safety_fallback=(
+                        _sensitive_fallback("final_response")
+                        if sensitive_mode else None
+                    ),
+                ) from None
+            except Exception:
+                deactivate_usage_context()
+                error = ConversationDeliveryError("unavailable", retryable=False)
+                raise self._delivery_mount_error(
+                    error=error,
+                    owner="conversation",
+                    trace_id=trace_id,
+                    safety_fallback=(
+                        _sensitive_fallback("final_response")
+                        if sensitive_mode else None
+                    ),
+                ) from None
         self.audit.record(trace_id=trace_id, profile=profile, event="egress",
                           content_for_hash=final)
+        status = "refused" if safety_notice == "capability_denied" else "completed"
+        usage_refs = tuple(
+            PlatformReference(kind="model_usage", ref=reference)
+            for reference in successful_usage_refs()
+        )
+        usage_complete = usage_reporting_complete()
+        deactivate_usage_context()
+        if usage_complete:
+            await self._write_platform_observation(
+                audit_turn=audit_turn,
+                event_type=f"sovereign.turn.{status}",
+                status=status,
+                route=intent.value,
+                intent=intent.value,
+                content=final,
+                required=False,
+                platform_refs=usage_refs,
+            )
+        elif audit_turn is not None:
+            _LOGGER.warning(
+                "terminal observation pending with model usage",
+                extra={"trace_id": audit_turn.trace_id},
+            )
         return ChatResponse(
             answer=final, intent=intent, persona=profile.persona,
             citations=citations or [], doctrinal_review=doctrinal,
             structured=structured or {}, safety_notice=safety_notice,
             trace_id=trace_id,
+            presentation=presentation,
         )

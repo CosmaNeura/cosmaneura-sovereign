@@ -25,7 +25,7 @@ PHI posture:
 Why not the bundle's chat loop: it drives its own OpenAI function-calling
 conversation with its own system prompt. Run inside this service that would
 bypass the doctrinal arbitration gate, the PHI de-identification boundary and
-the audit chain — the three things the Sovereign exists to guarantee. The
+the governed audit record — the three things the Sovereign exists to guarantee. The
 capability is therefore a routed lane like every other.
 """
 from __future__ import annotations

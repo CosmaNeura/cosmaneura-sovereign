@@ -44,8 +44,8 @@ staging deployment. It is not a finding that CosmaNeura is HIPAA compliant and
 does not authorize real PHI. The retained agreement's applicability to the exact
 subscription and each PHI-bearing Azure service has not been independently
 validated in this repository. Real-PHI use still requires that validation,
-V7/V8 durable audit, production EHR authorization, counsel review, and every
-other production control in this handoff.
+live proof of the platform reporting path, production EHR authorization,
+counsel review, and every other production control in this handoff.
 
 ### Alternative inference paths
 
@@ -116,12 +116,14 @@ and must be upgraded:
 - [ ] **De-identification.** `compliance/phi.py` is a regex baseline. Replace with
       validated clinical de-id — **AWS Comprehend Medical**, **Microsoft Presidio**,
       or **Philter** — plus human review. Do not rely on the regex for real PHI.
-- [ ] **Audit store.** `compliance/audit.py` hashes content (never stores raw) and
-      writes to stdout/file. Point it at an **append-only / WORM** store with a
-      retention policy (≥6 years is the usual HIPAA expectation; confirm with counsel).
-- [ ] **Persona binding.** Today `persona` comes from the request body. Bind it to
-      **authenticated identity** (e.g. a provider JWT) so a patient session can't
-      claim the provider/PHI path.
+- [ ] **Audit retention and integrity.** The provider mount sends closed observations
+      and model-usage facts to the platform ledger. Ratify the exact operational
+      retention with counsel; do not assume every audit row has a six-year
+      retention period. Global ordering and independently verified integrity
+      remain separate production work before stronger integrity assurances.
+- [ ] **Authority binding.** Keep the platform exchange, actor-bound mount
+      resolution, and capability registry fail-closed so a body persona can
+      never claim the provider/PHI path.
 - [ ] **Resilience.** Add rate-limiting, retries/backoff on the upstream APIs, and
       observability (structured logs, metrics, tracing).
 - [ ] **Secrets.** Move keys into a managed secrets store; never commit `.env`.
@@ -147,8 +149,10 @@ A code-level security pass was run. These are now implemented:
 - **Provider-persona kill switch.** `ALLOW_PROVIDER_PERSONA` defaults **false**;
   a body-supplied `persona=provider` is rejected before any PHI is accepted.
   (This is a stopgap — still bind persona to authenticated identity, above.)
-- **Audit integrity.** Audit records are now hash-chained (tamper-evident) and
-  the file sink is created `0600`. Still pair with a WORM store in production.
+- **Audit boundary.** The provider mount uses the platform as durable system of record;
+  Sovereign retains no production file or chain head in that mode. The legacy
+  `0600` file chain is offline/dev compatibility only and provides no
+  cross-restart or cross-replica integrity assurance.
 - **HTTP headers / CORS.** Security headers added; CORS denies cross-origin by
   default (`CORS_ALLOW_ORIGINS` opt-in; never `*`).
 - **Dependency pinning.** `requirements.txt` uses compatible-release pins.
@@ -189,7 +193,10 @@ A second pass focused on what the first missed. Found and fixed:
       it at your identity provider (see §10).
 - [ ] **Rate limiting** per client/IP at the gateway (the size guard is not a
       rate limit).
-- [ ] **WORM audit store** + key rotation + secrets manager (see above).
+- [ ] **Integrity mechanism** — durable global ordering plus externally
+      signed/immutable checkpoints, independent verification, and ratified
+      retention. Do not claim independently verified integrity until
+      restart/replica tests pass.
 - [ ] **Pen test / threat model** review before provider go-live.
 
 ---
@@ -264,31 +271,30 @@ advisory won't be available there; the REST arbitration gate still applies.
 
 ---
 
-## 10. Wire the provider Clerk template
+## 10. Wire provider identity through the platform exchange
 
-The JWT layer is built and tested; it needs to be pointed at your IdP. For a
-**provider/PHI deployment** (required — do not use `disabled` or `dev_hs256` in
-production):
+For the platform-enabled provider deployment, Clerk authenticates the browser
+but Sovereign receives only the opaque mount token minted by the platform:
 
-1. In Clerk, create the JWT template `cosmaneura-sovereign` with
-   `aud="cosmaneura-sovereign"` and
-   `roles: ["{{user.public_metadata.sovereign_role}}"]`.
+1. Configure the platform exchange for the exact Clerk instance and provider
+   role mapping.
 2. An administrator sets `user.public_metadata.sovereign_role="provider"` only
    for approved pilot users. Never stamp a static provider role on every token.
-3. Set `AUTH_MODE=oidc`, the Clerk issuer/JWKS values,
-   `OIDC_AUDIENCE=cosmaneura-sovereign`, `OIDC_ALGORITHMS=["RS256"]`,
-   `AUTH_ROLE_CLAIM=roles`, `AUTH_PROVIDER_ROLE=provider`, and
-   `ALLOW_PROVIDER_PERSONA=false`.
-4. Run the deployed live smoke with correct-role and wrong-role real tokens.
+3. Set Sovereign `AUTH_MODE=disabled`, `PLATFORM_AGENT_API_ENABLED=true`, the
+   exact platform origin/scope, and the provider UAI client ID.
+4. Run the deployed live smoke with correct-role and wrong-role Clerk tokens;
+   the smoke uses them only at platform exchange and sends the returned opaque
+   mount token to Sovereign.
 
-Once configured: every provider `/chat` call needs a valid token and provider
-authority requires the verified role claim; a non-provider token cannot reach
-that pinned mount even if the body claims `provider`.
+Once configured, every provider `/chat` call needs an opaque mount token plus a
+fresh canonical client-turn UUID. Platform resolution must return the matching
+provider actor/surface/capabilities; body claims confer no authority.
 Emergencies still short-circuit before auth.
 
 > Token verification is necessary but **not sufficient** for HIPAA. It is one
 > control among several — you still need the executed BAA (§2), validated
-> de-identification (§5), a WORM audit store, rate limiting, and an independent
+> de-identification (§5), platform-owned audit with a separately ratified
+> integrity mechanism, rate limiting, and an independent
 > security review before real PHI flows.
 
 ---
@@ -375,13 +381,13 @@ consolidation — 15 minutes:
 |---|---|---|
 | Exact Microsoft agreement/service-scope validation | Any real PHI (synthetic staging attestation recorded August 19, 2026) | John + agreement owner/counsel; support ticket `2607240040011671` is conditional |
 | Credits-cover-AOAI + quota tier answer | cost planning; 5.6 quota headroom | John (same ticket) |
-| Clerk OIDC production values | `AUTH_MODE=oidc` → provider persona in prod | Developer + John |
+| Clerk/platform production authority | provider exchange → opaque mount token → Agent API resolution | Developer + John |
 | Cosmas dashboard mount (panel.js + `getAuthToken`/`getContext` + `/digest` at note-write) | Surface B | Developer (Cosmas repo; contract in `UI_UX_DESIGN.md` §3) |
 | SSE streaming on `/chat` | perceived latency polish | Developer (post-launch) |
 
 ### First post-launch engineering items (in order)
 
-1. Auth bridge (Cosmas session → provider JWT) — security-critical, small.
+1. Auth bridge (Cosmas session → platform-issued mount token) — security-critical, small.
 2. Panel mount in Cosmas with minimal context (latest note + terminology).
 3. Prompt tuning against real material (redacted long note, labs, templates).
 4. SSE streaming; per-field size bounds on `prior_sessions`/`labs`/`sessions`.

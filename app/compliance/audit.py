@@ -7,10 +7,11 @@ customer's responsibility, which is why it lives here.
 
 Design rules baked in:
   * The audit record stores metadata and a content HASH, never raw content,
-    so the log itself is not a new PHI store.
-  * `audit_sink="stdout"` for local dev; point at an append-only,
-    access-controlled store (e.g. WORM bucket, or a write-only DB table) in
-    production and retain per the compliance profile.
+    so the log itself is not a new raw-content store.
+  * With the provider platform boundary enabled, this module emits only
+    value-free operational breadcrumbs; the platform owns durable ingestion.
+  * The legacy local chain is for offline/dev compatibility only. It does not
+    establish independent integrity across process restarts or replicas.
 """
 from __future__ import annotations
 
@@ -32,8 +33,9 @@ def _hash(text: str) -> str:
 class AuditLogger:
     def __init__(self, settings: Optional[Settings] = None):
         self.s = settings or get_settings()
-        self._lock = threading.Lock()
-        self._prev_chain = "0" * 64  # genesis value for the tamper-evident chain
+        if not self.s.platform_agent_api_enabled:
+            self._lock = threading.Lock()
+            self._prev_chain = "0" * 64  # legacy process-local continuity only
 
     def record(
         self,
@@ -46,6 +48,25 @@ class AuditLogger:
     ) -> None:
         if not profile.audit_required:
             return
+        if self.s.platform_agent_api_enabled:
+            # Platform mode moves durable ownership to the platform. Keep only a
+            # value-free operational breadcrumb here; no content, details,
+            # local file, chain head, or integrity claim survives the
+            # request process. The request-scoped Agent API writer records the
+            # durable observation after the turn is resolved.
+            line = json.dumps(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "trace_id": trace_id,
+                    "persona": profile.persona.value,
+                    "event": event,
+                    "durable_owner": "platform",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            print(f"[AUDIT-OP] {line}", file=sys.stderr)
+            return
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "trace_id": trace_id,
@@ -57,10 +78,10 @@ class AuditLogger:
         if content_for_hash is not None:
             entry["content_sha256_16"] = _hash(content_for_hash)
 
-        # Serialize and write under a lock so the hash chain stays consistent
-        # under concurrency. Each record commits to the previous one via
-        # `prev_chain`; a verifier can recompute the chain to detect tampering
-        # or deletion. (In production, pair this with an append-only/WORM store.)
+        # Legacy offline/dev sink. The lock preserves continuity only within
+        # this process; restarts and replicas begin independent chains, so this
+        # has no production integrity claim.
+        assert hasattr(self, "_lock") and hasattr(self, "_prev_chain")
         with self._lock:
             entry["prev_chain"] = self._prev_chain
             body = json.dumps(entry, ensure_ascii=False, sort_keys=True)

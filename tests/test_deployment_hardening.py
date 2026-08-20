@@ -185,11 +185,14 @@ if len(sys.argv) > 1 and sys.argv[1] == "-c":
     raise SystemExit(0)
 target = sys.argv[-1]
 if target.endswith("smoke_live.py"):
+    assert os.environ.get("SOVEREIGN_PLATFORM_URL")
     assert os.environ.get("SOVEREIGN_PROVIDER_TOKEN")
     assert os.environ.get("SOVEREIGN_NON_PROVIDER_TOKEN")
     assert not os.environ.get("SOVEREIGN_SYNTHETIC_RECORD_GRANT")
 elif target.endswith("smoke_labs.py"):
+    assert os.environ.get("SOVEREIGN_PLATFORM_URL")
     assert os.environ.get("SOVEREIGN_PROVIDER_TOKEN")
+    assert os.environ.get("SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF")
     assert os.environ.get("SOVEREIGN_SYNTHETIC_RECORD_GRANT")
     assert not os.environ.get("SOVEREIGN_NON_PROVIDER_TOKEN")
 pathlib.Path(os.environ["SMOKE_LOG"]).open("a").write(sys.argv[-1] + "\\n")
@@ -264,6 +267,9 @@ def _deploy_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
         "SMOKE_PYTHON": str(bin_dir / "smoke-python"),
         "SOVEREIGN_PROVIDER_TOKEN": "provider.header.signature",
         "SOVEREIGN_NON_PROVIDER_TOKEN": "member.header.signature",
+        "SOVEREIGN_PLATFORM_URL": "https://platform.test",
+        "SOVEREIGN_RUN_LABS_SMOKE": "true",
+        "SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF": "record_synthetic_123456",
         "SOVEREIGN_SYNTHETIC_RECORD_GRANT": "gAAAAA-synthetic-record-grant",
         "SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED": "true",
     }

@@ -2,21 +2,24 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import main as main_module
+from app.clients.platform_conversation import ConversationDeliveryError
 from app.compliance import safety
 from app.compliance.sensitive_disclosure import (
     SENSITIVE_DISCLOSURE_RESPONSE,
     detect_sensitive_disclosure,
 )
 from app.config import MountProfile, Persona, Settings
-from app.schemas import ChatRequest, DoctrinalSensitivity, Intent
+from app.schemas import (ALL_PRESENTATION_SUPPRESSIONS, ChatRequest,
+                         DoctrinalSensitivity, Intent)
 from app.security.auth import Principal
-from app.sovereign.orchestrator import Sovereign
+from app.sovereign.orchestrator import Sovereign, _sensitive_fallback
 
 
 def _run(coro):
@@ -129,6 +132,9 @@ def test_sensitive_response_is_static_warm_and_skips_all_clinical_processing():
     assert "feature" not in response.answer.lower()
     assert safety.PATIENT_DISCLAIMER not in response.answer
     assert safety.PROVIDER_DISCLAIMER not in response.answer
+    assert response.presentation.mode == "sensitive_disclosure"
+    assert set(response.presentation.suppress) == set(ALL_PRESENTATION_SUPPRESSIONS)
+    assert response.presentation.human_contact.action_id == "human-contact"
 
     disclosure_events = [kwargs for event, kwargs in calls
                          if event == "sensitive_disclosure"]
@@ -195,15 +201,38 @@ def test_http_sensitive_response_has_no_trailing_disclaimer():
     client = TestClient(main_module.app)
     with patch.object(main_module, "_sovereign", Sovereign()):
         response = client.post("/chat", json={
+            "client_turn_id": str(uuid.uuid4()),
             "persona": "provider",
             "message": "My mother died this morning.",
-        })
+        }, headers={"X-Cosmaneura-Embed-Version": "1.0"})
     assert response.status_code == 200
     payload = response.json()
     assert payload["intent"] == "sensitive_disclosure"
     assert payload["persona"] == "patient"
     assert payload["answer"] == SENSITIVE_DISCLOSURE_RESPONSE
     assert "educational" not in payload["answer"].lower()
+    assert payload["presentation"]["mode"] == "sensitive_disclosure"
+    assert set(payload["presentation"]["suppress"]) == set(
+        ALL_PRESENTATION_SUPPRESSIONS
+    )
+    assert payload["presentation"]["human_contact"]["action_id"] == "human-contact"
+
+
+def test_sensitive_persistence_failure_is_value_free_nonretryable_503_fallback():
+    error = Sovereign._delivery_mount_error(
+        error=ConversationDeliveryError("unavailable", retryable=True),
+        owner="conversation",
+        trace_id="trace_sensitive_test",
+        safety_fallback=_sensitive_fallback("user_accepted"),
+    )
+    response = _run(main_module._mount_resolution_error(None, error))
+    payload = response.body.decode()
+
+    assert response.status_code == 503
+    assert '"code":"SERVICE_UNAVAILABLE"' in payload
+    assert '"retryable":false' in payload
+    assert '"failure_stage":"user_accepted"' in payload
+    assert '"mode":"sensitive_disclosure"' in payload
 
 
 def test_regular_response_still_receives_its_disclaimer():

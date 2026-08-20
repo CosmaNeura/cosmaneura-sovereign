@@ -8,7 +8,16 @@ set -euo pipefail
 : "${PUBLIC_APP:?PUBLIC_APP is required}"
 : "${IMAGE_REF:?IMAGE_REF is required}"
 : "${REVISION_SUFFIX:?REVISION_SUFFIX is required}"
-: "${SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED:?SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED is required}"
+: "${SOVEREIGN_PLATFORM_URL:?SOVEREIGN_PLATFORM_URL is required}"
+
+SOVEREIGN_RUN_LABS_SMOKE="${SOVEREIGN_RUN_LABS_SMOKE:-false}"
+if [[ "$SOVEREIGN_RUN_LABS_SMOKE" == "true" ]]; then
+  : "${SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED:?SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED is required}"
+  : "${SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF:?SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF is required}"
+elif [[ "$SOVEREIGN_RUN_LABS_SMOKE" != "false" ]]; then
+  echo "SOVEREIGN_RUN_LABS_SMOKE must be true or false" >&2
+  exit 2
+fi
 
 SOVEREIGN_REHEARSAL_FORCE_ROLLBACK="${SOVEREIGN_REHEARSAL_FORCE_ROLLBACK:-false}"
 if [[ "$SOVEREIGN_REHEARSAL_FORCE_ROLLBACK" == "true" ]]; then
@@ -30,7 +39,9 @@ if [[ "$SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS" == "true" ]]; then
 elif [[ "$SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS" == "false" ]]; then
   : "${SOVEREIGN_PROVIDER_TOKEN:?SOVEREIGN_PROVIDER_TOKEN is required for transactional smoke}"
   : "${SOVEREIGN_NON_PROVIDER_TOKEN:?SOVEREIGN_NON_PROVIDER_TOKEN is required for transactional smoke}"
-  : "${SOVEREIGN_SYNTHETIC_RECORD_GRANT:?SOVEREIGN_SYNTHETIC_RECORD_GRANT is required for transactional smoke}"
+  if [[ "$SOVEREIGN_RUN_LABS_SMOKE" == "true" ]]; then
+    : "${SOVEREIGN_SYNTHETIC_RECORD_GRANT:?SOVEREIGN_SYNTHETIC_RECORD_GRANT is required for labs smoke}"
+  fi
 else
   echo "SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS must be true or false" >&2
   exit 2
@@ -54,7 +65,8 @@ require_deployment_value PROVIDER_APP "$PROVIDER_APP" "$EXPECTED_PROVIDER_APP"
 require_deployment_value PUBLIC_APP "$PUBLIC_APP" "$EXPECTED_PUBLIC_APP"
 require_deployment_value REGISTRY_SERVER "$REGISTRY_SERVER" "$EXPECTED_REGISTRY_SERVER"
 
-if [[ "$SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED" != "true" ]]; then
+if [[ "$SOVEREIGN_RUN_LABS_SMOKE" == "true" &&
+      "$SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED" != "true" ]]; then
   echo "SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED must be exactly true" >&2
   exit 2
 fi
@@ -222,9 +234,14 @@ functional_smoke() {
     printf '\n' >/dev/tty
   fi
   PYTHONPATH="$ROOT" \
+    SOVEREIGN_PLATFORM_URL="$SOVEREIGN_PLATFORM_URL" \
     SOVEREIGN_PROVIDER_TOKEN="$provider_smoke_token" \
     SOVEREIGN_NON_PROVIDER_TOKEN="$non_provider_smoke_token" \
     "$SMOKE_PYTHON" "$ROOT/tools/smoke_live.py" || return 1
+  if [[ "$SOVEREIGN_RUN_LABS_SMOKE" != "true" ]]; then
+    echo "[SKIP] synthetic Preview labs remain outside the initial platform capability set"
+    return 0
+  fi
   if [[ "$SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS" == "true" ]]; then
     # Mint/paste the 60-second record grant only after the live-model checks,
     # immediately before the one bounded EHR request.
@@ -233,7 +250,9 @@ functional_smoke() {
     printf '\n' >/dev/tty
   fi
   PYTHONPATH="$ROOT" \
+    SOVEREIGN_PLATFORM_URL="$SOVEREIGN_PLATFORM_URL" \
     SOVEREIGN_PROVIDER_TOKEN="$provider_smoke_token" \
+    SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF="$SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF" \
     SOVEREIGN_SYNTHETIC_RECORD_GRANT="$record_smoke_grant" \
     "$SMOKE_PYTHON" "$ROOT/tools/smoke_labs.py"
 }

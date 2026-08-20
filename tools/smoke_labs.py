@@ -3,7 +3,10 @@
 Required environment variables:
 
 * ``SOVEREIGN_PROVIDER_URL`` — exact HTTPS origin of the provider instance.
-* ``SOVEREIGN_PROVIDER_TOKEN`` — real Clerk JWT from the provider template.
+* ``SOVEREIGN_PLATFORM_URL`` — exact HTTPS origin of the platform token issuer.
+* ``SOVEREIGN_PROVIDER_TOKEN`` — provider Clerk JWT used only for exchange.
+* ``SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF`` — opaque platform record bound
+  to the synthetic Preview mapping.
 * ``SOVEREIGN_SYNTHETIC_RECORD_GRANT`` — short-lived host-issued Fernet grant.
 * ``SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED=true`` — explicit operator assertion
   that the mapped Preview record contains only vendor-owned synthetic data.
@@ -17,6 +20,7 @@ import asyncio
 import os
 import re
 import sys
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -26,9 +30,11 @@ from tools.deployed_smoke import (
     SmokeFailure,
     assert_health,
     assert_welcome,
-    bearer_headers,
+    exchange_mount_token,
+    mount_headers,
     request_json,
     required_base_url,
+    required_opaque_ref,
     required_token,
 )
 
@@ -101,17 +107,35 @@ def _assert_lab_response(payload: dict) -> None:
 async def run(
     client: httpx.AsyncClient,
     provider_url: str,
+    platform_url: str,
     provider_token: str,
+    platform_record_ref: str,
     record_grant: str,
     *,
     emit: Callable[[str], None] = print,
 ) -> None:
-    headers = bearer_headers(provider_token)
+    mount_token = await exchange_mount_token(
+        client,
+        platform_url,
+        provider_token,
+        record_ref=platform_record_ref,
+    )
+    turn_id = uuid.uuid4()
+    headers = mount_headers(mount_token, turn_id)
     health = await request_json(client, "GET", provider_url, "/healthz")
-    assert_health(health, "provider_assistant", "oidc")
-    welcome = await request_json(client, "GET", provider_url, "/welcome")
+    assert_health(health, "provider_assistant", "disabled")
+    welcome = await request_json(
+        client,
+        "GET",
+        provider_url,
+        "/welcome",
+        headers={
+            "Authorization": f"Bearer {mount_token}",
+            "X-Cosmaneura-Embed-Version": "1.0",
+        },
+    )
     assert_welcome(welcome, "provider_assistant")
-    emit("[PASS] deployed provider is OIDC-authenticated and pinned to Preview sandbox labs")
+    emit("[PASS] deployed provider uses platform mount authority and Preview sandbox labs")
 
     response = await request_json(
         client,
@@ -120,6 +144,7 @@ async def run(
         "/chat",
         headers=headers,
         body={
+            "client_turn_id": str(turn_id),
             "persona": "provider",
             "message": "Anything concerning in the open chart's lab results?",
             "metadata": {"record_ref": record_grant},
@@ -132,7 +157,11 @@ async def run(
 async def main() -> int:
     try:
         provider_url = required_base_url("SOVEREIGN_PROVIDER_URL")
+        platform_url = required_base_url("SOVEREIGN_PLATFORM_URL")
         provider_token = required_token()
+        platform_record_ref = required_opaque_ref(
+            "SOVEREIGN_SYNTHETIC_PLATFORM_RECORD_REF"
+        )
         record_grant = required_synthetic_record_grant()
         timeout = httpx.Timeout(120.0, connect=15.0)
         async with httpx.AsyncClient(
@@ -140,7 +169,14 @@ async def main() -> int:
             follow_redirects=False,
             headers={"User-Agent": "cosmaneura-sovereign-labs-smoke/1"},
         ) as client:
-            await run(client, provider_url, provider_token, record_grant)
+            await run(
+                client,
+                provider_url,
+                platform_url,
+                provider_token,
+                platform_record_ref,
+                record_grant,
+            )
     except SmokeFailure as error:
         print(f"[FAIL] {error}", file=sys.stderr)
         return 1

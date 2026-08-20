@@ -80,6 +80,22 @@ def test_mount_profile_is_the_only_pinned_authority_selector():
         ("azure_deid_tenant_id", "tenant-secret-sentinel", "AZURE_DEID_TENANT_ID"),
         ("azure_deid_client_id", "client-secret-sentinel", "AZURE_DEID_CLIENT_ID"),
         ("azure_deid_client_secret", "deid-secret-sentinel", "AZURE_DEID_CLIENT_SECRET"),
+        ("platform_agent_api_enabled", True, "PLATFORM_AGENT_API_ENABLED"),
+        (
+            "platform_agent_api_base_url",
+            "https://platform-sentinel.example",
+            "PLATFORM_AGENT_API_BASE_URL",
+        ),
+        (
+            "platform_agent_api_scope",
+            "api://platform-sentinel/.default",
+            "PLATFORM_AGENT_API_SCOPE",
+        ),
+        (
+            "platform_workload_client_id",
+            "workload-client-sentinel",
+            "PLATFORM_WORKLOAD_CLIENT_ID",
+        ),
     ],
 )
 def test_public_profile_refuses_forbidden_configuration_without_value_leaks(
@@ -323,6 +339,38 @@ def test_mock_provider_may_enable_only_preview_ehr_configuration():
         ))
 
 
+def test_provider_platform_authority_requires_exact_closed_configuration():
+    base = {
+        "mount_profile": MountProfile.PROVIDER_ASSISTANT,
+        "mount_tenant_id": "tenant_test",
+        "auth_mode": AuthMode.DISABLED,
+        "platform_agent_api_enabled": True,
+    }
+    with pytest.raises(DeploymentConfigurationError) as caught:
+        validate_deployment_configuration(Settings(**base))
+    assert all(name in str(caught.value) for name in (
+        "PLATFORM_AGENT_API_BASE_URL",
+        "PLATFORM_AGENT_API_SCOPE",
+        "PLATFORM_WORKLOAD_CLIENT_ID",
+    ))
+
+    complete = {
+        **base,
+        "platform_agent_api_base_url": "https://platform.example",
+        "platform_agent_api_scope": "api://platform-app/.default",
+        "platform_workload_client_id": "provider-uai-client-id",
+    }
+    validate_deployment_configuration(Settings(**complete))
+
+    for changed in (
+        {"platform_agent_api_base_url": "http://platform.example"},
+        {"platform_agent_api_base_url": "https://platform.example/path"},
+        {"platform_agent_api_scope": "api://platform-app"},
+    ):
+        with pytest.raises(DeploymentConfigurationError):
+            validate_deployment_configuration(Settings(**{**complete, **changed}))
+
+
 def test_token_bucket_refills_per_ip_and_bounds_client_memory():
     now = [100.0]
     limiter = TokenBucketRateLimiter(
@@ -351,28 +399,32 @@ def test_public_chat_rate_limit_uses_trusted_rightmost_ip_and_spares_emergencies
         clock=lambda: 100.0,
     )
     client = TestClient(main_module.app)
-    body = {"persona": "patient", "message": "hello"}
+    def body():
+        return {"client_turn_id": str(uuid.uuid4()),
+                "persona": "patient", "message": "hello"}
+    embed = {"X-Cosmaneura-Embed-Version": "1.0"}
     with patch.object(main_module, "_settings", settings):
         with patch.object(main_module, "_public_chat_limiter", limiter):
             first = client.post(
-                "/chat", json=body,
-                headers={"X-Forwarded-For": "198.51.100.9, 203.0.113.7"},
+                "/chat", json=body(),
+                headers={**embed, "X-Forwarded-For": "198.51.100.9, 203.0.113.7"},
             )
             second = client.post(
-                "/chat", json=body,
-                headers={"X-Forwarded-For": "192.0.2.99, 203.0.113.7"},
+                "/chat", json=body(),
+                headers={**embed, "X-Forwarded-For": "192.0.2.99, 203.0.113.7"},
             )
             denied = client.post(
-                "/chat", json=body,
-                headers={"X-Forwarded-For": "192.0.2.50, 203.0.113.7"},
+                "/chat", json=body(),
+                headers={**embed, "X-Forwarded-For": "192.0.2.50, 203.0.113.7"},
             )
             other_ip = client.post(
-                "/chat", json=body,
-                headers={"X-Forwarded-For": "198.51.100.20"},
+                "/chat", json=body(),
+                headers={**embed, "X-Forwarded-For": "198.51.100.20"},
             )
             emergency = client.post(
                 "/chat",
-                json={"persona": "provider", "message": "crushing chest pain right now"},
+                json={"client_turn_id": str(uuid.uuid4()), "persona": "provider",
+                      "message": "crushing chest pain right now"},
                 headers={"X-Forwarded-For": "203.0.113.7"},
             )
 
@@ -393,16 +445,19 @@ def test_forwarded_ip_is_ignored_without_explicit_proxy_trust():
         clock=lambda: 100.0,
     )
     client = TestClient(main_module.app)
-    body = {"persona": "patient", "message": "hello"}
+    def body():
+        return {"client_turn_id": str(uuid.uuid4()),
+                "persona": "patient", "message": "hello"}
+    embed = {"X-Cosmaneura-Embed-Version": "1.0"}
     with patch.object(main_module, "_settings", settings):
         with patch.object(main_module, "_public_chat_limiter", limiter):
             first = client.post(
-                "/chat", json=body,
-                headers={"X-Forwarded-For": "198.51.100.1"},
+                "/chat", json=body(),
+                headers={**embed, "X-Forwarded-For": "198.51.100.1"},
             )
             spoofed = client.post(
-                "/chat", json=body,
-                headers={"X-Forwarded-For": "198.51.100.2"},
+                "/chat", json=body(),
+                headers={**embed, "X-Forwarded-For": "198.51.100.2"},
             )
     assert first.status_code == 200
     assert spoofed.status_code == 429

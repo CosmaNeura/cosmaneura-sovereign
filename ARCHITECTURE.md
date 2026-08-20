@@ -136,7 +136,7 @@ One codebase; the `persona` field selects a `ComplianceProfile`.
 | HIPAA | ❌ not required | ✅ required |
 | PHI accepted | No (consumer's own info; sensitive but not covered-entity PHI) | Yes |
 | LLM inference | Standard API (ZDR still recommended) | **Must** be BAA-covered: Anthropic 1P API + **Zero Data Retention** + signed BAA, *or* Claude via AWS Bedrock / Google Vertex under their BAA |
-| Audit | On, ~30-day | On, **≥90-day**, append-only |
+| Audit | Local operational only until public lineage exists | Platform-owned durable provider ingestion; external retention/integrity controls remain separate |
 | De-identification before non-BAA hops | On | On (with production-grade de-id + human review) |
 
 ### The PHI boundary (non-negotiable)
