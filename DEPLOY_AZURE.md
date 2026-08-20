@@ -94,7 +94,8 @@ resolution. The public deployment does not use this lane.
         │  opaque mount token
         │
         ▼
-  Sovereign /chat  ──resolve──▶ Platform Agent API
+  Sovereign /welcome ─bootstrap (read-only)─▶ Platform Agent API
+  Sovereign /chat    ─resolve + turn lineage─▶ Platform Agent API
   Authorization: Bearer <opaque-mount-token>
         │
         └─ authoritative actor + tenant + surface + capabilities
@@ -102,6 +103,11 @@ resolution. The public deployment does not use this lane.
 
 A token cannot elevate the deployment through persona, capability, surface,
 tenant, or actor hints in the body. Platform resolution is authoritative.
+The welcome bootstrap carries no body, client-turn ID, interaction reference,
+idempotency key, or effect and creates no durable lineage. Its five-field mount
+snapshot filters deterministic welcome paths only; it cannot authorize an
+action. Chat continues to use the interaction-opening resolver and the
+canonical conversation/usage/audit sequence.
 
 ### What to configure
 

@@ -93,7 +93,15 @@ def test_live_smoke_checks_mounts_roles_and_public_capability_denial() -> None:
         if request.url.path == "/welcome":
             assert request.headers["X-Cosmaneura-Embed-Version"] == "1.0"
             if provider:
+                if "authorization" not in request.headers:
+                    return httpx.Response(
+                        401,
+                        json={"code": "CONTEXT_REQUIRED"},
+                        headers={"X-Cosmaneura-Embed-Version": "1.0"},
+                    )
                 assert request.headers["authorization"] == f"Bearer {MOUNT_TOKEN}"
+                assert "x-cosmaneura-client-turn-id" not in request.headers
+                assert "x-cosmaneura-mount-context" not in request.headers
             return httpx.Response(
                 200,
                 json=_welcome(provider, labs=False),
@@ -184,6 +192,8 @@ def test_labs_smoke_checks_one_host_bound_synthetic_preview_read() -> None:
         if request.url.path == "/welcome":
             assert request.headers["authorization"] == f"Bearer {MOUNT_TOKEN}"
             assert request.headers["X-Cosmaneura-Embed-Version"] == "1.0"
+            assert "x-cosmaneura-client-turn-id" not in request.headers
+            assert "x-cosmaneura-mount-context" not in request.headers
             return httpx.Response(
                 200,
                 json=_welcome(True),

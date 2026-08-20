@@ -34,6 +34,7 @@ from tools.deployed_smoke import (
     request_json,
     required_base_url,
     required_token,
+    welcome_headers,
 )
 
 
@@ -94,6 +95,16 @@ async def run(
 
     await expect_status(
         client,
+        "GET",
+        provider_url,
+        "/welcome",
+        401,
+        headers={"X-Cosmaneura-Embed-Version": "1.0"},
+    )
+    emit("[PASS] provider welcome rejects a missing opaque mount token")
+
+    await expect_status(
+        client,
         "POST",
         platform_url,
         "/embed/v1/context-tokens/exchange",
@@ -118,13 +129,10 @@ async def run(
         "GET",
         provider_url,
         "/welcome",
-        headers={
-            "Authorization": f"Bearer {mount_token}",
-            "X-Cosmaneura-Embed-Version": "1.0",
-        },
+        headers=welcome_headers(mount_token),
     )
     assert_welcome(provider_welcome, "provider_assistant", expect_labs=False)
-    emit("[PASS] welcome is mount-resolved and initial provider labs are hidden")
+    emit("[PASS] welcome uses mount bootstrap without a client turn and hides labs")
 
     missing_token_turn = uuid.uuid4()
     await expect_status(

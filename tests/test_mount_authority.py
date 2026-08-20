@@ -15,7 +15,8 @@ from app.schemas import (AgentResult, ChatRequest, ChatResponse,
                          DoctrinalSensitivity, DoctrinalVerdict, Intent,
                          StandardPresentation)
 from app.security.auth import Principal
-from app.security.mount import (MountContext, MountResolution,
+from app.security.mount import (MountBootstrap, MountBootstrapRequest,
+                                MountContext, MountResolution,
                                 MountResolutionError, MountResolveRequest,
                                 MountResolver, PinnedResolver,
                                 PlatformResolver)
@@ -610,9 +611,9 @@ def test_platform_welcome_uses_sole_bearer_resolution_and_hard_hides_labs():
         def __init__(self):
             self.calls = []
 
-        async def resolve_mount_context(self, **kwargs):
+        async def bootstrap_mount_context(self, **kwargs):
             self.calls.append(kwargs)
-            return MountResolution(
+            return MountBootstrap(
                 context=MountContext(
                     surface="provider_assistant",
                     auth_tier="provider",
@@ -620,9 +621,7 @@ def test_platform_welcome_uses_sole_bearer_resolution_and_hard_hides_labs():
                     tenant_id="tenant_test",
                     actor_id="authority_actor_123456",
                 ),
-                client_turn_id=kwargs["client_turn_id"],
                 trace_id=uuid.uuid4().hex,
-                interaction_ref="interaction_ref_123456",
             )
 
     sovereign = CapturingSovereign()
@@ -647,14 +646,197 @@ def test_platform_welcome_uses_sole_bearer_resolution_and_hard_hides_labs():
     assert "labs_label" not in response.json()
     assert response.headers["x-cosmaneura-embed-version"] == "1.0"
     assert len(sovereign.calls) == 1
-    assert set(sovereign.calls[0]) == {
-        "mount_context_token",
-        "client_turn_id",
-    }
+    assert set(sovereign.calls[0]) == {"mount_context_token"}
     assert sovereign.calls[0]["mount_context_token"] == (
         "opaque-mount-context-token"
     )
-    assert isinstance(sovereign.calls[0]["client_turn_id"], uuid.UUID)
+
+
+def test_platform_welcome_checks_version_before_credentials_or_bootstrap():
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+
+    class MustNotBootstrap:
+        async def bootstrap_mount_context(self, **_kwargs):
+            raise AssertionError("version gate must precede authority bootstrap")
+
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+    )
+    sentinel = "secret-version-and-credential-sentinel"
+    with patch.object(main_module, "_settings", settings):
+        with patch.object(main_module, "_sovereign", MustNotBootstrap()):
+            response = TestClient(main_module.app).get(
+                "/welcome",
+                headers={
+                    "X-Cosmaneura-Embed-Version": sentinel,
+                    "Authorization": f"Basic {sentinel}",
+                },
+            )
+
+    assert response.status_code == 426
+    assert response.json()["code"] == "EMBED_VERSION_UNSUPPORTED"
+    assert response.headers["x-cosmaneura-embed-version"] == "1.0"
+    assert sentinel not in response.text
+
+
+def test_platform_welcome_bootstrap_failures_are_value_free():
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+
+    class RejectingSovereign:
+        async def bootstrap_mount_context(self, *, mount_context_token):
+            code = (
+                "MOUNT_CONTEXT_REQUIRED"
+                if mount_context_token is None
+                else "CONTEXT_INVALID"
+            )
+            raise MountResolutionError(
+                status_code=401,
+                code=code,
+                retryable=False,
+            )
+
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+    )
+    sentinel = "secret-mount-token-sentinel-123456"
+    with patch.object(main_module, "_settings", settings):
+        with patch.object(main_module, "_sovereign", RejectingSovereign()):
+            client = TestClient(main_module.app)
+            missing = client.get("/welcome", headers=EMBED_HEADERS)
+            invalid = client.get(
+                "/welcome",
+                headers={
+                    **EMBED_HEADERS,
+                    "Authorization": f"Bearer {sentinel}",
+                },
+            )
+
+    assert missing.status_code == invalid.status_code == 401
+    assert missing.json()["code"] == "CONTEXT_REQUIRED"
+    assert invalid.json()["code"] == "CONTEXT_INVALID"
+    assert sentinel not in invalid.text
+    assert invalid.headers["x-cosmaneura-embed-version"] == "1.0"
+
+
+def test_welcome_cors_allows_browser_headers_but_not_internal_authority_header():
+    from fastapi.testclient import TestClient
+    from starlette.middleware.cors import CORSMiddleware
+
+    from app import main as main_module
+
+    origin = "https://dashboard.example"
+    cors_app = CORSMiddleware(
+        main_module.app,
+        allow_origins=[origin],
+        allow_credentials=True,
+        allow_methods=main_module._CORS_ALLOW_METHODS,
+        allow_headers=main_module._CORS_ALLOW_HEADERS,
+        expose_headers=main_module._CORS_EXPOSE_HEADERS,
+    )
+    client = TestClient(cors_app)
+    allowed = client.options(
+        "/welcome",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": (
+                "authorization,x-cosmaneura-embed-version"
+            ),
+        },
+    )
+    internal = client.options(
+        "/welcome",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-cosmaneura-mount-context",
+        },
+    )
+
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == origin
+    assert internal.status_code == 400
+    assert "x-cosmaneura-mount-context" not in {
+        value.strip().casefold()
+        for value in allowed.headers["access-control-allow-headers"].split(",")
+    }
+
+
+def test_sovereign_bootstrap_has_trace_and_context_but_no_turn_or_writers():
+    class MustNotResolve(MountResolver):
+        async def resolve(self, _request):
+            raise AssertionError("welcome must not open turn-bearing resolution")
+
+    class CapturingBootstrapper:
+        def __init__(self):
+            self.request = None
+
+        async def bootstrap(self, request):
+            self.request = request
+            return MountBootstrap(
+                context=MountContext(
+                    surface="provider_assistant",
+                    auth_tier="provider",
+                    capabilities=("visit-prep:run",),
+                    tenant_id="tenant_test",
+                    actor_id="authority_actor_123456",
+                ),
+                trace_id=request.trace_id,
+            )
+
+    class MustNotWrite:
+        def __getattribute__(self, name):
+            if name.startswith("__"):
+                return super().__getattribute__(name)
+            raise AssertionError("welcome must not invoke a durable writer")
+
+    settings = Settings(
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+        auth_mode=AuthMode.DISABLED,
+        platform_agent_api_enabled=True,
+        platform_agent_api_base_url="https://platform.example",
+        platform_agent_api_scope="api://platform-app/.default",
+        platform_workload_client_id="provider-uai-client-id",
+    )
+    bootstrapper = CapturingBootstrapper()
+    writer = MustNotWrite()
+    sovereign = Sovereign(
+        settings,
+        mount_resolver=MustNotResolve(),
+        mount_bootstrapper=bootstrapper,  # type: ignore[arg-type]
+        platform_audit_client=writer,  # type: ignore[arg-type]
+        platform_conversation_client=writer,  # type: ignore[arg-type]
+        platform_usage_client=writer,  # type: ignore[arg-type]
+    )
+    result = _run(sovereign.bootstrap_mount_context(
+        mount_context_token="opaque-mount-token-1234567890",
+    ))
+
+    assert result.context.surface == "provider_assistant"
+    assert bootstrapper.request is not None
+    assert set(bootstrapper.request.__dict__) == {
+        "trace_id",
+        "mount_context_token",
+    }
+    assert len(bootstrapper.request.trace_id) == 32
+    assert "opaque-mount-token-1234567890" not in repr(bootstrapper.request)
 
 
 def test_client_turn_uuid_is_fresh_and_not_derived_from_session_id():
@@ -1332,6 +1514,236 @@ def test_platform_resolver_calls_ratified_endpoint_and_parses_exact_response():
     assert result.interaction_reused is False
 
 
+def test_platform_bootstrap_calls_no_lineage_endpoint_with_exact_wire_contract():
+    mount_token = "opaque-mount-token-1234567890"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/service/v1/agent/mount-context/bootstrap"
+        assert request.content == b""
+        assert request.headers["Authorization"] == "Bearer workload-token"
+        assert request.headers["X-Cosmaneura-Mount-Context"] == mount_token
+        assert request.headers["X-Trace-ID"] == "sovereign-trace-1234"
+        lowered = {name.casefold() for name in request.headers}
+        assert "x-cosmaneura-client-turn-id" not in lowered
+        assert "x-cosmaneura-interaction-ref" not in lowered
+        assert "x-idempotency-key" not in lowered
+        assert "x-cosmaneura-embed-version" not in lowered
+        return httpx.Response(
+            200,
+            json={
+                "surface": "provider_assistant",
+                "auth_tier": "provider",
+                "capabilities": ["visit-prep:run"],
+                "tenant_id": "tenant_test",
+                "actor_id": "authority_actor_123456",
+            },
+            headers={"X-Trace-ID": "sovereign-trace-1234"},
+        )
+
+    async def scenario():
+        async def workload_token():
+            return "workload-token"
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            resolver = PlatformResolver(
+                platform_base_url="https://platform.example",
+                workload_token_provider=workload_token,
+                client=client,
+            )
+            return await resolver.bootstrap(MountBootstrapRequest(
+                trace_id="sovereign-trace-1234",
+                mount_context_token=mount_token,
+            ))
+
+    result = _run(scenario())
+    assert result.context.surface == "provider_assistant"
+    assert result.context.actor_id == "authority_actor_123456"
+    assert result.trace_id == "sovereign-trace-1234"
+    assert set(result.__dict__) == {"context", "trace_id"}
+
+
+@pytest.mark.parametrize(
+    "forbidden_header",
+    (
+        "X-Cosmaneura-Client-Turn-ID",
+        "X-Cosmaneura-Interaction-Ref",
+        "X-Cosmaneura-Interaction-Reused",
+        "X-Cosmaneura-Idempotency-Key",
+        "X-Idempotency-Key",
+        "Idempotency-Replayed",
+    ),
+)
+def test_platform_bootstrap_rejects_lineage_headers(forbidden_header):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "surface": "provider_assistant",
+                "auth_tier": "provider",
+                "capabilities": ["visit-prep:run"],
+                "tenant_id": "tenant_test",
+                "actor_id": "authority_actor_123456",
+            },
+            headers={
+                "X-Trace-ID": "sovereign-trace-1234",
+                forbidden_header: "forbidden-lineage-value",
+            },
+        )
+
+    async def scenario():
+        async def workload_token():
+            return "workload-token"
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            resolver = PlatformResolver(
+                platform_base_url="https://platform.example",
+                workload_token_provider=workload_token,
+                client=client,
+            )
+            return await resolver.bootstrap(MountBootstrapRequest(
+                trace_id="sovereign-trace-1234",
+                mount_context_token="opaque-mount-token-1234567890",
+            ))
+
+    with pytest.raises(MountResolutionError) as caught:
+        _run(scenario())
+    assert caught.value.status_code == 503
+    assert caught.value.code == "MOUNT_BOOTSTRAP_INVALID"
+    assert "forbidden-lineage-value" not in str(caught.value)
+
+
+def test_platform_bootstrap_rejects_non_exact_body_and_invalid_trace_value_free():
+    sentinel = "upstream-PHI-and-token-sentinel"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "surface": "provider_assistant",
+                "auth_tier": "provider",
+                "capabilities": ["visit-prep:run"],
+                "tenant_id": "tenant_test",
+                "actor_id": "authority_actor_123456",
+                "unexpected": sentinel,
+            },
+            headers={"X-Trace-ID": sentinel},
+        )
+
+    async def scenario():
+        async def workload_token():
+            return "workload-token"
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            resolver = PlatformResolver(
+                platform_base_url="https://platform.example",
+                workload_token_provider=workload_token,
+                client=client,
+            )
+            return await resolver.bootstrap(MountBootstrapRequest(
+                trace_id="sovereign-trace-1234",
+                mount_context_token="opaque-mount-token-1234567890",
+            ))
+
+    with pytest.raises(MountResolutionError) as caught:
+        _run(scenario())
+    assert caught.value.code == "MOUNT_BOOTSTRAP_INVALID"
+    assert sentinel not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("returned_trace", "content_type"),
+    (
+        ("different-valid-trace-1234", "application/json"),
+        ("sovereign-trace-1234", "text/plain"),
+    ),
+)
+def test_platform_bootstrap_rejects_trace_or_media_type_drift(
+    returned_trace,
+    content_type,
+):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "surface": "provider_assistant",
+                "auth_tier": "provider",
+                "capabilities": ["visit-prep:run"],
+                "tenant_id": "tenant_test",
+                "actor_id": "authority_actor_123456",
+            },
+            headers={
+                "X-Trace-ID": returned_trace,
+                "Content-Type": content_type,
+            },
+        )
+
+    async def scenario():
+        async def workload_token():
+            return "workload-token"
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            resolver = PlatformResolver(
+                platform_base_url="https://platform.example",
+                workload_token_provider=workload_token,
+                client=client,
+            )
+            return await resolver.bootstrap(MountBootstrapRequest(
+                trace_id="sovereign-trace-1234",
+                mount_context_token="opaque-mount-token-1234567890",
+            ))
+
+    with pytest.raises(MountResolutionError) as caught:
+        _run(scenario())
+    assert caught.value.code == "MOUNT_BOOTSTRAP_INVALID"
+
+
+def test_platform_bootstrap_preserves_only_safe_problem_category():
+    sentinel = "upstream-PHI-body-sentinel"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            json={
+                "code": "CONTEXT_EXPIRED",
+                "retryable": False,
+                "detail": sentinel,
+            },
+        )
+
+    async def scenario():
+        async def workload_token():
+            return "workload-token"
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            resolver = PlatformResolver(
+                platform_base_url="https://platform.example",
+                workload_token_provider=workload_token,
+                client=client,
+            )
+            return await resolver.bootstrap(MountBootstrapRequest(
+                trace_id="sovereign-trace-1234",
+                mount_context_token="opaque-mount-token-1234567890",
+            ))
+
+    with pytest.raises(MountResolutionError) as caught:
+        _run(scenario())
+    assert caught.value.status_code == 401
+    assert caught.value.code == "CONTEXT_EXPIRED"
+    assert caught.value.retryable is False
+    assert sentinel not in str(caught.value)
+
+
 def test_platform_resolver_accepts_trusted_private_https_origin():
     async def workload_token():
         return "workload-token"
@@ -1342,6 +1754,9 @@ def test_platform_resolver_accepts_trusted_private_https_origin():
     )
     assert resolver._endpoint == (
         "https://10.0.0.5/service/v1/agent/mount-context/resolve"
+    )
+    assert resolver._bootstrap_endpoint == (
+        "https://10.0.0.5/service/v1/agent/mount-context/bootstrap"
     )
 
 

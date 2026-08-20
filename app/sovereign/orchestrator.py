@@ -84,7 +84,8 @@ from app.schemas import (ALL_PRESENTATION_SUPPRESSIONS, ChatRequest,
                          SensitiveDisclosurePresentation,
                          StandardPresentation)
 from app.security.auth import Principal
-from app.security.mount import (MountResolveRequest, MountResolver,
+from app.security.mount import (MountBootstrapRequest, MountBootstrapper,
+                                MountResolveRequest, MountResolver,
                                 MountResolutionError, PinnedResolver,
                                 PlatformResolver)
 from app.security.record_grant import (
@@ -272,7 +273,8 @@ class Sovereign:
                  platform_conversation_client: Optional[
                      PlatformConversationClient
                  ] = None,
-                 platform_usage_client: Optional[PlatformUsageClient] = None):
+                 platform_usage_client: Optional[PlatformUsageClient] = None,
+                 mount_bootstrapper: Optional[MountBootstrapper] = None):
         self.s = settings or get_settings()
         self.llm = LLMClient(self.s)
         self.magisterium = MagisteriumClient(self.s)
@@ -298,6 +300,11 @@ class Sovereign:
                 workload_token_provider=token_provider,  # type: ignore[arg-type]
                 timeout_seconds=self.s.request_timeout_seconds,
             )
+            self.mount_bootstrapper = mount_bootstrapper or (
+                self.mount_resolver
+                if isinstance(self.mount_resolver, MountBootstrapper)
+                else None
+            )
             self.platform_audit = platform_audit_client or PlatformAuditClient(
                 platform_base_url=self.s.platform_agent_api_base_url or "",
                 workload_token_provider=token_provider,  # type: ignore[arg-type]
@@ -318,6 +325,7 @@ class Sovereign:
             )
         else:
             self.mount_resolver = mount_resolver or PinnedResolver.from_settings(self.s)
+            self.mount_bootstrapper = mount_bootstrapper
             self.platform_audit = platform_audit_client
             self.platform_conversation = platform_conversation_client
             self.platform_usage = platform_usage_client
@@ -331,24 +339,22 @@ class Sovereign:
             Intent.LAB_REVIEW: LabReviewAgent(self.s, self.llm),
         }
 
-    async def resolve_mount_context(
+    async def bootstrap_mount_context(
         self,
         *,
         mount_context_token: Optional[str],
-        client_turn_id: uuid.UUID,
-        principal: Optional[Principal] = None,
     ):
-        """Resolve a protected bootstrap without model, tool, or content work."""
+        """Inspect a protected mount without opening an interaction lineage."""
+        if not self.s.platform_agent_api_enabled or self.mount_bootstrapper is None:
+            raise MountResolutionError(
+                status_code=503,
+                code="MOUNT_BOOTSTRAP_UNAVAILABLE",
+                retryable=False,
+            )
         trace_id = uuid.uuid4().hex
-        return await self.mount_resolver.resolve(MountResolveRequest(
-            client_turn_id=client_turn_id,
+        return await self.mount_bootstrapper.bootstrap(MountBootstrapRequest(
             trace_id=trace_id,
             mount_context_token=mount_context_token,
-            verified_actor_id=principal.subject if principal is not None else None,
-            verified_actor_is_provider=(
-                principal is not None
-                and self.s.auth_provider_role in principal.roles
-            ),
         ))
 
     async def handle(

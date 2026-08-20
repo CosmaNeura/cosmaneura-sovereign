@@ -87,8 +87,10 @@ Authority depends on the deployment mode, never the request persona:
 - platform-enabled provider mode — set `AUTH_MODE=disabled` and
   `PLATFORM_AGENT_API_ENABLED=true`. The host exchanges its authenticated
   session for an opaque mount token and sends that as the sole bearer plus a
-  fresh client-turn UUID. The Agent API resolves actor, tenant, surface, and
-  capabilities; Sovereign does not verify the browser JWT directly.
+  fresh client-turn UUID for chat. `GET /welcome` sends the same sole bearer
+  through the read-only Agent API bootstrap without a client turn or durable
+  lineage. The Agent API resolves actor, tenant, surface, and capabilities;
+  Sovereign does not verify the browser JWT directly.
 
 Local example with a dev token:
 
