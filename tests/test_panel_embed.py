@@ -118,13 +118,17 @@ def test_platform_turn_transport_uses_fresh_bearer_and_explicit_exact_retry():
     assert "body: attempt.body" in panel
     assert "Retry this exact request" in panel
     assert "runAttempt(attempt, b)" in panel
+    assert "if (r.status === 401) attempt.forceRefresh = true" in panel
+    assert "? { forceRefresh: true }" in panel
+    assert "freshBearerHeaders(refreshRequest)" in panel
+    assert "attempt.forceRefresh = false" in panel
     assert "state.retryAttempt = attempt" in panel
     assert "input.value = attempt.text" in panel
     assert "error instanceof TypeError" in panel
     assert 'problem.retryable === true' in panel
     assert 'problem.retryable === false' in panel
     assert "d.client_turn_id !== attempt.clientTurnId" in panel
-    assert "var refreshed = await Promise.all([opts.getContext(), freshBearerHeaders()])" in panel
+    assert "opts.getContext(), freshBearerHeaders(refreshRequest)" in panel
     assert "attempt.initialHeaders = null" in panel
     assert "initialHeaders: pair[1]" in panel
 

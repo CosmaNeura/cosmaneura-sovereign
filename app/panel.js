@@ -13,7 +13,10 @@
  *     sovereignUrl: "https://sovereign.example.com",
  *     embedVersion: "1.0",
  *     // Opaque, short-lived platform mount-context token (never a raw IdP JWT).
- *     getAuthToken: async () => currentBearerToken,
+ *     // forceRefresh is requested only after an explicit retry of a 401.
+ *     getAuthToken: async request => request && request.forceRefresh
+ *       ? rotateCurrentMountSession()
+ *       : currentBearerToken,
  *     getContext: async () => ({
  *       clientId: openRecord.threadKey,
  *       thread_ref: openRecord.assistantThreadRef,
@@ -463,8 +466,10 @@
       input.disabled = disabled; fmt.disabled = disabled; send.disabled = disabled;
     }
 
-    async function freshBearerHeaders() {
-      var token = await opts.getAuthToken();
+    async function freshBearerHeaders(request) {
+      var token = request === undefined
+        ? await opts.getAuthToken()
+        : await opts.getAuthToken(request);
       if (typeof token !== "string" || token.length < 16 ||
           token.length > 8192 || /\s/.test(token))
         throw new Error("Assistant bearer token is invalid");
@@ -825,7 +830,13 @@
       } else {
         // Explicit retry preserves the request body/UUID/draft but reacquires
         // token and context together so rotation never freezes an old bearer.
-        var refreshed = await Promise.all([opts.getContext(), freshBearerHeaders()]);
+        var refreshRequest = attempt.forceRefresh === true
+          ? { forceRefresh: true }
+          : undefined;
+        var refreshed = await Promise.all([
+          opts.getContext(), freshBearerHeaders(refreshRequest)
+        ]);
+        attempt.forceRefresh = false;
         if (!currentGeneration(attempt.generation)) throw new DOMException("stale", "AbortError");
         if (!governedContext(refreshed[0], attempt.recordId)) {
           loadThreadFor(null);
@@ -904,6 +915,7 @@
             loadThreadFor(null);
             return;
           }
+          if (r.status === 401) attempt.forceRefresh = true;
           var canRetry = Boolean(
             r.status === 401 ||
             (problem && problem.retryable === true &&
@@ -998,6 +1010,7 @@
           clientTurnId: clientTurnId,
           recordId: recordId,
           generation: generation,
+          forceRefresh: false,
         };
         state.retryAttempt = attempt;
         input.value = ""; input.style.height = "auto";

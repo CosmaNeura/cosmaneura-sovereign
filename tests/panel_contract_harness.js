@@ -133,9 +133,11 @@ async function main() {
     configurable: true,
   });
 
-  let tokenCalls = 0;
+  const tokenRequests = [];
+  let mountToken = "opaque-token-session-a-abcdefghijkl";
+  let rotateCalls = 0;
   let currentRecord = "record_a";
-  let chatMode = "retry";
+  let chatMode = "auth-retry";
   const chatRequests = [];
   let humanContacts = 0;
   let historyNotifications = 0;
@@ -157,16 +159,16 @@ async function main() {
       authorization: options.headers.authorization,
       turn: options.headers["x-cosmaneura-client-turn-id"],
     });
-    if (chatMode === "retry") {
+    if (chatMode === "auth-retry") {
       chatMode = "success";
-      return response(503, {
-        type: "https://contracts.cosmaneura.com/problems/service_unavailable",
-        title: "Service unavailable",
-        status: 503,
-        code: "SERVICE_UNAVAILABLE",
-        detail: "The assistant is temporarily unavailable.",
-        trace_id: "trace_retry_1234",
-        retryable: true,
+      return response(401, {
+        type: "https://contracts.cosmaneura.com/problems/token_invalid",
+        title: "Token invalid",
+        status: 401,
+        code: "TOKEN_INVALID",
+        detail: "The assistant session could not be verified.",
+        trace_id: "trace_auth_retry_1234",
+        retryable: false,
       });
     }
     if (chatMode === "mismatch") {
@@ -222,7 +224,14 @@ async function main() {
   const controller = window.CosmaNeuraPanel.mount({
     sovereignUrl: "https://sovereign.example",
     embedVersion: "1.0",
-    getAuthToken: async () => `opaque-token-${String(++tokenCalls).padStart(4, "0")}-abcdefghijkl`,
+    getAuthToken: async request => {
+      tokenRequests.push(request);
+      if (request && request.forceRefresh === true) {
+        rotateCalls += 1;
+        mountToken = "opaque-token-session-b-abcdefghijkl";
+      }
+      return mountToken;
+    },
     getContext: async () => ({
       clientId: currentRecord,
       thread_ref: `thread_${currentRecord}`,
@@ -259,6 +268,13 @@ async function main() {
   assert(chatRequests[0].turn === chatRequests[1].turn, "explicit retry changed turn header");
   assert(chatRequests[0].authorization !== chatRequests[1].authorization,
          "explicit retry did not acquire a fresh bearer");
+  assert(tokenRequests[tokenRequests.length - 1] &&
+         Object.keys(tokenRequests[tokenRequests.length - 1]).join(",") === "forceRefresh" &&
+         tokenRequests[tokenRequests.length - 1].forceRefresh === true,
+         "401 retry did not request exactly one forced refresh");
+  assert(tokenRequests.filter(request => request && request.forceRefresh === true).length === 1,
+         "401 retry requested more than one forced refresh");
+  assert(rotateCalls === 1, "401 retry did not rotate the existing mount session exactly once");
   const sent = JSON.parse(chatRequests[0].body);
   assert(Object.keys(sent).sort().join(",") === "client_turn_id,message,metadata",
          "first send included a forbidden top-level field");
