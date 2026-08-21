@@ -109,6 +109,25 @@ and the live boundary verifier afterward.
 
 ## 3. Run live smokes and force the paired rollback
 
+> **Provider-only V7 staging exception.** Do not run the paired rehearsal while
+> provider and public intentionally use different image digests. The rehearsal
+> requires one shared baseline and correctly refuses a split baseline. The
+> provider app also runs in Azure Container Apps `Single` revision mode with no
+> inactive revisions retained, so rollback cannot depend on reactivating an old
+> revision name. During the provider-only V7 soak, use the separately reviewed
+> provider rollback procedure. First make provider ingress internal and
+> pre-stage a checksum-reviewed command that restores the exact current digest
+> under a fresh revision suffix. Only while provider ingress remains internal,
+> create a new provider revision from the exact prior immutable digest; never
+> route external traffic to it because it retains the known `gpt-5.6-sol`
+> temperature failure. Restore the current digest, verify its exact image,
+> configuration, health, and direct-model behavior while internal, then restore
+> external TLS-only ingress and immediately run full provider acceptance,
+> public-denial, and reconciliation checks. Re-isolate provider and stop on any
+> failure. Leave public and Platform untouched throughout. Resume this paired
+> rehearsal only after both mounts deliberately return to one reviewed
+> baseline.
+
 Build a second clean immutable digest from the exact checkout that will run the
 rehearsal. Commit every intended source change and remove every untracked file;
 the wrapper refuses a dirty tree. It must differ from the paired baseline. The
