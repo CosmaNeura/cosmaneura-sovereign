@@ -30,6 +30,9 @@ from app.clients.platform_usage import (
 )
 
 
+_AZURE_V1_DEFAULT_TEMPERATURE_DEPLOYMENTS = frozenset({"gpt-5.6-sol"})
+
+
 class LLMClient:
     def __init__(self, settings: Optional[Settings] = None):
         self.s = settings or get_settings()
@@ -198,20 +201,14 @@ class LLMClient:
             self.s.azure_openai_api_version, self.s.azure_openai_api_key,
         )
         headers["content-type"] = "application/json"
-        body = {
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": temperature,
-            **body_extra,
-        }
-        # GPT-5-generation models on the v1 surface take max_completion_tokens;
-        # the classic deployments path keeps the legacy max_tokens name.
-        if body_extra:
-            body["max_completion_tokens"] = max_tokens
-        else:
-            body["max_tokens"] = max_tokens
+        body = _azure_chat_body(
+            system=system,
+            prompt=prompt,
+            deployment=deployment,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            body_extra=body_extra,
+        )
         try:
             async with httpx.AsyncClient(timeout=self.s.request_timeout_seconds) as client:
                 resp = await client.post(url, headers=headers, json=body)
@@ -285,6 +282,41 @@ def _azure_chat_request(endpoint: str, deployment: str, api_version: str,
     return (f"{e}/chat/completions",
             {"authorization": f"Bearer {api_key}"},
             {"model": deployment})
+
+
+def _azure_chat_body(
+    *,
+    system: str,
+    prompt: str,
+    deployment: str,
+    max_tokens: int,
+    temperature: float,
+    body_extra: dict,
+) -> dict:
+    """Build one Azure request without a retry that could duplicate PHI."""
+    body = {
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        **body_extra,
+    }
+    # This Azure v1 deployment rejects non-default ``temperature`` values.
+    # Keep the allowlist exact: Azure deployment names are aliases, and the
+    # live fast-model deployment accepts its explicit deterministic value.
+    omit_temperature = (
+        bool(body_extra)
+        and deployment.casefold() in _AZURE_V1_DEFAULT_TEMPERATURE_DEPLOYMENTS
+    )
+    if not omit_temperature:
+        body["temperature"] = temperature
+    # GPT-5-generation models on the v1 surface take max_completion_tokens;
+    # the classic deployments path keeps the legacy max_tokens name.
+    if body_extra:
+        body["max_completion_tokens"] = max_tokens
+    else:
+        body["max_tokens"] = max_tokens
+    return body
 
 
 # ---------------------------------------------------------------------------
