@@ -531,6 +531,40 @@ def test_azure_endpoint_forms_supported():
     assert hdrs2["api-key"] == "k" and extra2 == {}
 
 
+def test_azure_v1_gpt5_omits_unsupported_temperature():
+    """GPT-5 v1 calls must not send a field Azure rejects with HTTP 400."""
+    from app.clients.llm import _azure_chat_body
+
+    body = _azure_chat_body(
+        system="system",
+        prompt="synthetic prompt",
+        deployment="gpt-5.6-sol",
+        max_tokens=64,
+        temperature=0.2,
+        body_extra={"model": "gpt-5.6-sol"},
+    )
+
+    assert body["model"] == "gpt-5.6-sol"
+    assert body["max_completion_tokens"] == 64
+    assert "temperature" not in body
+
+
+def test_azure_v1_fast_model_keeps_temperature():
+    """The live fast deployment accepts and keeps deterministic sampling."""
+    from app.clients.llm import _azure_chat_body
+
+    body = _azure_chat_body(
+        system="system",
+        prompt="synthetic prompt",
+        deployment="gpt-5.4-nano",
+        max_tokens=64,
+        temperature=0.0,
+        body_extra={"model": "gpt-5.4-nano"},
+    )
+
+    assert body["temperature"] == 0.0
+
+
 # --- journey digest: multi-session compression off the hot path ---------------
 
 def test_digest_merges_sessions_with_gates_intact():
