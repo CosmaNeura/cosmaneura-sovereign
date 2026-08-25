@@ -1,78 +1,129 @@
-# AGENTS.md — Cosmaneura engineering guardrails
+# AGENTS.md — Cosmaneura Sovereign engineering guardrails (v0.2.1)
 
-> Canonical copy lives in `cosmaneura-architecture/deploy-kit/`. Sync on Contract Friday.
-> Keep this file under ~150 lines: only non-inferable rules belong here.
+The canonical baseline lives in `cosmaneura-architecture/deploy-kit/`. This
+copy is adapted to Sovereign; stricter rules in `CLAUDE.md` still bind, and
+governance architecture supersedes this repository's historical design note.
 
-## Stack
+## Operating objective
 
-GitHub + GitHub Actions (no Azure DevOps) · Azure Container Apps · ACR ·
-Azure Database for PostgreSQL Flexible Server · Clerk + Microsoft Entra ID
-(sign-in; varies by service). Core deploys from `master`. Key Vault + App
-Insights are target-state, not yet live in core prod.
-**This repo: the sovereign chatbot. ACA **staging only** — never deployed to production.**
+Reduce deployment risk created by rapid code growth. Keep changes small,
+independently deployable, observable, and reversible. Documentation supports
+that work; it does not replace decomposition or deployed-state reconciliation.
 
-## Commands
+## Verified commands and current deployment facts
 
-- Install: `make install`
-- Test (all): `make test`
-- Test (single file): `uv run pytest <path>`
-- Lint + typecheck: `ruff check app tests`
-- Local dev: `make serve  # or `make demo` for the offline pipeline`
-- DB migration create: no Alembic in this repo — state lives in the platform. N/A.
-- Deploy: manual `workflow_dispatch` only, and gated by `vars.SOVEREIGN_DEPLOY_ENABLED`, which is `false` on purpose. See Repo notes.
+- Local install: `make install`
+- CI's locked install: `tools/compile_requirements_locks.sh --check`, then the
+  hash-checked `uv pip install` sequence in `build_and_publish.yml`
+- Test: `make test`; CI pytest:
+  `PYTHONPATH=. .venv/bin/python -m pytest tests/ -q`; replace `tests/` with a
+  path for a focused run
+- Lint: `.venv/bin/ruff check .`
+- Typecheck: none is configured
+- Local service: `make serve`; offline demo: `make demo`; embedded demo:
+  `make demo-dashboard`
+- Migration: N/A. Sovereign is stateless and owns no database schema.
 
-## Risk tiers (declare one on every PR)
+Staging exists, while production resources do not. `Build & Publish` has a
+default-disabled manual deploy job for `main`, gated by
+`SOVEREIGN_DEPLOY_ENABLED`; it has never executed. It currently builds and
+deploys in the same run rather than promoting a previously built artifact, so
+it does not yet satisfy the target promotion doctrine. Turning it on is not
+authorized by this document.
 
-- **Tier 0** — copy, styling, docs, config text, additive UI behind an existing flag. CI green → merge.
-- **Tier 1** — new feature logic, new endpoints, additive-only schema changes (new tables/columns, nullable). Requires: feature flag + flight plan reference.
-- **Tier 2** — anything touching `app/security/auth.py`, `app/clients/athena/`, the de-identification path (`infra/deid.tf`, DEID_* config), and any change to a mount profile, or any destructive migration. Requires: flight plan, migration ladder compliance (docs/MIGRATION_PLAYBOOK.md), rehearsal run, founder sign-off.
+Only the founder may dispatch a future production promotion. The workflow run
+is explicit self-authorization, not independent approval. The current workflow
+does not technically restrict dispatch to the founder, so that remains a gap.
+Agents never dispatch or run direct production deployment commands.
 
-Tier is set by the *paths a change touches*, never by urgency.
+## Risk class (declare one on every PR)
+
+- **Tier 0 — routine:** localized code, tests, copy, style, documentation, or
+  behavior-preserving refactoring with no deployment-surface, schema/data,
+  auth/session, billing, PHI, security-boundary, or external-contract impact.
+- **Tier 1 — deployment-sensitive and reversible:** dependency, runtime
+  configuration, CI/build path, additive API/contract, or user-visible
+  behavior with a deliberate recovery move.
+- **Tier 2 — irreversible or high blast radius:** auth/session, provider/PHI
+  paths, security boundaries, production identity/networking/promotion,
+  breaking contracts, broad infrastructure, or destructive external data work.
+
+`app/security/auth.py`, `app/clients/athena/`, the de-identification path
+(including `infra/deid.tf` and `DEID_*` configuration), and mount-profile
+changes set a minimum of Tier 2. Classify by effect as well as path; urgency
+never lowers the tier. Split mixed work where concerns can deploy separately.
+
+## Conditional controls
+
+- Use a feature flag or release control only for reversible user-visible
+  behavior, with owner, expiry, and initial cohort. It is not rollback for
+  infrastructure, security, or refactoring work.
+- Use a flight plan for Tier 2, cross-repo rollouts, or multi-deploy/cohort
+  releases. Routine single-deploy PRs do not invent one.
+- Sovereign owns no schema: local migration rungs and database rehearsal are
+  N/A. If another service's schema/data changes, that owner supplies the rung,
+  rehearsal, and receiver-first plan; Sovereign links the evidence.
+- Every code-changing PR receives an independent agent review after its last
+  substantive push. A non-implementer agent records the reviewed commit,
+  findings, and dispositions in a durable PR comment or check and links it
+  from the PR. A later substantive push invalidates that review.
+- Agent review is not GitHub approval. `main` currently has no branch
+  protection or required human approval; preserve that setting until it is
+  separately revisited.
+
+## Approval, promotion, and reconciliation
+
+- Do not claim a GitHub environment reviewer exists; private GitHub Team does
+  not provide that control. Founder production dispatch is self-authorization.
+- Before promoting over a deployed SHA, digest, configuration, or mount that
+  differs from `main`, record the evidence and choose `assimilate`, `retain
+  temporarily`, or `replace`. Never reconcile drift by blindly deploying.
+- Security acceptance is scoped. Unless it says otherwise, it permits only
+  dark development in a non-PHI environment and blocks production or
+  PHI-bearing promotion in the affected scope.
 
 ## Permission boundaries
 
-**Allowed freely**
-- Creating branches, PRs, and stacked PRs; small refactors inside a feature's own module
-- Adding feature flags; additive migrations (new nullable columns, new tables, new indexes)
-- Updating docs, tests, and flight plans
+**Allowed without a separate production decision**
+
+- Small/stacked PRs, tests, flight plans, and reversible refactors in scope.
+- Read-only live-state inspection and preparation of reconciliation options.
 
 **Ask first**
-- Any change under the Tier 2 paths above — even one line
-- Adding a new external dependency or third-party service (BAA implications)
-- Changing CI workflows, environment config, or anything under `.github/`
-- Backfill scripts that write to production data
+
+- Changes to auth/session, Athena, de-identification, provider/PHI paths,
+  mount profiles, security boundaries, CI/deployment workflows, environment
+  configuration, or production data.
+- New dependencies/services, cohort activation, or production promotion.
 
 **Never**
-- Destructive migrations (DROP/RENAME column or table, type changes) outside a labeled `contract` PR whose hold period has elapsed
-- Importing auth/billing internals from feature code — go through the public interface of the module only
-- Turning a feature flag on for all users in code; rollout happens through the flag system, by cohort
-- Touching production directly (`az` commands against prod resources), force-pushing the default branch, committing secrets, or putting real PHI in tests, fixtures, seeds, staging, or logs
 
-## Architecture rules (the non-inferable ones)
+- Put PHI in tests, fixtures, seeds, staging, rehearsal exports, logs, PRs, or
+  agent prompts. Magisterium and other non-BAA egress receive de-identified
+  content only.
+- Commit secrets, force-push `main`, deploy an unmerged branch, or represent
+  agent output as GitHub approval.
+- Perform schema cleanup from this repository; it does not own the schema.
+- Archive a repository or delete long-lived deployed resources as part of this
+  adoption.
 
-- Identity: only this repo's designated auth adapter module(s) — `app/security/auth.py` (provider-neutral OIDC) and `app/clients/athena/auth.py` (Athena) — may import vendor SDKs (Clerk, Entra/MSAL) or parse provider claims. All domain code consumes a normalized principal from the adapter — never raw tokens, never provider-specific branches. One adapter per service; there is no cross-service facade.
-- Reversible user-visible behavior ships behind a flag/cohort control from its first commit (name: `ff_<feature>_<yyyymm>`, owner + expiry in the flight plan). Refactors, security fixes, infra, and schema work are NOT flagged — small PRs + migration ladder + revert.
-- All schema changes follow docs/MIGRATION_PLAYBOOK.md. Additive first; destructive only as a final `contract` step. A "rung" = one independently deployable, observable, backward-compatible transition (may span coordinated cross-repo PRs; receiver/auth deploys before sender activation).
-- Users carry an `auth_version` (or equivalent) marker during auth migrations; both old and new paths must work until the contract step.
+## Architecture and workflow
 
-## Workflow
-
-1. New feature? FIRST draft `docs/flight-plans/<feature>.md` from the template. Do not write feature code before the flight plan exists.
-2. Build as a stack of small PRs (interface/seam → logic → UI → flag wiring). One session per layer. Keep diffs reviewable by one human.
-3. Every PR fills in the PR template completely, including the tier and the change record.
-4. If a PR changes deploy-relevant behavior, update this file in the same PR.
-
-## Repo notes
-
-- **Provider-neutral OIDC**, not Clerk-native — staging currently points at a Clerk
-  dev issuer, which is a staging convenience and not the production contract.
-- Staging is live (`cosmaneura-sovereign-staging`, both mounts running). **Production
-  does not exist**: no resource group, no registry, no container apps.
-- The Deploy job has never executed. It requires `workflow_dispatch` on `main` AND
-  `SOVEREIGN_DEPLOY_ENABLED == true`. Turning that variable on is a declaration that
-  six gates are cleared — it is the founder’s call, never an agent’s.
-- Four workflow variables are unset with no fallback: `CONTAINER_REGISTRY_HOST`,
-  `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`. Separately, no
-  federated credential names this repo, so `azure/login` cannot succeed yet.
-- `main` has no branch protection.
-- Infra here is OpenTofu (`infra/*.tf`), not Bicep.
+- Vendor OIDC claim parsing stays in `app/security/auth.py`; Athena auth stays
+  in `app/clients/athena/auth.py`. Domain code consumes normalized principals.
+- Preserve emergency short-circuiting, mount resolution, capability/BAA gates,
+  canonical persistence, de-identification, doctrinal routing, and safe egress
+  in the order defined by `CLAUDE.md`.
+- Cross-repo work is receiver-first and backward-compatible.
+- Each PR should be reviewable in roughly ten minutes and produce one
+  deployable outcome. Prefer a dependency-ordered stack to a mixed tranche.
+- A blocking, repository-specific change-budget workflow has not landed here;
+  that remains an enforcement gap. Its threshold must be introduced or
+  changed in a separate reviewed policy PR, never waived by an oversized PR.
+- Every PR records tier, tests, exact recovery, agent-review evidence, and only
+  the conditional controls that apply.
+- Current gaps also include unset deployment variables, absent federation,
+  no branch protection, and no prebuilt-artifact promotion path. Record them;
+  do not describe them as implemented controls.
+- No workflow currently validates tier, flight-plan, or agent-review evidence;
+  those are documented process controls until an enforcement PR lands.

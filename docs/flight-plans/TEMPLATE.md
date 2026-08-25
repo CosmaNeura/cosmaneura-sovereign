@@ -1,47 +1,60 @@
-# Flight plan: <feature name>
+# Flight plan: name the outcome
 
-> Copy to `docs/flight-plans/<feature>.md` BEFORE writing feature code.
-> The agent drafts this; the founder approves it. CI rejects feature PRs that
-> don't link a flight plan.
+Use this template only for Tier 2, cross-repo rollouts, or changes released
+over multiple deploys/cohorts. Delete instructional text from the completed
+plan and mark inapplicable sections `N/A` with a reason.
 
-## Scope
-- **Problem / outcome:**
-- **In scope:**
-- **Explicitly NOT in scope (non-goals):**
-- **User cohorts affected:** (new users / existing users / specific roles)
+## Outcome and boundaries
 
-## Risk
-- **Tier:** 0 / 1 / 2 — and why
-- **Touches auth, billing, or patient-data schemas?** yes/no → if yes, list
-  the migration ladder rungs this feature requires and link each rung's PR
-  as it lands.
+- Problem and measurable outcome:
+- In scope:
+- Explicit non-goals:
+- Affected users, mounts, services, environments, and data classes:
 
-## Flag
-- **Flag name:** `ff_<feature>_<yyyymm>`
-- **Owner:** 
-- **Expiry date:** (when the flag should be removed after full rollout)
+## Risk and dependencies
 
-## Schema changes
-| Change | Ladder rung | PR |
-|---|---|---|
-| | | |
+- Tier and reason:
+- Irreversible or high-blast-radius decisions:
+- Dependency-ordered PR stack; explain how each PR can be held safely:
+- Cross-repo contract/version and receiver-before-sender order:
 
-## Rollout plan
-1. Founder + synthetic practice — date:
-2. Pilot practice — date:
-3. 25% — date:
-4. 100% — date:
+## Current deployed state
 
-## Health signals (checked between cohorts)
-- (e.g. login success rate, error rate on <endpoint>, canary journey pass,
-  support pings from pilot practice)
+- Live SHA/digest/configuration/mount evidence by affected environment:
+- Default-branch difference and deployed-only behavior:
+- Reconciliation decision: assimilate / retain temporarily / replace
+- Previous known-good artifact and recovery boundary:
 
-## Rollback trigger + move
-- **We roll back if:** (specific, measurable — e.g. login success < 99% over 30 min)
-- **The move is:** (flag off / revert PR # / ladder rung rollback)
+## Feature flag / release control (user-visible reversible behavior only)
 
-## Stack outline (planned PR layers)
-1. Seam/interface —
-2. Core logic —
-3. UI —
-4. Flag wiring + rollout —
+- Control name, stable practice key, owner, and expiry:
+- Cohorts and activation authority:
+- Removal PR/condition:
+- If no reversible user-visible behavior, reason this is N/A:
+
+## Schema/data sequence
+
+- N/A — Sovereign owns no database schema.
+- If an external schema or stored-data contract changes, link the owning
+  repository's rung, rehearsal, invariants, recovery, and receiver-first order:
+
+## Rollout and promotion
+
+- Ordered environments/mounts/cohorts and hold points:
+- Health signals and measurable abort thresholds:
+- Synthetic canary journey and paired-rollback evidence:
+- Founder-only manual production/PHI promotion run, or current blocker while
+  the default-disabled workflow lacks an already-built artifact path:
+
+## Security and recovery
+
+- Open security acceptances, scope, expiry, and promotion impact:
+- Recovery move for behavior, image, infrastructure, mounts, and external data
+  damage as applicable:
+- Observation window before irreversible cleanup in an owning repository:
+
+## Completion
+
+- Evidence required to call the outcome complete:
+- Follow-up cleanup PRs and owners:
+- Documentation and contract records to update:
