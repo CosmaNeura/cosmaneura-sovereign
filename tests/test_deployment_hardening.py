@@ -936,6 +936,65 @@ def test_workflow_resolves_digest_and_calls_paired_deployer() -> None:
     assert "app must have exactly one expected mount container" in live_boundaries
 
 
+def test_workflow_contains_production_before_credentials_or_mutation() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "build_and_publish.yml").read_text()
+    authorize_start = workflow.index("\n  authorize-production:")
+    test_start = workflow.index("\n  test:", authorize_start)
+    deploy_start = workflow.index("\n  deploy:", test_start)
+    authorization = workflow[authorize_start:test_start]
+    deployment = workflow[deploy_start:]
+
+    assert "permissions: {}" in authorization
+    assert "environment:" not in authorization
+    assert "secrets." not in authorization
+    assert '"$PROMOTION_EVENT" != "workflow_dispatch"' in authorization
+    assert '"$PROMOTION_REPOSITORY" != "CosmaNeura/cosmaneura-sovereign"' in authorization
+    assert '"$PROMOTION_REF" != "refs/heads/main"' in authorization
+    assert '"$PROMOTION_ACTOR" != "JohnClem"' in authorization
+    assert '"$PROMOTION_TRIGGERING_ACTOR" != "JohnClem"' in authorization
+
+    assert "needs: [test, infrastructure, authorize-production]" in deployment
+    assert "github.event_name == 'workflow_dispatch'" in deployment
+    assert "github.repository == 'CosmaNeura/cosmaneura-sovereign'" in deployment
+    assert "github.ref == 'refs/heads/main'" in deployment
+    assert "github.actor == 'JohnClem'" in deployment
+    assert "github.triggering_actor == 'JohnClem'" in deployment
+    assert "needs.authorize-production.result == 'success'" in deployment
+    assert "SOVEREIGN_DEPLOY_ENABLED == 'true'" in deployment
+
+    checkout = deployment.index("ref: ${{ github.sha }}")
+    initial_main_check = deployment.index(
+        "- name: Require the checked-out commit to be current main"
+    )
+    initial_guard = deployment.index(
+        'if [[ "$current_main" != "$RELEASE_SHA" ]]', initial_main_check
+    )
+    credential_binding = deployment.index("- uses: azure/login@")
+    image_recheck = deployment.index(
+        "- name: Recheck current main, then build and push the immutable image"
+    )
+    image_guard = deployment.index(
+        'if [[ "$current_main" != "$RELEASE_SHA" ]]', image_recheck
+    )
+    image_mutation = deployment.index(
+        "infra/scripts/build-bootstrap-image.sh", image_recheck
+    )
+    mount_recheck = deployment.index(
+        "- name: Recheck current main, then deploy both mounts with paired rollback"
+    )
+    mount_guard = deployment.index(
+        'if [[ "$current_main" != "$RELEASE_SHA" ]]', mount_recheck
+    )
+    mount_mutation = deployment.index("infra/scripts/deploy-dual.sh", mount_recheck)
+    assert checkout < initial_main_check < initial_guard < credential_binding
+    assert credential_binding < image_recheck < image_guard < image_mutation
+    assert image_mutation < mount_recheck < mount_guard < mount_mutation
+    assert deployment.count(
+        'gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"'
+    ) == 3
+    assert deployment.count('if [[ "$current_main" != "$RELEASE_SHA" ]]') == 3
+
+
 def _deployment_env_text(mount: str) -> str:
     name = (
         ".env.production.backend.example"

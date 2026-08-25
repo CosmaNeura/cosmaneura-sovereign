@@ -23,6 +23,43 @@ permissions:
   contents: read
 
 jobs:
+  authorize-production:
+    name: Authorize production promotion
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require founder-authorized manual promotion from current main
+        env:
+          PROMOTION_ACTOR: ${{ github.actor }}
+          PROMOTION_EVENT: ${{ github.event_name }}
+          PROMOTION_REF: ${{ github.ref }}
+          PROMOTION_REPOSITORY: ${{ github.repository }}
+          PROMOTION_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          if [[ "$PROMOTION_EVENT" != "workflow_dispatch" ]]; then
+            echo "::error::Production promotion must be started manually with workflow_dispatch."
+            exit 1
+          fi
+          if [[ "$PROMOTION_REPOSITORY" != "CosmaNeura/cosmaneura-sovereign" ]]; then
+            echo "::error::Production promotion must run in the canonical Sovereign repository."
+            exit 1
+          fi
+          if [[ "$PROMOTION_REF" != "refs/heads/main" ]]; then
+            echo "::error::Production promotion must target the exact main branch."
+            exit 1
+          fi
+          if [[ "$PROMOTION_ACTOR" != "JohnClem" ]]; then
+            echo "::error::Production promotion is restricted to the founder account."
+            exit 1
+          fi
+          if [[ "$PROMOTION_TRIGGERING_ACTOR" != "JohnClem" ]]; then
+            echo "::error::Production promotion reruns are restricted to the founder account."
+            exit 1
+          fi
+
   test:
     name: Quality & tests
     runs-on: ubuntu-latest
@@ -94,10 +131,19 @@ jobs:
     # legitimately exceed 20 minutes. Leave enough runway for the EXIT trap to
     # restore both mounts rather than letting the runner kill it mid-rollback.
     timeout-minutes: 60
-    needs: [test, infrastructure]
+    needs: [test, infrastructure, authorize-production]
     # Default-off kill switch. Do not enable until the external deployment,
     # governance, secrets, dual-app, smoke, and rollback gates are cleared.
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && vars.SOVEREIGN_DEPLOY_ENABLED == 'true' }}
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        github.repository == 'CosmaNeura/cosmaneura-sovereign' &&
+        github.ref == 'refs/heads/main' &&
+        github.actor == 'JohnClem' &&
+        github.triggering_actor == 'JohnClem' &&
+        vars.SOVEREIGN_DEPLOY_ENABLED == 'true' &&
+        needs.authorize-production.result == 'success'
+      }}
     environment: production
     permissions:
       contents: read
@@ -112,6 +158,25 @@ jobs:
       IMAGE_REPO: cosmaneura/sovereign
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Require the checked-out commit to be current main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          current_main="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'
+          )"
+          if [[ "$current_main" != "$RELEASE_SHA" ]]; then
+            echo "::error::The dispatched commit is no longer current main. Start a new run."
+            exit 1
+          fi
 
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
@@ -134,14 +199,27 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Build and push checksum-pinned immutable image
+      - name: Recheck current main, then build and push the immutable image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
+          current_main="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'
+          )"
+          if [[ "$current_main" != "$RELEASE_SHA" ]]; then
+            echo "::error::Main advanced before image publication. Start a new run."
+            exit 1
+          fi
           IMAGE_REF="$(REGISTRY="$REGISTRY" IMAGE_REPO="$IMAGE_REPO" \
             infra/scripts/build-bootstrap-image.sh)"
           echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
 
-      - name: Deploy both mounts with paired rollback
+      - name: Recheck current main, then deploy both mounts with paired rollback
         env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
           REVISION_SUFFIX: r-${{ github.run_id }}-${{ github.run_attempt }}
           SMOKE_PYTHON: ${{ runner.temp }}/deploy-venv/bin/python
           SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED: ${{ vars.SOVEREIGN_SYNTHETIC_RECORD_CONFIRMED }}
@@ -151,4 +229,12 @@ jobs:
           # exchange is added.
           SOVEREIGN_INTERACTIVE_SMOKE_CREDENTIALS: "false"
         run: |
+          set -euo pipefail
+          current_main="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'
+          )"
+          if [[ "$current_main" != "$RELEASE_SHA" ]]; then
+            echo "::error::Main advanced before mount deployment. Start a new run."
+            exit 1
+          fi
           infra/scripts/deploy-dual.sh

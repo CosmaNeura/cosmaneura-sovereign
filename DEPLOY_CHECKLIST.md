@@ -168,6 +168,10 @@ Actions → Variables), so no cloud credentials are stored:
       paired rollback gates, and smoke-time mint exchange pass. A main push
       cannot deploy; until that exchange exists, use only the reviewed operator
       transaction below.
+- [ ] Before any future workflow activation, verify the dispatch is on the
+      exact current `main` SHA and both `github.actor` and
+      `github.triggering_actor` are `JohnClem`. A stale rerun must stop before
+      image publication or either mount update.
 - [ ] The first-activation operator deploy transaction runs
       `tools/smoke_live.py` before commit. Missing/expired/wrong-role tokens,
       public capability leakage, or live model/lineage failure
