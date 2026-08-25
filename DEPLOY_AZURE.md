@@ -214,6 +214,12 @@ update or functional smoke fails.
 
 Deployment remains default-off behind the repository variable
 `SOVEREIGN_DEPLOY_ENABLED=true` and runs only by `workflow_dispatch` from main.
+Before the protected environment is entered, a no-permission job requires the
+original actor and any rerun actor to be `JohnClem`. The deploy job repeats
+those checks directly, checks out the dispatch SHA, and refuses stale runs if
+that SHA is no longer current `main`; it checks `main` again immediately before
+publishing an image and before changing either mount. These controls contain a
+future activation but do not authorize one.
 Do not enable that unattended lane yet: Clerk JWTs and the 60-second host grant
 cannot safely be persisted before checkout/build/rollout, so the workflow has no
 such secrets and fails before mutation. The reviewed operator path runs

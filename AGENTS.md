@@ -32,9 +32,12 @@ it does not yet satisfy the target promotion doctrine. Turning it on is not
 authorized by this document.
 
 Only the founder may dispatch a future production promotion. The workflow run
-is explicit self-authorization, not independent approval. The current workflow
-does not technically restrict dispatch to the founder, so that remains a gap.
-Agents never dispatch or run direct production deployment commands.
+is explicit self-authorization, not independent approval. The workflow now
+requires both the actor and rerun actor to be `JohnClem`, binds the run to the
+exact current `main` commit before credentials and again immediately before
+each mutation, and keeps the deploy job behind `SOVEREIGN_DEPLOY_ENABLED`.
+Agents never dispatch or run direct production deployment commands. This is
+pre-activation containment, not evidence that production is ready.
 
 ## Risk class (declare one on every PR)
 
