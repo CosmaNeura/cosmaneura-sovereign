@@ -1,86 +1,39 @@
-# MIGRATION_PLAYBOOK.md — the migration ladder
+# MIGRATION_PLAYBOOK.md — Sovereign applicability (v0.2.1)
 
-For ANY change to schemas, auth, billing, or patient-data structures.
-Never migrate by cutover. Each rung is its own PR/deploy; you may hold at any
-rung indefinitely. Deleting is the last rung, never the first.
+Sovereign is a stateless service and owns no database, migration framework, or
+schema. Local migration rungs, database restore rehearsal, backfill, and
+contract cleanup are therefore **N/A**. Do not invent Alembic commands, a
+rehearsal database, or a CI job for this repository.
 
-A "rung" = one independently deployable, observable, backward-compatible
-transition. It may require coordinated PRs across repos (versioned API
-contracts; receiver/auth deploys before sender activation) — "one rung per
-PR" means per transition, not literally one file.
+Auth, provider/PHI, de-identification, mount-profile, security-boundary, and
+production-promotion changes can still be Tier 2. Their controls are a flight
+plan, independent agent review, explicit health/abort thresholds, reversible
+runtime rollout where possible, and founder-only production promotion. They do
+not claim a schema rung merely because the change is high risk.
 
-Auth context: identity is per-service (Clerk in core; Entra tokens in Scribe
-and CAB; scheduling owns its own users tables; sovereign is provider-neutral
-OIDC). Any migration that moves users between providers, changes
-session/token handling, or reshapes a users table follows this ladder in
-full — `auth_version` tracks provider + credential format, and both paths
-keep working until the contract rung.
+## When another repository owns the data change
 
-## The ladder
+If a Sovereign rollout depends on a platform-owned schema or stored-data
+contract, the owning repository supplies the migration PR, rung, PHI-safe
+rehearsal, invariants, and recovery evidence. The coordinated flight plan must:
 
-### Rung 1 — Expand
-Add new structures alongside old: new tables, nullable columns, new token
-format, new IdP config. Old code ignores them entirely. Zero user-visible
-change.
-- PR label: `expand`
-- Rollback: drop the new structures (nothing reads them yet)
+1. Name the owning repository, versioned contract, and exact PRs.
+2. Deploy the backward-compatible receiver before activating Sovereign as a
+   sender.
+3. Show that both versions can coexist and that each step can be held safely.
+4. Link the owner's rehearsal evidence rather than duplicating PHI or raw
+   output in Sovereign artifacts.
+5. Leave additive expand structures dormant on rollback; destructive cleanup
+   remains a later, separately approved contract step in the owning repo.
 
-### Rung 2 — Dual-write
-New writes go to BOTH old and new structures. All reads remain on the old
-path. Track migration state per record (e.g. `auth_version` on users).
-- Rollback: stop writing to new structures
+## Runtime rehearsal
 
-### Rung 3 — Backfill + just-in-time migrate
-- Batch-backfill rows that can migrate without the user present, in small
-  batches, resumable, idempotent.
-- For credentials/anything needing the user: migrate lazily on next successful
-  login — verify via OLD path, mint new credentials, mark migrated. Unmigrated
-  users keep authenticating via the old path. **Nobody gets locked out.**
-- Rollback: pause the backfill; JIT-migrated users still work via dual-write
+Synthetic smoke, mount failover, and paired rollback exercises may be required
+by a Sovereign flight plan. They are runtime rollout evidence, not database
+migration rehearsal. Never copy production PHI into Sovereign staging or agent
+context. A scoped security acceptance permits only the environment/data
+boundary it names; by default it allows dark non-PHI development and blocks
+production or PHI-bearing promotion.
 
-### Rung 4 — Shadow-verify
-Run the new path in parallel on real traffic; log mismatches; ENFORCE NOTHING.
-Hold until mismatch rate is 0 for N days (default N=5).
-- This rung is mandatory for auth changes. It converts "grandfathering bugs"
-  into log lines instead of locked-out doctors.
-
-### Rung 5 — Cut reads
-Flip reads to the new path behind a flag, cohort by cohort (see
-DEPLOYMENT.md). Old path stays deployed and dormant as the kill switch.
-- Rollback: flag off
-
-### Rung 6 — Contract
-After ≥ 2 weeks stable with no kill-switch use: stop dual-writes (own PR),
-then remove old code + schema (own PR, label: `contract`).
-- Irreversible by design. That's why it waits.
-
-## Before climbing: rehearse
-
-Restore a **de-identified** snapshot of production into the rehearsal DB and
-run all pending migrations against it. Required for every Tier 2 PR.
-Production-shaped data (legacy rows, nulls, pre-column accounts) breaks
-migrations in rehearsal, not in production.
-
-On Azure Database for PostgreSQL Flexible Server, the rehearsal DB comes from
-point-in-time restore (creates a NEW server — production is never touched):
-
-```
-az postgres flexible-server restore \
-  --resource-group <rg> --name <app>-rehearsal \
-  --source-server <prod-server> --restore-time <UTC timestamp>
-```
-
-Then: run the de-identification scrubber against `<app>-rehearsal`, run all
-pending migrations (`alembic upgrade head`; CAB via its runner), run the test
-suite pointed at it, and delete the server when done (it bills while it
-exists). Each run doubles as restore-drill evidence — log it.
-
-Rehearsal CI job name: `<TODO: job name once wired>`
-
-## Hard rules for agents
-
-- A migration PR does exactly one rung. Never combine rungs.
-- Backfills: batched (≤ `<TODO>` rows/batch), resumable, idempotent, logged.
-- No `DROP`, `RENAME`, or type change outside a `contract` PR.
-- Every rung's PR states its rollback move before merge.
-- Real PHI never appears in fixtures, rehearsal exports, logs, or PR text.
+No migration, destructive cleanup, production promotion, repository archive,
+or resource deletion is authorized by this document.
