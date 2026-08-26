@@ -124,15 +124,21 @@ curl -s localhost:8000/chat -H "Authorization: Bearer $TOKEN" \
 A body `persona` cannot select the provider/PHI path. See
 `SETUP_AND_HANDOFF.md` for the platform exchange and legacy OIDC boundaries.
 
-## Going live (the short version)
+## Production remains blocked
 
-1. Create a **Magisterium API key** and an **Anthropic API key**.
-2. For the **provider** build: execute Anthropic's **BAA** and enable **Zero Data
-   Retention** on a qualifying tier (or run Claude via AWS Bedrock / Google Vertex
-   under that hyperscaler's BAA).
-3. Set `MOCK_MODE=false` and populate `.env` (copy from `.env.example`).
-4. Replace the **baseline** de-identifier and complete platform retention and
-   integrity controls — see the hardening checklist in `SETUP_AND_HANDOFF.md`.
+This repository has staging resources, but production resources do not yet
+exist. A merge to `main` does not deploy. The tracked production job is manual,
+founder-only, and additionally disabled by `SOVEREIGN_DEPLOY_ENABLED`; required
+repository variables and Azure federation are not configured. Do not treat
+these source gates as production readiness or enable them from this README.
+
+Use [`DEPLOY_CHECKLIST.md`](./DEPLOY_CHECKLIST.md),
+[`STAGING_REHEARSAL.md`](./STAGING_REHEARSAL.md), and the
+[pre-activation containment plan](./docs/flight-plans/sovereign-preactivation-deploy-containment.md)
+as the operational sequence. That sequence requires exact-source review,
+immutable image identity, live-state reconciliation, paired rollback proof,
+applicable vendor/BAA verification, and explicit production authorization.
+Until those gates pass, keep all work dark and synthetic-only with no PHI.
 
 ## Project layout
 
