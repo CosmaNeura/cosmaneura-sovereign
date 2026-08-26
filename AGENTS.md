@@ -120,9 +120,13 @@ never lowers the tier. Split mixed work where concerns can deploy separately.
 - Cross-repo work is receiver-first and backward-compatible.
 - Each PR should be reviewable in roughly ten minutes and produce one
   deployable outcome. Prefer a dependency-ordered stack to a mixed tranche.
-- A blocking, repository-specific change-budget workflow has not landed here;
-  that remains an enforcement gap. Its threshold must be introduced or
-  changed in a separate reviewed policy PR, never waived by an oversized PR.
+- The tracked, repository-specific `change-budget` workflow rejects more than
+  2,000 changed lines or 50 changed files and fails closed when GitHub diff
+  metadata is missing, malformed, or negative. Repository administration must
+  separately require its status context for merge blocking; the workflow
+  itself does not alter the current human-approval requirements. Change the
+  threshold only in a separate reviewed policy PR, never by waiving an
+  oversized PR.
 - Every PR records tier, tests, exact recovery, agent-review evidence, and only
   the conditional controls that apply.
 - Current gaps also include unset deployment variables, absent federation,
