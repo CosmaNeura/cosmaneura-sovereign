@@ -32,6 +32,13 @@ mechanical orchestration. White-labelled onto MyCatholicDoctor.
   platform-owned canonical conversation/usage/audit reporting for provider
   turns, and a legacy local hash logger for offline development only.
 
+Provider credential/licensure status is informational only and never controls
+signup, trial, billing, continued use, entitlement, Sovereign capability, or
+real-PHI access. Practices authorize workforce membership and roles; Core
+enforces the independent authorization controls. Sovereign does not accept raw
+audio/video/media payloads and must not claim Cosmaneura verified professional
+status.
+
 ## Quickstart (runs with zero credentials)
 
 The whole pipeline ships in **mock mode** (`MOCK_MODE=true`, the default), so you
