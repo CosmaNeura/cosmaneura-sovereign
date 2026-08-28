@@ -114,6 +114,10 @@ never lowers the tier. Split mixed work where concerns can deploy separately.
 
 - Vendor OIDC claim parsing stays in `app/security/auth.py`; Athena auth stays
   in `app/clients/athena/auth.py`. Domain code consumes normalized principals.
+- NPPES/NPI is a read-only public referral data source, never provider
+  authentication, licensure or credential proof, practice membership,
+  entitlement, or a required onboarding field. Core owns public-provider
+  onboarding and it must succeed with NPI absent.
 - Preserve emergency short-circuiting, mount resolution, capability/BAA gates,
   canonical persistence, de-identification, doctrinal routing, and safe egress
   in the order defined by `CLAUDE.md`.
