@@ -119,6 +119,17 @@ every path, including the provider/PHI path, using a de-identified summary.
 
 | **6** | **Plan Workbench / Investigator** | Post-visit deep-dive: labs + history + the clinician's own assessment → levers-organized analysis, separate from the SOAP note. All calories/macros/BMI computed in code (`agents/calculators.py`), never generated | **PubMed** (de-identified topic), deterministic calculators; openFDA/RxNorm/USDA next | **Highest** — labs/history may hold PHI; BAA LLM **only** |
 
+### NPI boundary
+
+The NPPES integration is a read-only public-directory source for referral and
+provider matching. It is not part of provider signup, authentication, practice
+membership, licensure or credential approval, entitlement, or PHI access.
+Sovereign never asks a signed-in provider for an NPI to establish identity and
+never returns an NPPES match as proof of authority. Core owns public-provider
+onboarding and it must succeed with NPI absent. Any future customer-NPI
+collection belongs to a separately approved payer-facing transaction or
+integration and is not authorized by this referral client.
+
 Each agent uses the reasoning LLM for (a) slot extraction from free text and
 (b) narration/ranking. Agents 1, 2, 4 and 6 call **non-BAA public APIs**, so
 those APIs receive only de-identified text. See `PROVIDER_COPILOT_DESIGN.md` for the
@@ -160,7 +171,7 @@ PHI is the BAA-covered reasoning LLM (the path used by Agents 3, 4, 5 and 6).
 |---|---|---|
 | Doctrinal authority + final arbiter | **Magisterium AI** | `POST https://www.magisterium.com/api/v1/chat/completions`, model `magisterium-1` (OpenAI-compatible; returns citations). Optional inline advisory via **MCP** (`https://mcp.magisterium.com`, OAuth) using Anthropic's MCP connector (`mcp_servers`, beta header `mcp-client-2025-11-20`) — de-identified text only; not ZDR-eligible; not on Bedrock/Vertex |
 | Sovereign brain + agent reasoning | **Claude** (recommended) | Anthropic Messages API; BAA-eligible w/ ZDR. Alternatives: OpenAI (BAA on API), or Claude on Bedrock/Vertex |
-| Provider matching | **NPPES NPI Registry v2.1** | `GET https://npiregistry.cms.hhs.gov/api/?version=2.1` (free, no key) |
+| Provider matching | **NPPES NPI Registry v2.1** | Read-only public referral lookup; never onboarding, authentication, or credential proof. `GET https://npiregistry.cms.hhs.gov/api/?version=2.1` (free, no key) |
 | Trials / biotech | **ClinicalTrials.gov v2** | `GET https://clinicaltrials.gov/api/v2/studies` (free, no key) |
 | Catholic provider set + booking | **Partner Directory adapter** | MyCatholicDoctor feed (TBD) or partner registrations; fixture today |
 
