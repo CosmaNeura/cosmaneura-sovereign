@@ -130,6 +130,20 @@ onboarding and it must succeed with NPI absent. Any future customer-NPI
 collection belongs to a separately approved payer-facing transaction or
 integration and is not authorized by this referral client.
 
+Provider credential/licensure status is unverified informational metadata only.
+It never grants or blocks signup, trial, billing, continued use, entitlement,
+Sovereign capability, or real-PHI access. The practice authorizes workforce
+membership and roles; Core separately enforces verified identity, membership and
+role, legal/BAA state, subscription/entitlement, tenant and record scope, consent,
+capability rollout, and operational PHI controls. Sovereign consumes that
+server-resolved authority and must not claim Cosmaneura verified professional
+status.
+
+Sovereign does not accept raw audio, video, media chunks, or transient capture
+payloads. It receives only minimum-necessary, platform-authorized text/context
+for the requested capability. Raw-media deletion and retry custody remain with
+the capture/transcription owner under the platform retention contract.
+
 Each agent uses the reasoning LLM for (a) slot extraction from free text and
 (b) narration/ranking. Agents 1, 2, 4 and 6 call **non-BAA public APIs**, so
 those APIs receive only de-identified text. See `PROVIDER_COPILOT_DESIGN.md` for the

@@ -383,6 +383,12 @@ consolidation — 15 minutes:
 
 ### Blocked on (not code)
 
+John Clemente, CEO, is the initial primary point of contact for incident command,
+platform/recovery, application, security/privacy, support, customer communications,
+and legal escalation. The table below assigns implementation work but does not
+replace the still-required secondary coverage, hours, acknowledgement/escalation
+targets, or tested contact routes.
+
 | Item | Blocks | Owner |
 |---|---|---|
 | Exact Microsoft agreement/service-scope validation | Any real PHI (synthetic staging attestation recorded August 19, 2026) | John + agreement owner/counsel; support ticket `2607240040011671` is conditional |

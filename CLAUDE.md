@@ -87,6 +87,13 @@ PYTHONPATH=. python -m pytest tests/ -q   # como corre CI (pytest, no el target 
   por BAA (Magisterium, ClinicalTrials.gov, NPPES). Magisterium NO es business associate: solo ve
   texto de-identificado. `assert_no_phi` en `compliance/phi.py` es un tripwire que lanza
   `PHIBoundaryViolation`.
+- **La autorización de personal pertenece a la práctica:** Cosmaneura no verifica licencias o
+  credenciales profesionales como condición de acceso. El estado de credenciales es informativo y
+  no controla registro, prueba, facturación, uso continuo, entitlement, capacidades ni acceso a
+  PHI. Core resuelve identidad, membresía/rol autorizados por la práctica, estado legal/BAA,
+  suscripción, tenant, consentimiento, alcance y rollout; Sovereign consume esa autoridad.
+- **Sin medios clínicos crudos:** Sovereign no recibe audio, video ni chunks. Solo recibe el texto
+  mínimo necesario y autorizado por Core para la capacidad solicitada.
 - **Modos del Soberano** (`SovereignMode`): `HYBRID` (default) vs `LITERAL` (Magisterium en cada request).
 - **Modos de auth** (`AuthMode`): `disabled` (dev/patient), `dev_hs256` (local), `oidc` (prod, requerido para provider/PHI).
 - **Hardening en main.py:** CORS deny-by-default (nunca `*`), límite de body 256 KB, security

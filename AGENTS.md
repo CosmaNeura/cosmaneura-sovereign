@@ -118,6 +118,15 @@ never lowers the tier. Split mixed work where concerns can deploy separately.
   authentication, licensure or credential proof, practice membership,
   entitlement, or a required onboarding field. Core owns public-provider
   onboarding and it must succeed with NPI absent.
+- Provider credential/licensure status is informational only and must never
+  grant or block signup, trial, billing, continued use, entitlement, Sovereign
+  capability, or real-PHI access. Practices authorize workforce membership and
+  roles; Core enforces the independent identity, legal, subscription, tenant,
+  consent, scope, and rollout controls. Sovereign must not claim that
+  Cosmaneura verified professional status.
+- Sovereign does not accept raw audio, video, or media chunks. It receives only
+  the minimum-necessary, platform-authorized text/context for the requested
+  capability under the applicable retention contract.
 - Preserve emergency short-circuiting, mount resolution, capability/BAA gates,
   canonical persistence, de-identification, doctrinal routing, and safe egress
   in the order defined by `CLAUDE.md`.
