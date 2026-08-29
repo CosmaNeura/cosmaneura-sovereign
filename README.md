@@ -1,14 +1,18 @@
-# CosmaNeura Sovereign
+# Sovereign
 
-A single source of healthcare information **guided by Catholic teaching**, built
-as a **Hobbesian Sovereign** that distributes each request to one of seven
-specialist AI agents and arbitrates the final answer. **Magisterium AI** is the
-doctrinal authority and final judge; a BAA-eligible reasoning LLM does the
-mechanical orchestration. White-labelled onto MyCatholicDoctor.
+Sovereign is a named dark beta for healthcare-information orchestration guided
+by Catholic teaching and designed for MyCatholicDoctor. Its **Hobbesian
+Sovereign** routes requests to seven specialist AI agents and arbitrates the
+final answer. **Magisterium AI** is the doctrinal authority and final judge; a
+BAA-eligible reasoning LLM can perform the mechanical orchestration.
+
+There are no Sovereign production resources. The beta is synthetic-only and
+does not authorize real patient or provider data.
 
 > Full design rationale is in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
-> The list of accounts, keys, and decisions needed from you and your developer
-> is in [`SETUP_AND_HANDOFF.md`](./SETUP_AND_HANDOFF.md). **Read that before going live.**
+> Local evaluation guidance, beta boundaries, and future prerequisites are in
+> [`SETUP_AND_HANDOFF.md`](./SETUP_AND_HANDOFF.md). Read that before enabling
+> any external service.
 
 ---
 
@@ -20,24 +24,28 @@ mechanical orchestration. White-labelled onto MyCatholicDoctor.
   (3) non-diagnostic health-engagement, (4) ERD-grounded clinical-ethics
   consult, (5) clinician visit/session prep, (6) care-plan workbench with
   deterministic (code-computed) clinical calculations, (7) EMR lab review
-  (athenahealth FHIR; feature-flagged, see `ATHENA_LABS.md`).
-- **Two personas, one codebase** — `patient` (SOC 2, **no** HIPAA, no PHI) and
-  `provider` (SOC 2 **+** HIPAA, PHI permitted, BAA-covered LLM required).
+  (athenahealth FHIR scaffold; disabled by default, see `ATHENA_LABS.md`).
+- **Two personas, one codebase** — `patient` is the current non-PHI path;
+  `provider` is a gated scaffold only. Any future provider/PHI use requires a
+  verified identity, explicit `BAA_ATTESTED` operator attestation, a
+  BAA-eligible inference service under an applicable agreement, validated
+  de-identification, and independent legal/security review. Those controls are
+  prerequisites, not a certification of Sovereign.
 - **Tiered doctrinal gate** — pure logistics skip Magisterium; moral-weight
   topics get full arbitration against the USCCB Ethical and Religious Directives.
 - **Optional inline doctrinal MCP layer** — agents can also consult Magisterium's
   MCP server *while reasoning* (off by default; de-identified text only). See
-  `ARCHITECTURE.md` §2 and `SETUP_AND_HANDOFF.md` §9.
+  `ARCHITECTURE.md` §2 and `SETUP_AND_HANDOFF.md` §4.
 - **Compliance scaffolding** — PHI de-identification, a PHI-boundary tripwire,
-  platform-owned canonical conversation/usage/audit reporting for provider
-  turns, and a legacy local hash logger for offline development only.
+  and a hash-only local audit logger for development. Optional platform clients
+  are inactive beta code paths, not a production data or retention system.
 
-Provider credential/licensure status is informational only and never controls
-signup, trial, billing, continued use, entitlement, Sovereign capability, or
-real-PHI access. Practices authorize workforce membership and roles; Core
-enforces the independent authorization controls. Sovereign does not accept raw
-audio/video/media payloads and must not claim Cosmaneura verified professional
-status.
+Sovereign has no public signup and does not verify professional credentials.
+It exposes no raw audio, video, or media-upload path and does not persist visit
+transcripts or clinical records. Provider-oriented context fields are
+synthetic-only scaffolding, not authorization to send real records. Sovereign
+is not the Cosmas PHI hub, and no Cosmas record-store or retention policy
+should be attributed to it.
 
 ## Quickstart (runs with zero credentials)
 
@@ -48,7 +56,7 @@ can see it work end-to-end before creating a single account.
 make install      # pip install -r requirements.txt
 make demo         # runs run_demo.py — 8 scenarios through the full pipeline
 make test         # runs the test suite
-make serve        # starts FastAPI on http://localhost:8000
+make serve        # starts FastAPI on http://localhost:8080
 ```
 
 If you run scripts directly instead of via `make`, set `PYTHONPATH`:
@@ -73,10 +81,10 @@ settings. Repository administration must separately require the
 ### Try the API
 
 ```bash
-curl -s localhost:8000/healthz
+curl -s localhost:8080/healthz
 
 TURN_ID=$(python -c 'import uuid; print(uuid.uuid4())')
-curl -s localhost:8000/chat \
+curl -s localhost:8080/chat \
   -H 'X-Cosmaneura-Embed-Version: 1.0' \
   -H "X-Cosmaneura-Client-Turn-ID: $TURN_ID" \
   -H 'content-type: application/json' \
@@ -84,33 +92,29 @@ curl -s localhost:8000/chat \
   | python -m json.tool
 ```
 
-The demo exercises the pipeline end-to-end: a patient referral, a concierge
-question, a provider engagement request **with PHI** (scrubbed before the
-doctrinal gate), an ERD ethics consult, a clinician visit prep, a plan-workbench deep-dive, a doctrinal
+The demo exercises the pipeline end-to-end with synthetic fixtures: a patient
+referral, a concierge question, a provider-boundary scrub scenario, an ERD
+ethics consult, a clinician visit prep, a plan-workbench deep-dive, a doctrinal
 question (answered directly by Magisterium), and an emergency message
 (short-circuits to 911/988).
 
 ## Authentication
 
-Authority depends on the deployment mode, never the request persona:
+Authority depends on configured runtime mode, never the request persona:
 
-- `disabled` (default public profile) — the public deployment requires no user
-  token. In platform-enabled provider mode the same setting means the sole
-  bearer is an opaque platform mount token, not an IdP JWT. A body persona is
-  never authority.
+- `disabled` (default local/public profile) — no user token is required; a body
+  persona still never grants provider authority.
 - `dev_hs256` — shared-secret tokens for local testing without an identity
   provider. Mint one with `tools/mint_dev_token.py`. **Not for production.**
-- `oidc` — legacy platform-disabled provider mode. Verifies RS256/ES256 against
-  the identity provider's JWKS plus issuer/audience/expiry.
-- platform-enabled provider mode — set `AUTH_MODE=disabled` and
-  `PLATFORM_AGENT_API_ENABLED=true`. The host exchanges its authenticated
-  session for an opaque mount token and sends that as the sole bearer plus a
-  fresh client-turn UUID for chat. `GET /welcome` sends the same sole bearer
-  through the read-only Agent API bootstrap without a client turn or durable
-  lineage. The Agent API resolves actor, tenant, surface, and capabilities;
-  Sovereign does not verify the browser JWT directly.
+- `oidc` — verifies RS256/ES256 against an identity provider's JWKS plus
+  issuer/audience/expiry. It is a future provider-path prerequisite, not
+  evidence of a production deployment.
 
-Local example with a dev token:
+The optional platform Agent API path is outside the named beta and remains
+disabled (`PLATFORM_AGENT_API_ENABLED=false`). Do not treat it as an active
+Cosmas integration or enable it from this documentation.
+
+Synthetic local example with a dev token:
 
 ```bash
 export AUTH_MODE=dev_hs256
@@ -119,17 +123,16 @@ export MOUNT_PROFILE=provider_assistant MOUNT_TENANT_ID=tenant_local
 # start the server in another shell with the same env, then:
 TOKEN=$(python tools/mint_dev_token.py --role provider)
 TURN_ID=$(python -c 'import uuid; print(uuid.uuid4())')
-curl -s localhost:8000/chat -H "Authorization: Bearer $TOKEN" \
+curl -s localhost:8080/chat -H "Authorization: Bearer $TOKEN" \
   -H 'X-Cosmaneura-Embed-Version: 1.0' \
   -H "X-Cosmaneura-Client-Turn-ID: $TURN_ID" \
   -H 'content-type: application/json' \
   -d "{\"client_turn_id\":\"$TURN_ID\",\"persona\":\"patient\",\"message\":\"help me prepare questions for a visit\"}"
-# The deployment-pinned mount is authoritative. The verified provider role
-# binds the actor; neither the body persona nor the JWT role selects a mount.
+# The configured local mount is authoritative; the body persona grants nothing.
 ```
 
 A body `persona` cannot select the provider/PHI path. See
-`SETUP_AND_HANDOFF.md` for the platform exchange and legacy OIDC boundaries.
+`SETUP_AND_HANDOFF.md` for the beta boundary and future prerequisites.
 
 ## Production remains blocked
 
@@ -164,48 +167,23 @@ tests/test_pipeline.py
 run_demo.py
 ```
 
-## Your Data: How CosmaNeura Handles It
+## Beta data boundary
 
-**Who can see your notes and transcripts?**
-You, and the CosmaNeura team members who maintain the system — no one else.
-Your organization's own IT administration may be granted access as part of its
-oversight of your account. We never sell your data, share it with advertisers,
-or give any third party access to it.
+The current patient path is non-PHI. Sovereign is not a live
+visit-documentation, transcription, medical-record, or EHR write-back product.
+Provider-oriented request fields can exercise those shapes with synthetic text,
+but Sovereign does not persist them or make a retention promise. It has no
+production persistence or production resources.
 
-**What happens to your data when the AI works on it?**
-Every visit is processed inside a HIPAA-compliant boundary: encrypted in
-storage, encrypted in transit. AI analysis of identifiable patient information
-happens **only** on AI services covered by a signed Business Associate
-Agreement (BAA). Before anything is sent to any service outside that boundary —
-including the Catholic doctrinal review layer (Magisterium AI) and public
-medical databases like PubMed — patient identifiers are automatically stripped.
-The system enforces this in code: a request carrying identifiers toward an
-uncovered service fails rather than sends. The doctrinal layer never sees
-patient information, by architecture, not by policy.
-
-**Is your data used to train AI models?**
-**No.** Neither your notes nor your patients' information is used to train any
-AI model — ours or anyone else's. Our BAA-covered AI providers are
-contractually barred from retaining or training on this data. The system
-improves through configuration we build, not by learning from your records.
-
-**How long do we keep it?**
-Full visit transcripts are automatically deleted from your dashboard **7 days**
-after the visit. Generated notes remain available in your dashboard for **up to
-12 months**, or until you delete them. Governed audit records use opaque
-references and content hashes rather than raw notes, and are still treated as
-protected compliance data with controlled access and retention.
-
-**Who decides what enters the medical record?**
-You do. Nothing this system produces is written to your EHR automatically. You
-review, you edit, you push the button. The AI prepares; the clinician decides.
-
-*Questions? john@cosmaneura.com*
+The provider path is only a gated engineering scaffold. Its configuration
+includes an operator self-attestation and BAA-eligibility checks, but those do
+not make Sovereign HIPAA compliant or authorize real PHI. Before any text can
+reach Magisterium or another uncovered service, identifiers are removed and a
+PHI tripwire fails closed on detected identifiers. Keep all beta use synthetic
+and leave provider, platform, and athenahealth capabilities off.
 
 ## Important
 
-This repository is an **engineering scaffold**, not a compliance certification or
-clinical/legal product. The PHI handling and audit code are baseline
-implementations that **must** be reviewed and hardened with qualified HIPAA
-counsel and clinical governance before any real patient or provider data flows
-through it. See `SETUP_AND_HANDOFF.md`.
+This repository is an **engineering scaffold**, not a compliance certification
+or clinical/legal product. Its PHI handling and audit code are baseline
+implementations only. See `SETUP_AND_HANDOFF.md`.

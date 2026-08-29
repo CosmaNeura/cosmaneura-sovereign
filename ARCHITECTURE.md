@@ -1,9 +1,13 @@
-# CosmaNeura Sovereign — Architecture
+# Sovereign — Architecture
 
-A single source of healthcare information guided by Catholic teaching, built as a
-**Hobbesian Sovereign** orchestrating six specialist AI agents, with
-**Magisterium AI** as the doctrinal authority and final arbiter. White-labelled
-onto MyCatholicDoctor.
+Sovereign is a named dark beta for healthcare-information orchestration guided
+by Catholic teaching and designed for MyCatholicDoctor. It is built as a
+**Hobbesian Sovereign** orchestrating seven specialist AI agents, with
+**Magisterium AI** as the doctrinal authority and final arbiter.
+
+There are no Sovereign production resources. A merge to `main` does not deploy.
+The production job is founder-only and remains blocked while
+`SOVEREIGN_DEPLOY_ENABLED` is off; that latch stays off for this beta.
 
 ---
 
@@ -15,8 +19,8 @@ directly:
 
 - The **Sovereign** receives every request, **distributes the task** to the
   right agent(s), and is the **final arbiter** of what reaches the user.
-- The three **agents** are the subjects: competent within their domain, but
-  never the last word.
+- The seven specialist **agents** are the subjects: competent within their
+  domain, but never the last word.
 
 **The refinement that matters for "make no mistakes":** Magisterium AI's API is a
 *chat-completions answer engine over Catholic documents* — not a general-purpose
@@ -35,8 +39,8 @@ morals passes through it before the user sees it. The doctrinal standard is the
 **USCCB Ethical and Religious Directives for Catholic Health Care Services (ERDs)**
 — the same framework MyCatholicDoctor operates under.
 
-> **Decision (locked): hybrid.** This is the default and the recommended
-> production posture. A **literal** version — where Magisterium is consulted on
+> **Decision (locked): hybrid.** This is the configured beta default. A
+> **literal** version — where Magisterium is consulted on
 > *every* request as the task-distributor, not just the final judge — is one
 > setting away: `SOVEREIGN_MODE=literal` (or `sovereign_mode` in `Settings`).
 > Literal mode adds a Magisterium round-trip to every call: a pure-logistics
@@ -50,9 +54,10 @@ morals passes through it before the user sees it. The doctrinal standard is the
 
 ```mermaid
 flowchart TD
-    A[Request in: persona + message + metadata] --> S{Safety: emergency?}
+    A[Request in: message + metadata] --> S{Safety: emergency?}
     S -- yes --> E[Return: seek emergency care 911 / 988]
-    S -- no --> R[Sovereign Router:<br/>intent + doctrinal sensitivity tier]
+    S -- no --> G[Resolve configured authority + mount;<br/>enforce provider/capability gates]
+    G --> R[Sovereign Router:<br/>intent + doctrinal sensitivity tier]
     R -->|doctrinal| M1[Magisterium answers directly]
     R -->|referral| AG1[Agent 1 · Steward]
     R -->|concierge| AG2[Agent 2 · Scout]
@@ -60,6 +65,7 @@ flowchart TD
     R -->|ethics consult| AG4[Agent 4 · Consultor<br/>always full arbitration]
     R -->|visit prep| AG5[Agent 5 · Planner]
     R -->|plan workbench| AG6[Agent 6 · Investigator<br/>deterministic numbers]
+    R -->|lab review| AG7[Agent 7 · Reader<br/>feature off by default]
     R -->|small talk| ST[Sovereign answers]
     AG1 --> ASM[Assemble draft]
     AG2 --> ASM
@@ -67,6 +73,7 @@ flowchart TD
     AG4 --> ASM
     AG5 --> ASM
     AG6 --> ASM
+    AG7 --> ASM
     ST --> ASM
     ASM --> PHI[[PHI firewall:<br/>de-identify before any non-BAA hop]]
     PHI --> ARB{Doctrinal arbitration<br/>Magisterium gate}
@@ -101,90 +108,86 @@ Magisterium participates in two distinct ways — defense in depth:
 **not ZDR-eligible** and **not available on Bedrock/Vertex**, and Magisterium is
 not a business associate. So the inline advisory may only ever see
 **de-identified, non-PHI** text. The LLM client enforces this with an
-`assert_no_phi` guard that refuses on detected identifiers, and the PHI-bearing
-**Engagement** agent never enables it. The always-on REST gate still protects
-every path, including the provider/PHI path, using a de-identified summary.
+`assert_no_phi` guard that refuses on detected identifiers, and the
+provider-oriented **Engagement** agent never enables it. The REST gate reviews
+faith- or morals-weighted output using a de-identified summary.
 
 ---
 
-## 3. The six agents
+## 3. The seven agents
 
 | # | Name | Job | Primary data sources | PHI exposure |
 |---|---|---|---|---|
 | **1** | **Referral / Steward** | When the user wants to see a doctor, find the best match by Catholic-or-not, geography, specialty, language; hand off a booking | **Partner Directory** (MyCatholicDoctor + partners — the only place the "is_catholic" flag + booking links live) → **NPPES NPI Registry** for broad/non-Catholic geography + specialty | None needed (coarse preferences only) |
 | **2** | **Concierge / Scout** | Talk intelligently about frontier medicine, biotech, advanced trials, and the specific companies/people relevant to the user | **ClinicalTrials.gov v2** (recruiting trials by condition, sponsor/company, phase, geo). Pluggable: web search, OpenFDA | De-identified interest text only |
-| **3** | **Engagement / Interpreter** | Help patient *and* provider understand the patient's history/conditions; raise information level; frame to elevate the doctor-patient visit. **Not diagnostic** | The person's own provided history + general medical-education references | **Highest** — provider mode may hold PHI; handled by the BAA LLM **only** |
-| **4** | **Ethics Consult / Consultor** | Prepare a clinician's ethics consult: the question in ERD terms, applicable directives by number, licit alternatives, when to involve the ethics committee/bishop. **Never the final moral word** — the orchestrator forces full Magisterium arbitration on every draft | **PubMed/PMC (NCBI E-utilities)** — general literature + Linacre Quarterly (Catholic bioethics corpus); USCCB ERDs (6th ed.) as framework | Case text may hold PHI → BAA LLM only; PubMed sees a de-identified topic string |
-| **5** | **Visit Prep / Planner** | The everyday clinician copilot: recap of prior session(s), talking points, short outline for the upcoming visit. Brief by default; preparation, never prescription | Prior-session notes/transcripts supplied by the calling app (`metadata.prior_sessions`) | **Highest** — session transcripts (behavioral health included); BAA LLM **only**, nothing external |
-
-| **6** | **Plan Workbench / Investigator** | Post-visit deep-dive: labs + history + the clinician's own assessment → levers-organized analysis, separate from the SOAP note. All calories/macros/BMI computed in code (`agents/calculators.py`), never generated | **PubMed** (de-identified topic), deterministic calculators; openFDA/RxNorm/USDA next | **Highest** — labs/history may hold PHI; BAA LLM **only** |
+| **3** | **Engagement / Interpreter** | Help a patient or provider understand supplied history/conditions; raise information level; frame questions for a better doctor-patient visit. **Not diagnostic** | Caller-supplied non-PHI beta context + general medical-education references | Future provider use requires the gated BAA-eligible path; beta input stays synthetic |
+| **4** | **Ethics Consult / Consultor** | Prepare a clinician's ethics consult: the question in ERD terms, applicable directives by number, licit alternatives, when to involve the ethics committee/bishop. **Never the final moral word** — the orchestrator forces full Magisterium arbitration on every draft | **PubMed/PMC (NCBI E-utilities)** — general literature + Linacre Quarterly (Catholic bioethics corpus); USCCB ERDs (6th ed.) as framework | Future provider use requires the gated BAA-eligible path; PubMed receives only a de-identified topic string |
+| **5** | **Visit Prep / Planner** | Prepare brief talking points and an outline from the minimum-necessary context supplied for the current request. Preparation only; never prescription | Caller-supplied text context; Sovereign does not ingest or retain raw visit media | Future provider context may contain PHI and therefore requires the gated BAA-eligible path; nothing identifiable goes to uncovered services |
+| **6** | **Plan Workbench / Investigator** | Analyze caller-supplied labs, history, and clinician assessment by care-plan lever. Calories/macros/BMI are computed in code (`agents/calculators.py`), never generated | **PubMed** (de-identified topic), deterministic calculators; openFDA/RxNorm/USDA next | Future provider context may contain PHI and therefore requires the gated BAA-eligible path |
+| **7** | **Lab Review / Reader** | Feature-gated review of normalized lab data; non-diagnostic and disabled by default | athenahealth FHIR adapter scaffold; sandbox/synthetic use only while `FEATURE_ATHENA_LABS=false` | Future provider-only path; no live athenahealth or PHI use is authorized by this beta |
 
 ### NPI boundary
 
 The NPPES integration is a read-only public-directory source for referral and
-provider matching. It is not part of provider signup, authentication, practice
-membership, licensure or credential approval, entitlement, or PHI access.
-Sovereign never asks a signed-in provider for an NPI to establish identity and
-never returns an NPPES match as proof of authority. Core owns public-provider
-onboarding and it must succeed with NPI absent. Any future customer-NPI
-collection belongs to a separately approved payer-facing transaction or
-integration and is not authorized by this referral client.
+provider matching. It is not signup, authentication, practice membership,
+licensure or credential approval, entitlement, or PHI access. Sovereign never
+uses an NPI to establish identity and never returns an NPPES match as proof of
+authority. There is no public Sovereign signup or production provider mount.
 
-Provider credential/licensure status is unverified informational metadata only.
-It never grants or blocks signup, trial, billing, continued use, entitlement,
-Sovereign capability, or real-PHI access. The practice authorizes workforce
-membership and roles; Core separately enforces verified identity, membership and
-role, legal/BAA state, subscription/entitlement, tenant and record scope, consent,
-capability rollout, and operational PHI controls. Sovereign consumes that
-server-resolved authority and must not claim Cosmaneura verified professional
-status.
+Provider credential/licensure data is unverified informational metadata only.
+The named beta does not grant provider capability or real-PHI access and must
+not claim CosmaNeura verified professional status. Any future host identity or
+authorization integration requires separate review; Sovereign is not the
+Cosmas PHI hub and assumes no Cosmas record-retention contract.
 
-Sovereign does not accept raw audio, video, media chunks, or transient capture
-payloads. It receives only minimum-necessary, platform-authorized text/context
-for the requested capability. Raw-media deletion and retry custody remain with
-the capture/transcription owner under the platform retention contract.
+Sovereign exposes no raw audio, video, or media-upload path. Provider-oriented
+request fields can carry synthetic visit context for scaffold testing, but
+Sovereign does not persist it and real visit material is not authorized. The
+current beta uses only synthetic or non-PHI text.
 
 Each agent uses the reasoning LLM for (a) slot extraction from free text and
-(b) narration/ranking. Agents 1, 2, 4 and 6 call **non-BAA public APIs**, so
-those APIs receive only de-identified text. See `PROVIDER_COPILOT_DESIGN.md` for the
-design history of Agents 4-5.
+(b) narration/ranking. Agents that call **uncovered public APIs** send only
+de-identified text. Agent 7 and its athenahealth adapter remain disabled.
 
 ---
 
-## 4. Two personas, two compliance postures
+## 4. Two personas, two beta postures
 
-One codebase; the `persona` field selects a `ComplianceProfile`.
+One codebase; resolved runtime authority selects a `ComplianceProfile`. A body
+`persona` does not grant access to the provider path.
 
-| | **Patient build** | **Provider build** |
+| | **Patient path (current beta scope)** | **Provider path (gated scaffold)** |
 |---|---|---|
-| SOC 2 | ✅ required | ✅ required |
-| HIPAA | ❌ not required | ✅ required |
-| PHI accepted | No (consumer's own info; sensitive but not covered-entity PHI) | Yes |
-| LLM inference | Standard API (ZDR still recommended) | **Must** be BAA-covered: Anthropic 1P API + **Zero Data Retention** + signed BAA, *or* Claude via AWS Bedrock / Google Vertex under their BAA |
-| Audit | Local operational only until public lineage exists | Platform-owned durable provider ingestion; external retention/integrity controls remain separate |
-| De-identification before non-BAA hops | On | On (with production-grade de-id + human review) |
+| Data boundary | Non-PHI only | No live use; any future PHI path requires independent authorization and review |
+| Compliance status | No compliance certification is claimed | `BAA_ATTESTED` is an operator self-attestation, not a certification or proof of coverage |
+| LLM inference | Standard API; send no PHI | Must use a BAA-eligible service under an applicable executed agreement, with any required ZDR configuration |
+| Audit / retention | Hash-only local development events; no production persistence | No production persistence or provider-record retention exists |
+| De-identification before uncovered hops | Enforced as defense in depth | Baseline exists; validated de-identification and human review are prerequisites to any future real-PHI use |
 
 ### The PHI boundary (non-negotiable)
-Magisterium, ClinicalTrials.gov, NPPES, PubMed, and any web search are **not**
-HIPAA business associates. **PHI must never reach them.** The Sovereign
-de-identifies every draft before the Magisterium gate, and non-BAA clients
-carry a hard `assert_no_phi` tripwire. The only component allowed to see raw
-PHI is the BAA-covered reasoning LLM (the path used by Agents 3, 4, 5 and 6).
+Magisterium, ClinicalTrials.gov, NPPES, PubMed, and other public services are
+outside a provider PHI boundary. **PHI must never reach them.** Sovereign
+de-identifies drafts before the Magisterium gate, and uncovered clients carry a
+hard `assert_no_phi` tripwire. Any future provider path must keep identifiable
+data inside its separately validated, BAA-eligible service boundary; Agents
+3–7 do not make the beta a live PHI product.
 
-> Verified facts behind this design (Anthropic, current): Anthropic signs a BAA
-> covering the **first-party Messages API** under qualifying commercial tiers
-> **with ZDR**, and maintains **SOC 2 Type II**. The BAA covers *inference only*
-> — audit logging, storage, identity, and de-identification are the customer's
-> responsibility, which is why they live in this repo.
+> BAA eligibility depends on the exact vendor, account, service, agreement, and
+> runtime configuration. `BAA_ATTESTED=true` records an operator's
+> self-attestation only. It neither proves HIPAA compliance nor authorizes real
+> PHI in Sovereign.
 
 ---
 
-## 5. Model / API / MCP inventory (all publicly available)
+## 5. Model / API / MCP inventory
+
+This is an implementation inventory, not evidence that an integration or
+production resource is active.
 
 | Role | Service | How |
 |---|---|---|
 | Doctrinal authority + final arbiter | **Magisterium AI** | `POST https://www.magisterium.com/api/v1/chat/completions`, model `magisterium-1` (OpenAI-compatible; returns citations). Optional inline advisory via **MCP** (`https://mcp.magisterium.com`, OAuth) using Anthropic's MCP connector (`mcp_servers`, beta header `mcp-client-2025-11-20`) — de-identified text only; not ZDR-eligible; not on Bedrock/Vertex |
-| Sovereign brain + agent reasoning | **Claude** (recommended) | Anthropic Messages API; BAA-eligible w/ ZDR. Alternatives: OpenAI (BAA on API), or Claude on Bedrock/Vertex |
+| Sovereign brain + agent reasoning | **Anthropic or Azure OpenAI** | The two providers wired in `LLMClient`. Any future PHI use depends on the exact account, service, agreement, and runtime configuration |
 | Provider matching | **NPPES NPI Registry v2.1** | Read-only public referral lookup; never onboarding, authentication, or credential proof. `GET https://npiregistry.cms.hhs.gov/api/?version=2.1` (free, no key) |
 | Trials / biotech | **ClinicalTrials.gov v2** | `GET https://clinicaltrials.gov/api/v2/studies` (free, no key) |
 | Catholic provider set + booking | **Partner Directory adapter** | MyCatholicDoctor feed (TBD) or partner registrations; fixture today |
@@ -209,26 +212,30 @@ cosmaneura-sovereign/
 │   ├── agents/
 │   │   ├── referral_agent.py    Agent 1 (Steward)
 │   │   ├── concierge_agent.py   Agent 2 (Scout)
-│   │   └── engagement_agent.py  Agent 3 (Interpreter)
+│   │   ├── engagement_agent.py  Agent 3 (Interpreter)
+│   │   ├── ethics_agent.py      Agent 4 (Consultor)
+│   │   ├── visit_prep_agent.py  Agent 5 (Planner)
+│   │   ├── plan_workbench_agent.py Agent 6 (Investigator)
+│   │   └── labs_agent.py        Agent 7 (Reader; feature-gated)
 │   ├── clients/
 │   │   ├── magisterium.py       Magisterium API
 │   │   ├── llm.py               Reasoning LLM (Anthropic) + mock brain
 │   │   ├── nppes.py             NPI Registry
 │   │   ├── clinicaltrials.py    ClinicalTrials.gov v2
+│   │   ├── pubmed.py             PubMed/PMC
+│   │   ├── labs.py               Normalized lab-source interface
+│   │   ├── athena/               Feature-gated athenahealth adapter
 │   │   ├── partner_directory.py MyCatholicDoctor + partners adapter
 │   │   └── partners_fixture.json
 │   └── compliance/
 │       ├── phi.py           De-identification + PHI boundary tripwire
-│       ├── audit.py         HIPAA-aware audit (hashes content, never stores it)
+│       ├── audit.py         Hash-only audit (never stores content)
 │       └── safety.py        Emergency detection + non-diagnostic disclaimers
 ├── tests/test_pipeline.py
 ├── run_demo.py              Full pipeline, mock mode, zero credentials
 ├── requirements.txt · .env.example · Makefile
 ```
 
-**Separate repo: yes (for now).** Cleaner compliance boundary, independent
-deploy cadence, and isolated secrets from the main CosmaNeura stack. The
-patient and provider products share this one codebase and differ only by
-profile + which LLM path is configured — so there's no logic to duplicate. When
-the boundary is proven you can fold it into the monorepo behind the same module
-seams.
+Sovereign remains its own named dark-beta repository. It is not folded into the
+Cosmas PHI hub and has no production resources. The patient and provider paths
+share this codebase but retain separate runtime gates and data boundaries.
