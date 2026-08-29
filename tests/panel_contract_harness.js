@@ -39,7 +39,7 @@ class FakeElement {
     this._innerHTML = String(value);
     this.children = [];
     if (this.className === "cnp-root" && value.includes("cnp-rail")) {
-      const names = ["cnp-fab", "cnp-rail", "cnp-thread", "cnp-chips", "cnp-in",
+      const names = ["cnp-gate", "cnp-fab", "cnp-rail", "cnp-thread", "cnp-chips", "cnp-in",
                      "cnp-send", "cnp-fmt", "cnp-sandbox", "cnp-sub", "cnp-x"];
       this._mountNodes = {};
       names.forEach(name => {
@@ -48,6 +48,8 @@ class FakeElement {
         );
         node.className = name;
         node.value = name === "cnp-fmt" ? "chat" : "";
+        if (name === "cnp-gate")
+          node.textContent = "Sovereign named beta · unavailable";
         this._mountNodes[name] = node;
         this.appendChild(node);
       });
@@ -137,6 +139,9 @@ async function main() {
   let mountToken = "opaque-token-session-a-abcdefghijkl";
   let rotateCalls = 0;
   let currentRecord = "record_a";
+  let welcomeMode = "provider";
+  let contextLoads = 0;
+  let historyLoads = 0;
   let chatMode = "auth-retry";
   const chatRequests = [];
   let humanContacts = 0;
@@ -144,9 +149,15 @@ async function main() {
 
   global.fetch = async (url, options) => {
     if (url.endsWith("/welcome")) {
+      if (welcomeMode === "denied") {
+        return response(403, {
+          code: "CAPABILITY_DENIED",
+          retryable: false,
+        });
+      }
       return response(200, {
         partner_name: "Test",
-        persona: "provider",
+        persona: welcomeMode,
         greeting: "Hello",
         paths: [],
         disclaimer: "Standard disclaimer",
@@ -221,6 +232,41 @@ async function main() {
   }
   assert(invalidTokenCalls === 0, "origin validation acquired a token");
 
+  async function assertNamedBetaLocked(mode) {
+    welcomeMode = mode;
+    const locked = window.CosmaNeuraPanel.mount({
+      sovereignUrl: "https://sovereign.example",
+      embedVersion: "1.0",
+      getAuthToken: async () => "opaque-token-unlisted-abcdefghijkl",
+      getContext: async () => {
+        contextLoads += 1;
+        return { clientId: "record_locked" };
+      },
+      onHumanContact: async () => {},
+      loadHistory: async () => { historyLoads += 1; return null; },
+    });
+    const gate = locked.root.querySelector(".cnp-gate");
+    const fab = locked.root.querySelector(".cnp-fab");
+    const rail = locked.root.querySelector(".cnp-rail");
+    const lockedSend = locked.root.querySelector(".cnp-send");
+    assert(gate.hidden === false && gate.textContent.includes("named beta"),
+           "locked mount did not show named-beta copy");
+    assert(fab.hidden === true && rail.hidden === true && lockedSend.disabled === true,
+           "locked mount exposed the orchestrator before preflight");
+    await locked.setRecord("record_locked");
+    locked.open();
+    assert(gate.hidden === false && fab.hidden === true && rail.hidden === true,
+           "unlisted mount entered the orchestrator");
+    assert(contextLoads === 0, "unlisted mount requested record context");
+    assert(historyLoads === 0, "unlisted mount requested governed history");
+    assert(chatRequests.length === 0, "unlisted mount sent a chat request");
+    locked.destroy();
+  }
+
+  await assertNamedBetaLocked("denied");
+  await assertNamedBetaLocked("patient");
+  welcomeMode = "provider";
+
   const controller = window.CosmaNeuraPanel.mount({
     sovereignUrl: "https://sovereign.example",
     embedVersion: "1.0",
@@ -232,21 +278,27 @@ async function main() {
       }
       return mountToken;
     },
-    getContext: async () => ({
-      clientId: currentRecord,
-      thread_ref: `thread_${currentRecord}`,
-      context_snapshot_ref: `snapshot_${currentRecord}`,
-    }),
+    getContext: async () => {
+      contextLoads += 1;
+      return {
+        clientId: currentRecord,
+        thread_ref: `thread_${currentRecord}`,
+        context_snapshot_ref: `snapshot_${currentRecord}`,
+      };
+    },
     onHumanContact: async action => {
       assert(Object.keys(action).sort().join(",") === "action_id,fallback_text,label",
              "human callback received more than the action descriptor");
       humanContacts += 1;
     },
-    loadHistory: async () => ({
-      thread_ref: `thread_${currentRecord}`,
-      messages: [],
-      next_cursor: null,
-    }),
+    loadHistory: async () => {
+      historyLoads += 1;
+      return {
+        thread_ref: `thread_${currentRecord}`,
+        messages: [],
+        next_cursor: null,
+      };
+    },
     onHistoryUpdated: async () => { historyNotifications += 1; },
   });
 
@@ -255,6 +307,10 @@ async function main() {
   assert(send.disabled === true, "send enabled before record handshake");
   await controller.setRecord("record_a");
   await Promise.resolve();
+  assert(controller.root.querySelector(".cnp-gate").hidden === true,
+         "provider preflight did not clear named-beta gate");
+  assert(controller.root.querySelector(".cnp-fab").hidden === false,
+         "provider preflight did not reveal panel launcher");
   assert(send.disabled === false, "send stayed disabled after record handshake");
   assert(historyNotifications === 1, "governed history callback was not notified");
 

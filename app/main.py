@@ -350,7 +350,7 @@ def _one_raw_header(request: Request, name: str) -> Optional[str]:
 
 
 def _principal_from_token(token: Optional[str]) -> Optional[Principal]:
-    """Resolve actor identity after any pre-auth emergency short-circuit."""
+    """Resolve actor identity at the route's authentication boundary."""
     try:
         return resolve_principal(token, _verifier, _settings)
     except AuthError:
@@ -360,6 +360,30 @@ def _principal_from_token(token: Optional[str]) -> Optional[Principal]:
             code="CONTEXT_INVALID",
             headers={"WWW-Authenticate": "Bearer"},
         ) from None
+
+
+def _is_direct_provider_host() -> bool:
+    """Return whether this process serves the direct-Clerk provider mount."""
+    return (
+        _settings.mount_profile == MountProfile.PROVIDER_ASSISTANT
+        and not _settings.platform_agent_api_enabled
+    )
+
+
+def _require_named_beta_provider(principal: Optional[Principal]) -> None:
+    """Keep the direct provider host closed to the configured named role."""
+    if not _is_direct_provider_host():
+        return
+    if (
+        principal is None
+        or not principal.subject.strip()
+        or _settings.auth_provider_role not in principal.roles
+    ):
+        raise SovereignHTTPError(
+            status_code=403,
+            code="CAPABILITY_DENIED",
+            retryable=False,
+        )
 
 
 def _require_embed_version(request: Request) -> None:
@@ -562,14 +586,31 @@ async def chat(
         metadata=request.metadata.model_dump(exclude_none=True),
         session_id=request.session_id,
     )
-    # The only pre-context exception is deterministic acute-emergency guidance.
-    # Do not let missing/invalid auth suppress 911/988 instructions.
+    principal: Optional[Principal] = None
+    bearer: Optional[str] = None
+    direct_provider_host = _is_direct_provider_host()
+    if direct_provider_host:
+        # A named provider host is closed before any orchestration, including
+        # the otherwise pre-auth emergency shortcut. The anonymous public mount
+        # retains its deterministic emergency guidance below.
+        _require_embed_version(http_request)
+        authorization = _one_raw_header(http_request, "Authorization")
+        bearer = _raw_bearer(authorization)
+        principal = _principal_from_token(bearer)
+        _require_named_beta_provider(principal)
+
+    # The public mount's only pre-context exception is deterministic acute-
+    # emergency guidance. It performs no model call or mount resolution.
     if safety.detect_emergency(request.message):
-        response = await _sovereign.handle(pipeline_request)
+        response = await _sovereign.handle(
+            pipeline_request,
+            principal=principal,
+        )
         return response.model_copy(
             update={"client_turn_id": request.client_turn_id}
         )
-    _require_embed_version(http_request)
+    if not direct_provider_host:
+        _require_embed_version(http_request)
     if _settings.mount_profile == MountProfile.PUBLIC:
         decision = _public_chat_limiter.check(_client_ip(http_request))
         if not decision.allowed:
@@ -588,7 +629,9 @@ async def chat(
         principal = None
         mount_context_token = bearer
     else:
-        principal = _principal_from_token(bearer)
+        if not direct_provider_host:
+            principal = _principal_from_token(bearer)
+        _require_named_beta_provider(principal)
         mount_context_token = None
     client_turn_id = _matched_client_turn_id(
         header_value=client_turn_value,
@@ -673,6 +716,11 @@ async def welcome(http_request: Request) -> dict:
             )
     else:
         mount = _settings.deployment_mount
+        if mount.surface == "provider_assistant":
+            authorization = _one_raw_header(http_request, "Authorization")
+            bearer = _raw_bearer(authorization)
+            principal = _principal_from_token(bearer)
+            _require_named_beta_provider(principal)
     persona = (
         Persona.PROVIDER
         if mount.surface == "provider_assistant"
@@ -746,6 +794,7 @@ async def digest(
     )
     bearer = _raw_bearer(authorization)
     principal = _principal_from_token(bearer)
+    _require_named_beta_provider(principal)
     client_turn_id = _matched_client_turn_id(
         header_value=client_turn_value,
         body_value=request.client_turn_id,

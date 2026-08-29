@@ -1396,6 +1396,128 @@ def test_http_provider_mount_normalizes_non_provider_denial():
         assert "PROVIDER_ACTOR_REQUIRED" not in response.text
 
 
+def test_direct_clerk_provider_host_is_named_beta_only_before_orchestration():
+    import time
+
+    import jwt
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+    from app.security.auth import TokenVerifier
+
+    secret = "test-secret-at-least-thirty-two-bytes"
+    settings = Settings(
+        auth_mode=AuthMode.DEV_HS256,
+        auth_dev_secret=secret,
+        mount_profile=MountProfile.PROVIDER_ASSISTANT,
+        mount_tenant_id="tenant_test",
+    )
+    now = int(time.time())
+
+    def token(*, roles=None, subject="named-provider-fixture", **claims):
+        payload = {
+            "sub": subject,
+            "iat": now,
+            "exp": now + 3600,
+            **claims,
+        }
+        if roles is not None:
+            payload["roles"] = roles
+        return jwt.encode(payload, secret, algorithm="HS256")
+
+    # Clerk public_metadata.sovereign_role is projected by the reviewed JWT
+    # template into this canonical roles claim. A browser-only metadata claim
+    # is deliberately not accepted as backend authority.
+    provider_token = token(roles=["provider"])
+    unlisted_token = token(roles=[])
+    wrong_role_token = token(roles=["member"])
+    raw_metadata_token = token(sovereign_role="provider")
+    blank_subject_token = token(roles=["provider"], subject="")
+
+    class CapturingSovereign:
+        def __init__(self):
+            self.calls = []
+
+        async def handle(self, request, **kwargs):
+            self.calls.append((request, kwargs))
+            return ChatResponse(
+                answer="synthetic named-beta answer",
+                intent=Intent.SMALL_TALK,
+                persona=Persona.PROVIDER,
+                citations=[],
+                doctrinal_review=None,
+                structured={},
+                safety_notice=None,
+                presentation=StandardPresentation(
+                    mode="standard", suppress=[], human_contact=None,
+                ),
+            )
+
+    sovereign = CapturingSovereign()
+    embed = EMBED_HEADERS
+
+    def authorized(value):
+        return {**embed, "Authorization": f"Bearer {value}"}
+
+    with patch.object(main_module, "_settings", settings):
+        with patch.object(main_module, "_verifier", TokenVerifier(settings)):
+            with patch.object(main_module, "_sovereign", sovereign):
+                client = TestClient(main_module.app)
+                missing = client.get("/welcome", headers=embed)
+                denied = [
+                    client.get("/welcome", headers=authorized(value))
+                    for value in (
+                        unlisted_token,
+                        wrong_role_token,
+                        raw_metadata_token,
+                        blank_subject_token,
+                    )
+                ]
+                allowed = client.get(
+                    "/welcome", headers=authorized(provider_token)
+                )
+
+                chat_body = {
+                    "client_turn_id": str(uuid.uuid4()),
+                    "message": "synthetic beta question",
+                }
+                unsigned_chat = client.post(
+                    "/chat", json=chat_body, headers=embed
+                )
+                wrong_role_chat = client.post(
+                    "/chat",
+                    json=chat_body,
+                    headers=authorized(wrong_role_token),
+                )
+                unsigned_emergency = client.post(
+                    "/chat",
+                    json={
+                        "client_turn_id": str(uuid.uuid4()),
+                        "message": "crushing chest pain right now",
+                    },
+                    headers=embed,
+                )
+                allowed_chat = client.post(
+                    "/chat",
+                    json=chat_body,
+                    headers=authorized(provider_token),
+                )
+
+    assert missing.status_code == 401
+    assert missing.json()["code"] == "CONTEXT_INVALID"
+    assert missing.headers["www-authenticate"] == "Bearer"
+    assert all(response.status_code == 403 for response in denied)
+    assert all(response.json()["code"] == "CAPABILITY_DENIED" for response in denied)
+    assert allowed.status_code == 200
+    assert allowed.json()["persona"] == "provider"
+    assert unsigned_chat.status_code == 401
+    assert wrong_role_chat.status_code == 403
+    assert unsigned_emergency.status_code == 401
+    assert allowed_chat.status_code == 200
+    assert len(sovereign.calls) == 1
+    assert sovereign.calls[0][1]["principal"].roles == ["provider"]
+
+
 def test_provider_actor_binding_is_isolated_per_request():
     resolver = PinnedResolver(MountContext(
         surface="provider_assistant",

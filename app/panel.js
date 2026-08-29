@@ -3,16 +3,18 @@
  *
  * A collapsed right-rail button that expands into the Sovereign chat panel.
  * No framework, no dependencies, styles self-injected and prefixed (.cnp-).
- * The platform owns authority and canonical conversation persistence. The
- * host supplies the opaque mount token and presentation hints; the panel never
- * scrapes the page. Served by the Sovereign at GET /embed/v1/panel.js.
+ * The host owns identity, authority, and any governed conversation history.
+ * The panel receives a short-lived bearer and presentation hints; it never
+ * trusts browser role hints or scrapes the page. Served by the Sovereign at
+ * GET /embed/v1/panel.js.
  *
  * Minimal governed mount:
  *
  *   CosmaNeuraPanel.mount({
  *     sovereignUrl: "https://sovereign.example.com",
  *     embedVersion: "1.0",
- *     // Opaque, short-lived platform mount-context token (never a raw IdP JWT).
+ *     // The configured host returns its short-lived, audience-bound token.
+ *     // For the direct Clerk pilot this is the cosmaneura-sovereign template.
  *     // forceRefresh is requested only after an explicit retry of a 401.
  *     getAuthToken: async request => request && request.forceRefresh
  *       ? rotateCurrentMountSession()
@@ -23,8 +25,6 @@
  *       context_snapshot_ref: openRecord.assistantSnapshotRef,
  *       digest_ref: openRecord.journeyDigestRef,
  *     }),
- *     onInsert: (text, resp) => note.insert(text),       // optional action hooks
- *     onSave:   (text, resp, clientId) => visits.savePrep(clientId, text),
  *     onHumanContact: action => host.openHumanContactPath(action.action_id),
  *     loadHistory: async (clientId) => platform.loadGovernedHistory(clientId),
  *     shiftContent: true,   // default: reflow the host page instead of covering it
@@ -40,6 +40,10 @@
     ".cnp-root{--bg:#0f1620;--panel:#16202c;--panel2:#1d2a38;--line:#27384a;--ink:#eaf1f8;",
     "--muted:#93a6ba;--accent:#c9a24b;--accent2:#6fb1d6;--ok:#8fc7a5;",
     "font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--ink)}",
+    ".cnp-gate{position:fixed;right:18px;bottom:18px;z-index:99998;padding:10px 14px;",
+    "border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--muted);",
+    "box-shadow:0 6px 22px rgba(0,0,0,.3);font-size:12px;font-weight:700}",
+    ".cnp-gate[hidden],.cnp-fab[hidden],.cnp-rail[hidden]{display:none}",
     ".cnp-fab{position:fixed;right:18px;bottom:18px;z-index:99998;width:52px;height:52px;",
     "border-radius:14px;border:1px solid var(--line);cursor:pointer;font-weight:800;font-size:20px;",
     "background:linear-gradient(135deg,var(--accent),#9c7a2f);color:#1a130a;box-shadow:0 6px 22px rgba(0,0,0,.4)}",
@@ -374,6 +378,7 @@
     var state = {
       open: false, busy: false, switching: false, destroyed: false,
       clientId: null, history: null, persona: "patient", generation: 0,
+      accessGranted: false,
       recordReady: false, contextSnapshot: null, recordHeaders: null,
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
       recordController: null, chatController: null,
@@ -389,18 +394,19 @@
     var root = document.createElement("div");
     root.className = "cnp-root";
     root.innerHTML =
-      '<button class="cnp-fab" title="CosmaNeura assistant">C</button>' +
-      '<div class="cnp-rail" role="complementary" aria-label="CosmaNeura assistant">' +
+      '<div class="cnp-gate" role="status">Sovereign named beta · unavailable</div>' +
+      '<button class="cnp-fab" title="Sovereign assistant" hidden>C</button>' +
+      '<div class="cnp-rail" role="complementary" aria-label="Sovereign assistant" hidden>' +
       '  <div class="cnp-head"><div class="cnp-logo">C</div>' +
-      '    <div><div class="cnp-title">CosmaNeura</div>' +
-      '    <div class="cnp-sub">Loading assistant…</div>' +
+      '    <div><div class="cnp-title">Sovereign</div>' +
+      '    <div class="cnp-sub">Named beta · access required</div>' +
       '    <div class="cnp-sandbox" hidden></div></div>' +
       '    <button class="cnp-x" title="Close">×</button></div>' +
       '  <div class="cnp-thread"></div>' +
       '  <div class="cnp-chips"></div>' +
       '  <div class="cnp-foot"><div class="cnp-row">' +
       '    <select class="cnp-fmt"><option value="chat">Chat</option>' +
-      '      <option value="note">Note text</option><option value="document">Document</option></select>' +
+      '      <option value="document">Document</option></select>' +
       '    <textarea class="cnp-in" rows="1" placeholder="Ask a question…"></textarea>' +
       '    <button class="cnp-send">Send</button></div></div></div>';
     (opts.target || document.body).appendChild(root);
@@ -410,7 +416,8 @@
     if (opts.fabBottom) root.querySelector(".cnp-fab").style.bottom = opts.fabBottom;
     if (opts.fabRight) root.querySelector(".cnp-fab").style.right = opts.fabRight;
 
-    var fab = root.querySelector(".cnp-fab"), rail = root.querySelector(".cnp-rail"),
+    var gate = root.querySelector(".cnp-gate"),
+        fab = root.querySelector(".cnp-fab"), rail = root.querySelector(".cnp-rail"),
         thread = root.querySelector(".cnp-thread"), chips = root.querySelector(".cnp-chips"),
         input = root.querySelector(".cnp-in"), send = root.querySelector(".cnp-send"),
         fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox"),
@@ -462,9 +469,20 @@
 
     function syncControls() {
       var disabled = state.destroyed || state.busy || state.switching ||
-        !state.recordReady || state.clientId === null;
+        !state.accessGranted || !state.recordReady || state.clientId === null;
       input.disabled = disabled; fmt.disabled = disabled; send.disabled = disabled;
     }
+
+    function setNamedBetaAccess(granted) {
+      var wasGranted = state.accessGranted;
+      state.accessGranted = granted === true;
+      gate.hidden = state.accessGranted;
+      fab.hidden = !state.accessGranted;
+      rail.hidden = !state.accessGranted;
+      if (!state.accessGranted && wasGranted) setOpen(false);
+      syncControls();
+    }
+    setNamedBetaAccess(false);
 
     async function freshBearerHeaders(request) {
       var token = request === undefined
@@ -500,6 +518,10 @@
             throw new Error("welcome contract mismatch");
           if (!r.ok) throw new Error("welcome unavailable");
           return r.json();
+        }).then(function (value) {
+          if (!value || value.persona !== "provider")
+            throw new Error("named-beta provider access unavailable");
+          return value;
         }).catch(function (error) {
           if (state.welcomePromise === promise) state.welcomePromise = null;
           throw error;
@@ -598,6 +620,7 @@
       clearEventHandlers("record");
       input.value = ""; input.style.height = "auto";
       thread.innerHTML = ""; chips.innerHTML = "";
+      setNamedBetaAccess(false);
       setGovernedChrome(null); clearOwnedTips(); syncControls();
 
       if (recordId === null) {
@@ -608,27 +631,31 @@
       }
 
       try {
-        // Credential and context are acquired together for this generation.
-        // Either late result is discarded if the host switches records.
-        var handshake = await Promise.all([opts.getContext(), freshBearerHeaders()]);
+        // Authenticate the named provider before asking the host for even an
+        // opaque record reference. Every late result is discarded if the host
+        // switches records while the preflight is in flight.
+        var headers = await freshBearerHeaders();
         if (!currentGeneration(generation)) return null;
-        var context = governedContext(handshake[0], recordId);
+        var welcome = await welcomeData(headers, generation);
+        if (!currentGeneration(generation)) return null;
+        var suppliedContext = await opts.getContext();
+        if (!currentGeneration(generation)) return null;
+        var context = governedContext(suppliedContext, recordId);
         if (!context) {
           var mismatch = new Error("record context mismatch");
           mismatch.recordMismatch = true;
           throw mismatch;
         }
         state.contextSnapshot = context;
-        state.recordHeaders = handshake[1];
-        var results = await Promise.all([
-          welcomeData(handshake[1], generation),
-          opts.loadHistory
-            ? opts.loadHistory(recordId, { signal: recordController.signal })
-            : Promise.resolve(null),
-        ]);
+        state.recordHeaders = headers;
+        // Never ask the host for governed history until the server-side role
+        // check succeeds and the opaque record context validates locally.
+        var history = opts.loadHistory
+          ? await opts.loadHistory(recordId, { signal: recordController.signal })
+          : null;
         if (!currentGeneration(generation)) return null;
-        var loaded = results[1] === null ? null : governedHistory(results[1]);
-        if (results[1] !== null && !loaded)
+        var loaded = history === null ? null : governedHistory(history);
+        if (history !== null && !loaded)
           throw new Error("governed history is invalid");
         state.history = loaded;
         (loaded ? loaded.messages : []).forEach(function (m) {
@@ -650,18 +677,18 @@
               return opts.onHistoryUpdated(recordId, loaded);
           }).catch(function () {});
         }
-        applyWelcomeUX(results[0]); applyEnvironmentLabel(results[0]);
+        applyWelcomeUX(welcome); applyEnvironmentLabel(welcome);
+        setNamedBetaAccess(true);
       } catch (error) {
         if (currentGeneration(generation) && error.name !== "AbortError") {
           state.recordReady = false;
           state.contextSnapshot = null;
           state.recordHeaders = null;
+          setNamedBetaAccess(false);
           if (error.recordMismatch) {
             state.clientId = null;
             thread.innerHTML = "";
             sub.textContent = "Open a record to use the assistant";
-          } else {
-            bubble("a").innerHTML = "<p>Conversation history is unavailable.</p>";
           }
         }
       } finally {
@@ -763,21 +790,12 @@
         };
         bar.appendChild(x);
       }
-      if (!hydrated && !suppressed.has("feature_actions") &&
-          (ofmt === "note" || ofmt === "document"))
-        act("Copy", function () { navigator.clipboard.writeText(d.answer || ""); });
       if (!hydrated && !suppressed.has("feature_actions") && ofmt === "document")
         act("Download .md", function () {
           var a = document.createElement("a");
           a.href = URL.createObjectURL(new Blob([d.answer || ""], { type: "text/markdown" }));
           a.download = "cosmaneura-" + (d.intent || "output") + ".md"; a.click();
         });
-      if (!hydrated && !suppressed.has("feature_actions") && opts.onInsert &&
-          (ofmt === "note" || (d.structured && d.structured.feature === "visit_prep")))
-        act("Insert into note", function () { opts.onInsert(d.answer || "", d); });
-      if (!hydrated && !suppressed.has("feature_actions") && opts.onSave &&
-          d.structured && d.structured.feature)
-        act("Save", function () { opts.onSave(d.answer || "", d); });
       if (presentation.human_contact) {
         var contact = presentation.human_contact;
         act(contact.label, function (button) {
@@ -1029,13 +1047,12 @@
       }
     }
 
-    // Reflow the host instead of covering it: a clinician reading a note while
-    // the assistant is open must still see the note (that is the whole point of
-    // "insert into note"). Restores the host's own inline value on close, and
-    // skips the shift on narrow screens where the rail is nearly full-width.
+    // Reflow the host instead of covering its active workspace. Restore the
+    // host's own inline value on close, and skip the shift on narrow screens.
     var savedPad = null;
     function setOpen(open) {
       if (state.destroyed) return;
+      if (open && !state.accessGranted) return;
       state.open = open;
       rail.classList.toggle("cnp-open", open);
       var canShift = opts.shiftContent !== false && window.innerWidth >= 900;
@@ -1061,6 +1078,7 @@
       state.chatController = null; state.recordController = null;
       state.welcomeController = null;
       state.history = null; state.clientId = null; state.welcomePromise = null;
+      state.accessGranted = false;
       state.recordReady = false; state.contextSnapshot = null; state.recordHeaders = null;
       state.retryAttempt = null;
       if (savedPad !== null) {

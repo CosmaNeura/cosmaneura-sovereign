@@ -13,7 +13,7 @@ from app.schemas import EmbedChatRequest, EmbedChatResponse
 
 ROOT = Path(__file__).resolve().parents[1]
 PANEL_PATH = ROOT / "app" / "panel.js"
-DEMO_PATH = ROOT / "app" / "demo_dashboard.html"
+DEMO_PATHS = (ROOT / "app" / "demo.html", ROOT / "app" / "demo_dashboard.html")
 PANEL_HARNESS_PATH = ROOT / "tests" / "panel_contract_harness.js"
 
 
@@ -51,6 +51,10 @@ def test_mount_validates_exact_https_origin_and_required_governed_callbacks():
     assert '"x-cosmaneura-embed-version": embedVersion' in panel
     assert "opts.persona" not in panel
     assert 'state.persona = w.persona === "provider"' in panel
+    assert 'value.persona !== "provider"' in panel
+    assert "Sovereign named beta · unavailable" in panel
+    assert "setNamedBetaAccess(false)" in panel
+    assert "setNamedBetaAccess(true)" in panel
     assert "welcomeData().then" not in panel
 
 
@@ -84,8 +88,10 @@ def test_record_switch_is_null_safe_and_rehydrates_governed_history_only():
     assert "signal: controller.signal" in panel
     assert "abort(state.chatController); abort(state.recordController)" in panel
     assert "abort(state.welcomeController)" in panel
-    assert "Promise.all([opts.getContext(), freshBearerHeaders()])" in panel
-    assert "var loaded = results[1] === null ? null : governedHistory(results[1])" in panel
+    assert "var headers = await freshBearerHeaders()" in panel
+    assert "var welcome = await welcomeData(headers, generation)" in panel
+    assert "var suppliedContext = await opts.getContext()" in panel
+    assert "var loaded = history === null ? null : governedHistory(history)" in panel
     assert "Array.isArray(loaded)" not in panel
     assert "loaded.messages" in panel
     assert "presentation: m.presentation" in panel
@@ -100,6 +106,10 @@ def test_record_switch_is_null_safe_and_rehydrates_governed_history_only():
     assert "state.history.push" not in panel
     assert "state.history.slice" not in panel
     assert "state.clientId !== recordId" in panel
+    assert panel.index("var welcome = await welcomeData") < panel.index(
+        "var suppliedContext = await opts.getContext()"
+    ) < panel.index("await opts.loadHistory")
+    assert "!state.accessGranted || !state.recordReady" in panel
 
 
 def test_platform_turn_transport_uses_fresh_bearer_and_explicit_exact_retry():
@@ -245,15 +255,33 @@ def test_panel_first_send_exact_retry_success_and_record_reset_runtime():
     )
 
 
-def test_dashboard_demo_pins_version_and_binds_initial_and_changed_records():
-    demo = DEMO_PATH.read_text()
+def test_demo_surfaces_are_inert_named_beta_boundaries():
+    for path in DEMO_PATHS:
+        source = path.read_text()
+        normalized = source.casefold()
 
-    assert '<script src="/embed/v1/panel.js"></script>' in demo
-    assert 'embedVersion: "1.0"' in demo
-    assert "onHumanContact:" in demo
-    assert "panel.setRecord(r.id);" in demo
-    assert "panel.setRecord(currentId);" in demo
-    assert 'persona: "provider"' not in demo
-    assert "ctx.record_ref = r.record_ref" not in demo
-    assert "static demo deliberately cannot mint" in demo.lower()
-    assert "ctx.patient_ref" not in demo
+        assert "named beta" in normalized
+        assert "unavailable" in normalized
+        assert "<form" not in normalized
+        assert "<textarea" not in normalized
+        assert "fetch(" not in source
+        assert "CosmaNeuraPanel.mount" not in source
+
+
+def test_host_surface_has_no_overclaimed_or_writeback_copy():
+    source = "\n".join(path.read_text() for path in (*DEMO_PATHS, PANEL_PATH))
+    normalized = source.casefold()
+
+    for forbidden in (
+        "soc 2",
+        "ehr",
+        "write-back",
+        "soap",
+        "transcript",
+        "app.cosmaneura.com/notes",
+        "local-demo-context-token",
+        "insert into note",
+        "saved to this visit",
+        "public signup",
+    ):
+        assert forbidden not in normalized
