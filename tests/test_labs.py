@@ -1201,14 +1201,34 @@ def test_record_grant_secret_is_redacted_from_settings_repr():
 
 
 def test_welcome_and_panel_label_sandbox_persistently_and_per_result():
+    import time
+
+    import jwt
     from fastapi.testclient import TestClient
+    from app.security.auth import TokenVerifier
 
     provider = _mock_provider_settings()
     original = main_module._settings
+    original_verifier = main_module._verifier
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "sub": "named-provider-fixture",
+            "roles": ["provider"],
+            "iat": now,
+            "exp": now + 3600,
+        },
+        provider.auth_dev_secret,
+        algorithm="HS256",
+    )
     try:
         main_module._settings = provider
+        main_module._verifier = TokenVerifier(provider)
         client = TestClient(main_module.app)
-        headers = {"X-Cosmaneura-Embed-Version": "1.0"}
+        headers = {
+            "X-Cosmaneura-Embed-Version": "1.0",
+            "Authorization": f"Bearer {token}",
+        }
         welcome = client.get("/welcome", headers=headers).json()
         assert welcome["labs_tier"] == "sandbox"
         assert welcome["labs_label"] == SANDBOX_LABEL
@@ -1222,10 +1242,11 @@ def test_welcome_and_panel_label_sandbox_persistently_and_per_result():
         assert all(path["intent"] != "lab_review" for path in disabled["paths"])
     finally:
         main_module._settings = original
+        main_module._verifier = original_verifier
 
     panel = (Path(__file__).resolve().parents[1] / "app" / "panel.js").read_text()
     assert "Environment not verified" in panel
-    assert "welcomeData(handshake[1], generation)" in panel
+    assert "var welcome = await welcomeData(headers, generation)" in panel
     assert 'd.structured.tier === "sandbox"' in panel
     assert "d.structured.sandbox_label" in panel
     assert "meta.record_ref" not in panel

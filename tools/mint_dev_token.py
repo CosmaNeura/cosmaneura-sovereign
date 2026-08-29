@@ -31,7 +31,7 @@ import jwt
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--role", default="patient",
-                    help="role claim value (e.g. 'provider' to unlock the PHI path)")
+                    help="role claim value (e.g. 'provider' for a local fixture)")
     ap.add_argument("--subject", default="dev-user")
     ap.add_argument("--ttl", type=int, default=3600, help="seconds until expiry")
     ap.add_argument("--audience", default=os.environ.get("OIDC_AUDIENCE") or None)

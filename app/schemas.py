@@ -105,7 +105,7 @@ class HostContextHints(ClosedWireModel):
     )
     output_format: Optional[Literal["chat", "note", "document"]] = None
     terminology: Optional[str] = Field(default=None, max_length=40)
-    care_model: Optional[str] = None
+    care_model: Optional[str] = Field(default=None, max_length=80)
 
 
 class EmbedChatRequest(ClosedWireModel):

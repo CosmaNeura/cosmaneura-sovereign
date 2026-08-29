@@ -630,8 +630,11 @@ def test_dashboard_harness_gated_by_demo_flag():
         reloaded = importlib.reload(app.main)
         r = TestClient(reloaded.app).get("/demo/dashboard")
         assert r.status_code == 200
+        assert "named beta" in r.text.lower()
+        assert "unavailable" in r.text.lower()
         assert "CosmaNeuraPanel.mount" in r.text
-        assert "synthetic" in r.text.lower()      # honest demo labelling
+        assert 'type="password"' in r.text
+        assert "synthetic_walkthrough_01" in r.text
     finally:
         os.environ.pop("DEMO_UI_ENABLED", None)
         app.config.get_settings.cache_clear()
@@ -672,9 +675,24 @@ def test_welcome_serves_greeting_and_guided_paths():
     from unittest.mock import patch
     from app import main as main_module
 
-    provider = _provider_settings(feature_athena_labs=False)
+    from app.config import AuthMode
+    from app.security.auth import TokenVerifier
+
+    secret = "test-secret-at-least-thirty-two-bytes"
+    provider = _provider_settings(
+        feature_athena_labs=False,
+        auth_mode=AuthMode.DEV_HS256,
+        auth_dev_secret=secret,
+    )
+    provider_headers = {
+        **headers,
+        "Authorization": f"Bearer {_mint(secret=secret, roles=['provider'])}",
+    }
     with patch.object(main_module, "_settings", provider):
-        provider_welcome = client.get("/welcome", headers=headers).json()
+        with patch.object(main_module, "_verifier", TokenVerifier(provider)):
+            provider_welcome = client.get(
+                "/welcome", headers=provider_headers
+            ).json()
     intents = {p["intent"] for p in provider_welcome["paths"]}
     assert provider_welcome["persona"] == "provider"
     assert "visit_prep" in intents and "ethics_consult" in intents

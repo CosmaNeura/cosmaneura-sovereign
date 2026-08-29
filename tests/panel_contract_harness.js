@@ -39,7 +39,7 @@ class FakeElement {
     this._innerHTML = String(value);
     this.children = [];
     if (this.className === "cnp-root" && value.includes("cnp-rail")) {
-      const names = ["cnp-fab", "cnp-rail", "cnp-thread", "cnp-chips", "cnp-in",
+      const names = ["cnp-gate", "cnp-fab", "cnp-rail", "cnp-thread", "cnp-chips", "cnp-in",
                      "cnp-send", "cnp-fmt", "cnp-sandbox", "cnp-sub", "cnp-x"];
       this._mountNodes = {};
       names.forEach(name => {
@@ -48,6 +48,8 @@ class FakeElement {
         );
         node.className = name;
         node.value = name === "cnp-fmt" ? "chat" : "";
+        if (name === "cnp-gate")
+          node.textContent = "Sovereign named beta · unavailable";
         this._mountNodes[name] = node;
         this.appendChild(node);
       });
@@ -124,6 +126,7 @@ async function main() {
   let uuidCounter = 1;
   global.window = {
     innerWidth: 1200,
+    location: { origin: "https://host.example" },
     crypto: {
       randomUUID: () => `00000000-0000-4000-8000-${String(uuidCounter++).padStart(12, "0")}`,
     },
@@ -134,23 +137,32 @@ async function main() {
   });
 
   const tokenRequests = [];
-  let mountToken = "opaque-token-session-a-abcdefghijkl";
-  let rotateCalls = 0;
+  let tokenSequence = 0;
   let currentRecord = "record_a";
-  let chatMode = "auth-retry";
+  let welcomeMode = "provider";
+  let contextLoads = 0;
+  let historyLoads = 0;
+  let chatMode = "service-retry";
   const chatRequests = [];
   let humanContacts = 0;
   let historyNotifications = 0;
 
   global.fetch = async (url, options) => {
     if (url.endsWith("/welcome")) {
+      if (welcomeMode === "denied") {
+        return response(403, {
+          code: "CAPABILITY_DENIED",
+          retryable: false,
+        });
+      }
       return response(200, {
         partner_name: "Test",
-        persona: "provider",
+        persona: welcomeMode,
         greeting: "Hello",
         paths: [],
         disclaimer: "Standard disclaimer",
         emergency_note: "Call 911 in an emergency.",
+        walkthrough_mode: "local_synthetic",
       });
     }
     assert(url.endsWith("/chat"), "unexpected URL");
@@ -159,15 +171,26 @@ async function main() {
       authorization: options.headers.authorization,
       turn: options.headers["x-cosmaneura-client-turn-id"],
     });
-    if (chatMode === "auth-retry") {
+    if (chatMode === "service-retry") {
       chatMode = "success";
-      return response(401, {
-        type: "https://contracts.cosmaneura.com/problems/token_invalid",
-        title: "Token invalid",
-        status: 401,
-        code: "TOKEN_INVALID",
-        detail: "The assistant session could not be verified.",
-        trace_id: "trace_auth_retry_1234",
+      return response(503, {
+        type: "https://contracts.cosmaneura.com/problems/service_unavailable",
+        title: "Service unavailable",
+        status: 503,
+        code: "SERVICE_UNAVAILABLE",
+        detail: "The assistant is temporarily unavailable.",
+        trace_id: "trace_service_retry_1234",
+        retryable: true,
+      });
+    }
+    if (chatMode === "forbidden") {
+      return response(403, {
+        type: "https://contracts.cosmaneura.com/problems/capability_denied",
+        title: "Capability denied",
+        status: 403,
+        code: "CAPABILITY_DENIED",
+        detail: "Named-beta provider access is required.",
+        trace_id: "trace_role_revoked_1234",
         retryable: false,
       });
     }
@@ -189,7 +212,12 @@ async function main() {
       client_turn_id: requestBody.client_turn_id,
       citations: [],
       doctrinal_review: null,
-      structured: {},
+      structured: {
+        matches: [{
+          name: "Fixture Provider", specialty: "Family Medicine",
+          telehealth: true, booking_url: "https://directory.example/fixture",
+        }],
+      },
       safety_notice: null,
       presentation: {
         mode: "standard",
@@ -220,33 +248,86 @@ async function main() {
     assert(error.message.includes("HTTPS origin"), "invalid origin failed for wrong reason");
   }
   assert(invalidTokenCalls === 0, "origin validation acquired a token");
+  try {
+    window.CosmaNeuraPanel.mount({
+      sovereignUrl: "http://remote.example",
+      embedVersion: "1.0",
+      allowLoopbackHttp: true,
+      getAuthToken: async () => "opaque-token-invalid-1234",
+      getContext: async () => ({ clientId: "record_a" }),
+      onHumanContact: async () => {},
+    });
+    throw new Error("remote HTTP origin was accepted");
+  } catch (error) {
+    assert(error.message.includes("loopback HTTP"), "remote HTTP failed for wrong reason");
+  }
+
+  async function assertNamedBetaLocked(mode) {
+    welcomeMode = mode;
+    const locked = window.CosmaNeuraPanel.mount({
+      sovereignUrl: "https://sovereign.example",
+      embedVersion: "1.0",
+      getAuthToken: async () => "opaque-token-unlisted-abcdefghijkl",
+      getContext: async () => {
+        contextLoads += 1;
+        return { clientId: "record_locked" };
+      },
+      onHumanContact: async () => {},
+      loadHistory: async () => { historyLoads += 1; return null; },
+    });
+    const gate = locked.root.querySelector(".cnp-gate");
+    const fab = locked.root.querySelector(".cnp-fab");
+    const rail = locked.root.querySelector(".cnp-rail");
+    const lockedSend = locked.root.querySelector(".cnp-send");
+    assert(gate.hidden === false && gate.textContent.includes("named beta"),
+           "locked mount did not show named-beta copy");
+    assert(fab.hidden === true && rail.hidden === true && lockedSend.disabled === true,
+           "locked mount exposed the orchestrator before preflight");
+    await locked.setRecord("record_locked");
+    locked.open();
+    assert(gate.hidden === false && fab.hidden === true && rail.hidden === true,
+           "unlisted mount entered the orchestrator");
+    assert(contextLoads === 0, "unlisted mount requested record context");
+    assert(historyLoads === 0, "unlisted mount requested governed history");
+    assert(chatRequests.length === 0, "unlisted mount sent a chat request");
+    locked.destroy();
+  }
+
+  await assertNamedBetaLocked("denied");
+  await assertNamedBetaLocked("patient");
+  welcomeMode = "provider";
+  window.location.origin = "http://127.0.0.1:8000";
 
   const controller = window.CosmaNeuraPanel.mount({
-    sovereignUrl: "https://sovereign.example",
+    sovereignUrl: "http://127.0.0.1:8000",
     embedVersion: "1.0",
+    allowLoopbackHttp: true,
     getAuthToken: async request => {
       tokenRequests.push(request);
-      if (request && request.forceRefresh === true) {
-        rotateCalls += 1;
-        mountToken = "opaque-token-session-b-abcdefghijkl";
-      }
-      return mountToken;
+      tokenSequence += 1;
+      return `opaque-token-session-${String(tokenSequence).padStart(2, "0")}-abcdefghijkl`;
     },
-    getContext: async () => ({
-      clientId: currentRecord,
-      thread_ref: `thread_${currentRecord}`,
-      context_snapshot_ref: `snapshot_${currentRecord}`,
-    }),
+    getContext: async () => {
+      contextLoads += 1;
+      return {
+        clientId: currentRecord,
+        thread_ref: `thread_${currentRecord}`,
+        context_snapshot_ref: `snapshot_${currentRecord}`,
+      };
+    },
     onHumanContact: async action => {
       assert(Object.keys(action).sort().join(",") === "action_id,fallback_text,label",
              "human callback received more than the action descriptor");
       humanContacts += 1;
     },
-    loadHistory: async () => ({
-      thread_ref: `thread_${currentRecord}`,
-      messages: [],
-      next_cursor: null,
-    }),
+    loadHistory: async () => {
+      historyLoads += 1;
+      return {
+        thread_ref: `thread_${currentRecord}`,
+        messages: [],
+        next_cursor: null,
+      };
+    },
     onHistoryUpdated: async () => { historyNotifications += 1; },
   });
 
@@ -255,7 +336,14 @@ async function main() {
   assert(send.disabled === true, "send enabled before record handshake");
   await controller.setRecord("record_a");
   await Promise.resolve();
+  assert(controller.root.querySelector(".cnp-gate").hidden === true,
+         "provider preflight did not clear named-beta gate");
+  assert(controller.root.querySelector(".cnp-fab").hidden === false,
+         "provider preflight did not reveal panel launcher");
   assert(send.disabled === false, "send stayed disabled after record handshake");
+  assert(input.readOnly === true, "local walkthrough accepted free-form input");
+  assert(controller.root.querySelector(".cnp-fmt").disabled === true,
+         "local walkthrough allowed output-format changes");
   assert(historyNotifications === 1, "governed history callback was not notified");
 
   input.value = "first governed turn";
@@ -268,19 +356,20 @@ async function main() {
   assert(chatRequests[0].turn === chatRequests[1].turn, "explicit retry changed turn header");
   assert(chatRequests[0].authorization !== chatRequests[1].authorization,
          "explicit retry did not acquire a fresh bearer");
-  assert(tokenRequests[tokenRequests.length - 1] &&
-         Object.keys(tokenRequests[tokenRequests.length - 1]).join(",") === "forceRefresh" &&
-         tokenRequests[tokenRequests.length - 1].forceRefresh === true,
-         "401 retry did not request exactly one forced refresh");
-  assert(tokenRequests.filter(request => request && request.forceRefresh === true).length === 1,
-         "401 retry requested more than one forced refresh");
-  assert(rotateCalls === 1, "401 retry did not rotate the existing mount session exactly once");
+  assert(tokenRequests.every(request => request === undefined),
+         "bearer callback received an undocumented refresh directive");
   const sent = JSON.parse(chatRequests[0].body);
   assert(Object.keys(sent).sort().join(",") === "client_turn_id,message,metadata",
          "first send included a forbidden top-level field");
+  assert(sent.metadata.output_format === "chat",
+         "local walkthrough did not send its locked chat format");
   assert(!("history" in sent) && !("persona" in sent), "first send replayed raw browser state");
   assert(find(controller.root, node => node.innerHTML.includes("Governed answer")),
          "successful governed answer was not rendered");
+  assert(find(controller.root, node => node.innerHTML.includes("Sovereign route")),
+         "local walkthrough did not expose the routed orchestrator path");
+  assert(find(controller.root, node => node.textContent === "Fixture Provider"),
+         "structured directory option was not rendered");
 
   const oldContact = find(controller.root, node => node.textContent === "Contact support");
   assert(oldContact, "governed contact action was not rendered");
@@ -297,6 +386,36 @@ async function main() {
          "409 record mismatch left the prior thread painted");
 
   controller.destroy();
+
+  currentRecord = "record_revoked";
+  chatMode = "success";
+  const revoked = window.CosmaNeuraPanel.mount({
+    sovereignUrl: "https://sovereign.example",
+    embedVersion: "1.0",
+    getAuthToken: async () => "opaque-token-revoked-abcdefghijkl",
+    getContext: async () => ({ clientId: currentRecord }),
+    onHumanContact: async () => {},
+    loadHistory: async () => null,
+  });
+  await revoked.setRecord(currentRecord);
+  const revokedGate = revoked.root.querySelector(".cnp-gate");
+  const revokedFab = revoked.root.querySelector(".cnp-fab");
+  const revokedRail = revoked.root.querySelector(".cnp-rail");
+  const revokedSend = revoked.root.querySelector(".cnp-send");
+  const revokedInput = revoked.root.querySelector(".cnp-in");
+  assert(revokedGate.hidden === true && revokedFab.hidden === false,
+         "provider fixture did not enter the orchestrator before revocation");
+  chatMode = "forbidden";
+  revokedInput.value = "turn after role revocation";
+  await revokedSend.onclick();
+  revoked.open();
+  assert(revokedGate.hidden === false && revokedGate.textContent.includes("named beta"),
+         "403 did not restore named-beta unavailable copy");
+  assert(revokedFab.hidden === true && revokedRail.hidden === true && revokedSend.disabled === true,
+         "403 left the orchestrator available");
+  assert(revoked.root.querySelector(".cnp-thread").children.length === 0,
+         "403 left governed history visible");
+  revoked.destroy();
 }
 
 main().catch(error => {

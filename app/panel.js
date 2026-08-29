@@ -3,28 +3,25 @@
  *
  * A collapsed right-rail button that expands into the Sovereign chat panel.
  * No framework, no dependencies, styles self-injected and prefixed (.cnp-).
- * The platform owns authority and canonical conversation persistence. The
- * host supplies the opaque mount token and presentation hints; the panel never
- * scrapes the page. Served by the Sovereign at GET /embed/v1/panel.js.
+ * The host owns identity, authority, and any governed conversation history.
+ * The panel receives a short-lived bearer and presentation hints; it never
+ * trusts browser role hints or scrapes the page. Served by the Sovereign at
+ * GET /embed/v1/panel.js.
  *
  * Minimal governed mount:
  *
  *   CosmaNeuraPanel.mount({
  *     sovereignUrl: "https://sovereign.example.com",
  *     embedVersion: "1.0",
- *     // Opaque, short-lived platform mount-context token (never a raw IdP JWT).
- *     // forceRefresh is requested only after an explicit retry of a 401.
- *     getAuthToken: async request => request && request.forceRefresh
- *       ? rotateCurrentMountSession()
- *       : currentBearerToken,
+ *     // The configured host returns its short-lived, audience-bound token.
+ *     // For the direct Clerk pilot this is the cosmaneura-sovereign template.
+ *     getAuthToken: async () => currentBearerToken,
  *     getContext: async () => ({
  *       clientId: openRecord.threadKey,
  *       thread_ref: openRecord.assistantThreadRef,
  *       context_snapshot_ref: openRecord.assistantSnapshotRef,
  *       digest_ref: openRecord.journeyDigestRef,
  *     }),
- *     onInsert: (text, resp) => note.insert(text),       // optional action hooks
- *     onSave:   (text, resp, clientId) => visits.savePrep(clientId, text),
  *     onHumanContact: action => host.openHumanContactPath(action.action_id),
  *     loadHistory: async (clientId) => platform.loadGovernedHistory(clientId),
  *     shiftContent: true,   // default: reflow the host page instead of covering it
@@ -40,6 +37,10 @@
     ".cnp-root{--bg:#0f1620;--panel:#16202c;--panel2:#1d2a38;--line:#27384a;--ink:#eaf1f8;",
     "--muted:#93a6ba;--accent:#c9a24b;--accent2:#6fb1d6;--ok:#8fc7a5;",
     "font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--ink)}",
+    ".cnp-gate{position:fixed;right:18px;bottom:18px;z-index:99998;padding:10px 14px;",
+    "border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--muted);",
+    "box-shadow:0 6px 22px rgba(0,0,0,.3);font-size:12px;font-weight:700}",
+    ".cnp-gate[hidden],.cnp-fab[hidden],.cnp-rail[hidden]{display:none}",
     ".cnp-fab{position:fixed;right:18px;bottom:18px;z-index:99998;width:52px;height:52px;",
     "border-radius:14px;border:1px solid var(--line);cursor:pointer;font-weight:800;font-size:20px;",
     "background:linear-gradient(135deg,var(--accent),#9c7a2f);color:#1a130a;box-shadow:0 6px 22px rgba(0,0,0,.4)}",
@@ -69,6 +70,8 @@
     "color:var(--accent);border:1px solid var(--line);border-radius:999px;padding:1px 7px;margin-bottom:6px}",
     ".cnp-cite{font-size:10.5px;color:var(--muted);margin-top:7px;border-top:1px solid var(--line);padding-top:6px}",
     ".cnp-trust{font-size:10.5px;color:var(--ok);margin-top:6px}",
+    ".cnp-route{font-size:10.5px;color:#b9dcef;margin:0 0 7px;padding:6px 8px;",
+    "border:1px solid #294964;border-radius:8px;background:#101e2b}",
     ".cnp-calc{margin-top:8px;background:#14231c;border:1px solid #2d4a3a;border-radius:9px;",
     "padding:7px 10px;font-size:11.5px}",
     ".cnp-calc-t{color:var(--ok);font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}",
@@ -83,8 +86,11 @@
     ".cnp-acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}",
     ".cnp-act{font-size:11.5px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);",
     "border-radius:7px;padding:4px 9px;cursor:pointer}.cnp-act:hover{border-color:var(--accent2)}",
+    ".cnp-cards{display:grid;gap:7px;margin-top:8px}.cnp-card{padding:8px 10px;border:1px solid var(--line);",
+    "border-radius:9px;background:var(--panel2)}.cnp-card-name{font-weight:700}.cnp-card-meta{color:var(--muted);font-size:11px}",
+    ".cnp-card a{display:inline-block;margin-top:5px;color:#9bd5f5;font-size:11px}",
     ".cnp-chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 14px 8px}",
-    ".cnp-chip{font-size:11.5px;color:var(--muted);background:var(--panel);border:1px solid var(--line);",
+    ".cnp-chip{font:inherit;font-size:11.5px;color:var(--muted);background:var(--panel);border:1px solid var(--line);",
     "border-radius:999px;padding:4px 10px;cursor:pointer}.cnp-chip:hover{color:var(--ink);border-color:var(--accent2)}",
     ".cnp-foot{border-top:1px solid var(--line);padding:10px 14px}",
     ".cnp-row{display:flex;gap:7px;align-items:flex-end}",
@@ -291,17 +297,20 @@
     return box;
   }
 
-  function exactHttpsOrigin(value) {
+  function exactServiceOrigin(value, allowLoopbackHttp) {
     if (typeof value !== "string" || !value) throw new Error("sovereignUrl is required");
     var parsed;
     try { parsed = new URL(value); } catch (_error) {
       throw new Error("sovereignUrl must be an absolute HTTPS origin");
     }
-    if (parsed.protocol !== "https:" || parsed.username || parsed.password ||
+    var loopback = allowLoopbackHttp === true && parsed.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "[::1]"].indexOf(parsed.hostname) >= 0 &&
+      window.location && window.location.origin === parsed.origin;
+    if ((parsed.protocol !== "https:" && !loopback) || parsed.username || parsed.password ||
         parsed.pathname !== "/" || parsed.search || parsed.hash ||
         parsed.origin !== value)
-      throw new Error("sovereignUrl must be an exact absolute HTTPS origin");
-    return parsed.origin;
+      throw new Error("sovereignUrl must be an exact HTTPS origin or same-origin loopback HTTP");
+    return { origin: parsed.origin, loopback: loopback };
   }
 
   function closedObject(value, keys) {
@@ -369,11 +378,13 @@
     if (typeof opts.onHumanContact !== "function")
       throw new Error("onHumanContact is required");
     // Parse and normalize no path at all before any credential callback runs.
-    var url = exactHttpsOrigin(opts.sovereignUrl);
+    var service = exactServiceOrigin(opts.sovereignUrl, opts.allowLoopbackHttp);
+    var url = service.origin;
     var embedVersion = opts.embedVersion;
     var state = {
       open: false, busy: false, switching: false, destroyed: false,
       clientId: null, history: null, persona: "patient", generation: 0,
+      accessGranted: false, localFixture: false,
       recordReady: false, contextSnapshot: null, recordHeaders: null,
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
       recordController: null, chatController: null,
@@ -389,18 +400,19 @@
     var root = document.createElement("div");
     root.className = "cnp-root";
     root.innerHTML =
-      '<button class="cnp-fab" title="CosmaNeura assistant">C</button>' +
-      '<div class="cnp-rail" role="complementary" aria-label="CosmaNeura assistant">' +
+      '<div class="cnp-gate" role="status">Sovereign named beta · unavailable</div>' +
+      '<button class="cnp-fab" title="Sovereign assistant" hidden>C</button>' +
+      '<div class="cnp-rail" role="complementary" aria-label="Sovereign assistant" hidden>' +
       '  <div class="cnp-head"><div class="cnp-logo">C</div>' +
-      '    <div><div class="cnp-title">CosmaNeura</div>' +
-      '    <div class="cnp-sub">Loading assistant…</div>' +
+      '    <div><div class="cnp-title">Sovereign</div>' +
+      '    <div class="cnp-sub">Named beta · access required</div>' +
       '    <div class="cnp-sandbox" hidden></div></div>' +
       '    <button class="cnp-x" title="Close">×</button></div>' +
       '  <div class="cnp-thread"></div>' +
       '  <div class="cnp-chips"></div>' +
       '  <div class="cnp-foot"><div class="cnp-row">' +
       '    <select class="cnp-fmt"><option value="chat">Chat</option>' +
-      '      <option value="note">Note text</option><option value="document">Document</option></select>' +
+      '      <option value="document">Document</option></select>' +
       '    <textarea class="cnp-in" rows="1" placeholder="Ask a question…"></textarea>' +
       '    <button class="cnp-send">Send</button></div></div></div>';
     (opts.target || document.body).appendChild(root);
@@ -410,7 +422,8 @@
     if (opts.fabBottom) root.querySelector(".cnp-fab").style.bottom = opts.fabBottom;
     if (opts.fabRight) root.querySelector(".cnp-fab").style.right = opts.fabRight;
 
-    var fab = root.querySelector(".cnp-fab"), rail = root.querySelector(".cnp-rail"),
+    var gate = root.querySelector(".cnp-gate"),
+        fab = root.querySelector(".cnp-fab"), rail = root.querySelector(".cnp-rail"),
         thread = root.querySelector(".cnp-thread"), chips = root.querySelector(".cnp-chips"),
         input = root.querySelector(".cnp-in"), send = root.querySelector(".cnp-send"),
         fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox"),
@@ -462,17 +475,60 @@
 
     function syncControls() {
       var disabled = state.destroyed || state.busy || state.switching ||
-        !state.recordReady || state.clientId === null;
-      input.disabled = disabled; fmt.disabled = disabled; send.disabled = disabled;
+        !state.accessGranted || !state.recordReady || state.clientId === null;
+      input.disabled = disabled; fmt.disabled = disabled || state.localFixture;
+      send.disabled = disabled;
     }
 
-    async function freshBearerHeaders(request) {
-      var token = request === undefined
-        ? await opts.getAuthToken()
-        : await opts.getAuthToken(request);
+    function setNamedBetaAccess(granted) {
+      var wasGranted = state.accessGranted;
+      state.accessGranted = granted === true;
+      gate.hidden = state.accessGranted;
+      fab.hidden = !state.accessGranted;
+      rail.hidden = !state.accessGranted;
+      if (!state.accessGranted && wasGranted) setOpen(false);
+      syncControls();
+      if (state.accessGranted !== wasGranted && typeof opts.onAccessChange === "function")
+        Promise.resolve(opts.onAccessChange(state.accessGranted)).catch(function () {});
+    }
+    setNamedBetaAccess(false);
+
+    function lockNamedBeta() {
+      if (state.destroyed) return;
+      state.generation += 1;
+      abort(state.chatController); abort(state.recordController);
+      abort(state.welcomeController);
+      state.chatController = null; state.recordController = null;
+      state.welcomeController = null; state.welcomePromise = null;
+      state.welcomeRenderGeneration = null;
+      state.clientId = null; state.history = null; state.persona = "patient";
+      state.localFixture = false;
+      input.readOnly = false;
+      state.recordReady = false; state.contextSnapshot = null;
+      state.recordHeaders = null; state.retryAttempt = null;
+      state.busy = false; state.switching = false;
+      clearEventHandlers("record"); clearOwnedTips();
+      input.value = ""; input.style.height = "auto";
+      thread.innerHTML = ""; chips.innerHTML = "";
+      sub.textContent = "Named beta · access required";
+      setGovernedChrome(null); setNamedBetaAccess(false);
+    }
+
+    async function freshBearerHeaders() {
+      var token;
+      try {
+        token = await opts.getAuthToken();
+      } catch (_error) {
+        var unavailable = new Error("Assistant bearer token is unavailable");
+        unavailable.authenticationUnavailable = true;
+        throw unavailable;
+      }
       if (typeof token !== "string" || token.length < 16 ||
-          token.length > 8192 || /\s/.test(token))
-        throw new Error("Assistant bearer token is invalid");
+          token.length > 8192 || /\s/.test(token)) {
+        var invalid = new Error("Assistant bearer token is invalid");
+        invalid.authenticationUnavailable = true;
+        throw invalid;
+      }
       return {
         "authorization": "Bearer " + token,
         "x-cosmaneura-embed-version": embedVersion,
@@ -500,6 +556,10 @@
             throw new Error("welcome contract mismatch");
           if (!r.ok) throw new Error("welcome unavailable");
           return r.json();
+        }).then(function (value) {
+          if (!value || value.persona !== "provider")
+            throw new Error("named-beta provider access unavailable");
+          return value;
         }).catch(function (error) {
           if (state.welcomePromise === promise) state.welcomePromise = null;
           throw error;
@@ -528,7 +588,7 @@
         clean.terminology = value.terminology;
       }
       if (value.care_model != null) {
-        if (typeof value.care_model !== "string") return null;
+        if (typeof value.care_model !== "string" || value.care_model.length > 80) return null;
         clean.care_model = value.care_model;
       }
       return clean;
@@ -536,13 +596,21 @@
 
     function applyWelcomeUX(w) {
       state.persona = w.persona === "provider" ? "provider" : "patient";
-      sub.textContent = state.persona === "provider"
+      state.localFixture = w.walkthrough_mode === "local_synthetic" && service.loopback;
+      input.readOnly = state.localFixture;
+      if (state.localFixture) fmt.value = "chat";
+      sub.textContent = state.localFixture ? "Local synthetic walkthrough" : state.persona === "provider"
         ? "Faithful clinical assistant" : "Faithful health assistant";
-      input.placeholder = state.persona === "provider"
+      input.placeholder = state.localFixture ? "Use a synthetic guided prompt…" : state.persona === "provider"
         ? "Ask about the open record…" : "Ask a health or values question…";
     }
 
     function applyEnvironmentLabel(w) {
+      if (state.localFixture) {
+        sandboxBadge.textContent = "Local synthetic fixture · no live records";
+        sandboxBadge.hidden = false;
+        return;
+      }
       var hasLabsPath = (w.paths || []).some(function (path) {
         return path.intent === "lab_review";
       });
@@ -586,6 +654,7 @@
       state.recordController = recordController;
       state.clientId = recordId;
       state.history = null;
+      state.localFixture = false;
       state.recordReady = false;
       state.contextSnapshot = null;
       state.recordHeaders = null;
@@ -598,6 +667,7 @@
       clearEventHandlers("record");
       input.value = ""; input.style.height = "auto";
       thread.innerHTML = ""; chips.innerHTML = "";
+      setNamedBetaAccess(false);
       setGovernedChrome(null); clearOwnedTips(); syncControls();
 
       if (recordId === null) {
@@ -608,27 +678,31 @@
       }
 
       try {
-        // Credential and context are acquired together for this generation.
-        // Either late result is discarded if the host switches records.
-        var handshake = await Promise.all([opts.getContext(), freshBearerHeaders()]);
+        // Authenticate the named provider before asking the host for even an
+        // opaque record reference. Every late result is discarded if the host
+        // switches records while the preflight is in flight.
+        var headers = await freshBearerHeaders();
         if (!currentGeneration(generation)) return null;
-        var context = governedContext(handshake[0], recordId);
+        var welcome = await welcomeData(headers, generation);
+        if (!currentGeneration(generation)) return null;
+        var suppliedContext = await opts.getContext();
+        if (!currentGeneration(generation)) return null;
+        var context = governedContext(suppliedContext, recordId);
         if (!context) {
           var mismatch = new Error("record context mismatch");
           mismatch.recordMismatch = true;
           throw mismatch;
         }
         state.contextSnapshot = context;
-        state.recordHeaders = handshake[1];
-        var results = await Promise.all([
-          welcomeData(handshake[1], generation),
-          opts.loadHistory
-            ? opts.loadHistory(recordId, { signal: recordController.signal })
-            : Promise.resolve(null),
-        ]);
+        state.recordHeaders = headers;
+        // Never ask the host for governed history until the server-side role
+        // check succeeds and the opaque record context validates locally.
+        var history = opts.loadHistory
+          ? await opts.loadHistory(recordId, { signal: recordController.signal })
+          : null;
         if (!currentGeneration(generation)) return null;
-        var loaded = results[1] === null ? null : governedHistory(results[1]);
-        if (results[1] !== null && !loaded)
+        var loaded = history === null ? null : governedHistory(history);
+        if (history !== null && !loaded)
           throw new Error("governed history is invalid");
         state.history = loaded;
         (loaded ? loaded.messages : []).forEach(function (m) {
@@ -650,18 +724,18 @@
               return opts.onHistoryUpdated(recordId, loaded);
           }).catch(function () {});
         }
-        applyWelcomeUX(results[0]); applyEnvironmentLabel(results[0]);
+        applyWelcomeUX(welcome); applyEnvironmentLabel(welcome);
+        setNamedBetaAccess(true);
       } catch (error) {
         if (currentGeneration(generation) && error.name !== "AbortError") {
           state.recordReady = false;
           state.contextSnapshot = null;
           state.recordHeaders = null;
+          setNamedBetaAccess(false);
           if (error.recordMismatch) {
             state.clientId = null;
             thread.innerHTML = "";
             sub.textContent = "Open a record to use the assistant";
-          } else {
-            bubble("a").innerHTML = "<p>Conversation history is unavailable.</p>";
           }
         }
       } finally {
@@ -690,7 +764,8 @@
         d.textContent = w.disclaimer; b.appendChild(d);
         chips.innerHTML = "";
         (w.paths || []).forEach(function (p) {
-          var c = document.createElement("div"); c.className = "cnp-chip"; c.textContent = p.label;
+          var c = document.createElement("button"); c.className = "cnp-chip"; c.textContent = p.label;
+          c.setAttribute("type", "button");
           c.onclick = function () {
             if (!currentGeneration(generation) || !state.recordReady) return;
             input.value = p.message; input.focus();
@@ -711,6 +786,10 @@
       var suppressed = new Set(presentation.suppress);
       var html = "";
       setGovernedChrome(presentation);
+      if (state.localFixture && d.intent)
+        html += '<div class="cnp-route">Sovereign route · ' +
+          esc(String(d.intent).replace(/_/g, " ")) +
+          (d.doctrinal_review ? " · final review recorded" : "") + "</div>";
       if (presentation.mode === "emergency") {
         b.classList.add("cnp-emg");
         html += '<div class="cnp-emg-h">⚠ This may be an emergency</div>';
@@ -733,6 +812,25 @@
           ? "✓ Reviewed for conformity with Catholic teaching"
           : "✓ Revised in keeping with Catholic teaching";
         b.appendChild(t);
+      }
+      var matches = d.structured && d.structured.matches;
+      if (!suppressed.has("structured_cards") && Array.isArray(matches) && matches.length) {
+        var cards = document.createElement("div"); cards.className = "cnp-cards";
+        matches.slice(0, 4).forEach(function (match) {
+          var card = document.createElement("div"); card.className = "cnp-card";
+          var name = document.createElement("div"); name.className = "cnp-card-name";
+          name.textContent = match.name || "Directory option"; card.appendChild(name);
+          var meta = document.createElement("div"); meta.className = "cnp-card-meta";
+          meta.textContent = [match.specialty, match.telehealth ? "telehealth" : "in person"]
+            .filter(Boolean).join(" · "); card.appendChild(meta);
+          if (typeof match.booking_url === "string" && /^https:\/\//.test(match.booking_url)) {
+            var link = document.createElement("a"); link.href = match.booking_url;
+            link.target = "_blank"; link.rel = "noopener noreferrer";
+            link.textContent = "Open directory"; card.appendChild(link);
+          }
+          cards.appendChild(card);
+        });
+        b.appendChild(cards);
       }
       var comp = d.structured && d.structured.computed;
       if (!suppressed.has("structured_cards") && comp && Object.keys(comp).length) {
@@ -763,21 +861,12 @@
         };
         bar.appendChild(x);
       }
-      if (!hydrated && !suppressed.has("feature_actions") &&
-          (ofmt === "note" || ofmt === "document"))
-        act("Copy", function () { navigator.clipboard.writeText(d.answer || ""); });
       if (!hydrated && !suppressed.has("feature_actions") && ofmt === "document")
         act("Download .md", function () {
           var a = document.createElement("a");
           a.href = URL.createObjectURL(new Blob([d.answer || ""], { type: "text/markdown" }));
           a.download = "cosmaneura-" + (d.intent || "output") + ".md"; a.click();
         });
-      if (!hydrated && !suppressed.has("feature_actions") && opts.onInsert &&
-          (ofmt === "note" || (d.structured && d.structured.feature === "visit_prep")))
-        act("Insert into note", function () { opts.onInsert(d.answer || "", d); });
-      if (!hydrated && !suppressed.has("feature_actions") && opts.onSave &&
-          d.structured && d.structured.feature)
-        act("Save", function () { opts.onSave(d.answer || "", d); });
       if (presentation.human_contact) {
         var contact = presentation.human_contact;
         act(contact.label, function (button) {
@@ -828,21 +917,17 @@
         headers = attempt.initialHeaders;
         attempt.initialHeaders = null;
       } else {
-        // Explicit retry preserves the request body/UUID/draft but reacquires
-        // token and context together so rotation never freezes an old bearer.
-        var refreshRequest = attempt.forceRefresh === true
-          ? { forceRefresh: true }
-          : undefined;
-        var refreshed = await Promise.all([
-          opts.getContext(), freshBearerHeaders(refreshRequest)
-        ]);
-        attempt.forceRefresh = false;
+        // Explicit retry preserves the request body/UUID/draft, authenticates
+        // first, and only then reacquires the record context.
+        var refreshedHeaders = await freshBearerHeaders();
         if (!currentGeneration(attempt.generation)) throw new DOMException("stale", "AbortError");
-        if (!governedContext(refreshed[0], attempt.recordId)) {
+        var refreshedContext = await opts.getContext();
+        if (!currentGeneration(attempt.generation)) throw new DOMException("stale", "AbortError");
+        if (!governedContext(refreshedContext, attempt.recordId)) {
           loadThreadFor(null);
           throw new DOMException("record mismatch", "AbortError");
         }
-        headers = refreshed[1];
+        headers = refreshedHeaders;
       }
       headers = Object.assign({}, headers);
       headers["content-type"] = "application/json";
@@ -878,7 +963,7 @@
       try {
         // There is deliberately one fetch per user action. An explicit retry
         // reuses the same serialized body, UUID, draft, and record generation
-        // while acquiring a fresh bearer for token rotation.
+        // while acquiring a fresh bearer.
         var requestHeaders = await headersForAttempt(attempt);
         if (!currentGeneration(attempt.generation)) return;
         var r = await fetch(attempt.url, {
@@ -889,6 +974,10 @@
         });
         if (!currentGeneration(attempt.generation) ||
             state.chatController !== controller) return;
+        if (r.status === 401 || r.status === 403) {
+          lockNamedBeta();
+          return;
+        }
         if (r.headers.get("x-cosmaneura-embed-version") !== embedVersion) {
           paintAttemptFailure(
             b, attempt,
@@ -915,16 +1004,12 @@
             loadThreadFor(null);
             return;
           }
-          if (r.status === 401) attempt.forceRefresh = true;
           var canRetry = Boolean(
-            r.status === 401 ||
-            (problem && problem.retryable === true &&
-             (r.status === 429 || r.status === 503))
+            problem && problem.retryable === true &&
+            (r.status === 429 || r.status === 503)
           );
           var message;
-          if (r.status === 401) {
-            message = "Your assistant session is no longer available. Sign in or reload before continuing.";
-          } else if (r.status === 426) {
+          if (r.status === 426) {
             message = "This assistant integration needs to be updated. Reload this page.";
           } else if (r.status === 503 && problem && problem.retryable === false) {
             message = "This turn is still pending. Your draft and turn identifier are preserved; reload its governed history later before starting a new request.";
@@ -951,7 +1036,9 @@
         state.retryAttempt = null;
         if (input.value === attempt.text) input.value = "";
       } catch (error) {
-        if (currentGeneration(attempt.generation) && error.name !== "AbortError") {
+        if (currentGeneration(attempt.generation) && error.authenticationUnavailable) {
+          lockNamedBeta();
+        } else if (currentGeneration(attempt.generation) && error.name !== "AbortError") {
           paintAttemptFailure(
             b, attempt,
             error instanceof TypeError
@@ -980,10 +1067,12 @@
       state.busy = true; state.retryAttempt = null; syncControls();
 
       try {
-        var pair = await Promise.all([opts.getContext(), freshBearerHeaders()]);
+        var initialHeaders = await freshBearerHeaders();
         if (!currentGeneration(generation)) return;
         var recordId = state.clientId;
-        var context = governedContext(pair[0], recordId);
+        var suppliedContext = await opts.getContext();
+        if (!currentGeneration(generation)) return;
+        var context = governedContext(suppliedContext, recordId);
         if (!context) {
           loadThreadFor(null);
           return;
@@ -1004,20 +1093,21 @@
         b = bubble("a");
         var attempt = {
           url: url + "/chat",
-          initialHeaders: pair[1],
+          initialHeaders: initialHeaders,
           body: body,
           text: text,
           clientTurnId: clientTurnId,
           recordId: recordId,
           generation: generation,
-          forceRefresh: false,
         };
         state.retryAttempt = attempt;
         input.value = ""; input.style.height = "auto";
         handedOff = true;
         await runAttempt(attempt, b);
       } catch (error) {
-        if (currentGeneration(generation) && error.name !== "AbortError") {
+        if (currentGeneration(generation) && error.authenticationUnavailable) {
+          lockNamedBeta();
+        } else if (currentGeneration(generation) && error.name !== "AbortError") {
           if (!b) b = bubble("a");
           input.value = text;
           b.innerHTML = "<p>Couldn’t initialize the assistant request. Your draft is preserved.</p>";
@@ -1029,13 +1119,12 @@
       }
     }
 
-    // Reflow the host instead of covering it: a clinician reading a note while
-    // the assistant is open must still see the note (that is the whole point of
-    // "insert into note"). Restores the host's own inline value on close, and
-    // skips the shift on narrow screens where the rail is nearly full-width.
+    // Reflow the host instead of covering its active workspace. Restore the
+    // host's own inline value on close, and skip the shift on narrow screens.
     var savedPad = null;
     function setOpen(open) {
       if (state.destroyed) return;
+      if (open && !state.accessGranted) return;
       state.open = open;
       rail.classList.toggle("cnp-open", open);
       var canShift = opts.shiftContent !== false && window.innerWidth >= 900;
@@ -1061,6 +1150,7 @@
       state.chatController = null; state.recordController = null;
       state.welcomeController = null;
       state.history = null; state.clientId = null; state.welcomePromise = null;
+      state.accessGranted = false;
       state.recordReady = false; state.contextSnapshot = null; state.recordHeaders = null;
       state.retryAttempt = null;
       if (savedPad !== null) {

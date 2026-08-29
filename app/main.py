@@ -20,7 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.compliance import safety
 from app.clients.labs import SANDBOX_LABEL
-from app.config import (MountProfile, Persona, get_settings,
+from app.config import (AuthMode, MountProfile, Persona, get_settings,
                         validate_deployment_configuration)
 from app.schemas import (ChatRequest, ChatResponse,
                          CompassionateSafetyFallback, DigestRequest,
@@ -350,7 +350,7 @@ def _one_raw_header(request: Request, name: str) -> Optional[str]:
 
 
 def _principal_from_token(token: Optional[str]) -> Optional[Principal]:
-    """Resolve actor identity after any pre-auth emergency short-circuit."""
+    """Resolve actor identity at the route's authentication boundary."""
     try:
         return resolve_principal(token, _verifier, _settings)
     except AuthError:
@@ -360,6 +360,81 @@ def _principal_from_token(token: Optional[str]) -> Optional[Principal]:
             code="CONTEXT_INVALID",
             headers={"WWW-Authenticate": "Bearer"},
         ) from None
+
+
+def _is_direct_provider_host() -> bool:
+    """Return whether this process serves the direct-Clerk provider mount."""
+    return (
+        _settings.mount_profile == MountProfile.PROVIDER_ASSISTANT
+        and not _settings.platform_agent_api_enabled
+    )
+
+
+def _is_local_named_beta_fixture() -> bool:
+    """Identify the closed, synthetic provider walkthrough profile."""
+    return (
+        _is_direct_provider_host()
+        and _settings.demo_ui_enabled
+        and _settings.mock_mode
+        and _settings.auth_mode == AuthMode.DEV_HS256
+        and not _settings.baa_attested
+        and not _settings.feature_athena_labs
+    )
+
+
+_LOCAL_VISIT_PREP_MESSAGE = (
+    "Using no client details, prepare a short outline for a fictional next "
+    "session so I can follow the Sovereign routing walkthrough."
+)
+_LOCAL_REFERRAL_MESSAGE = (
+    "For this synthetic walkthrough, find a faithful Catholic family medicine "
+    "option available by telehealth in Texas."
+)
+_LOCAL_PROVIDER_MESSAGES = {
+    _LOCAL_VISIT_PREP_MESSAGE,
+    _LOCAL_REFERRAL_MESSAGE,
+}
+_LOCAL_PROVIDER_CONTEXT = {
+    "clientId": "synthetic_walkthrough_01",
+    "thread_ref": "thread_synthetic_walkthrough_01",
+    "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
+    "output_format": "chat",
+    "care_model": "synthetic walkthrough",
+}
+
+
+def _require_local_named_beta_request(request: EmbedChatRequest) -> None:
+    """Prevent the local fixture from becoming a free-form clinical surface."""
+    if not _is_local_named_beta_fixture():
+        return
+    metadata = request.metadata.model_dump(exclude_none=True)
+    if (
+        request.message not in _LOCAL_PROVIDER_MESSAGES
+        or metadata != _LOCAL_PROVIDER_CONTEXT
+        or request.persona is not None
+        or request.session_id is not None
+    ):
+        raise SovereignHTTPError(
+            status_code=400,
+            code="VALIDATION_FAILED",
+            retryable=False,
+        )
+
+
+def _require_named_beta_provider(principal: Optional[Principal]) -> None:
+    """Keep the direct provider host closed to the configured named role."""
+    if not _is_direct_provider_host():
+        return
+    if (
+        principal is None
+        or not principal.subject.strip()
+        or _settings.auth_provider_role not in principal.roles
+    ):
+        raise SovereignHTTPError(
+            status_code=403,
+            code="CAPABILITY_DENIED",
+            retryable=False,
+        )
 
 
 def _require_embed_version(request: Request) -> None:
@@ -412,6 +487,12 @@ def _matched_client_turn_id(
 ) -> Optional[uuid.UUID]:
     """Enforce byte-for-byte canonical equality at the browser boundary."""
     header_id = _client_turn_uuid(header_value, required=required)
+    if header_id is not None and body_value is not None and header_id != body_value:
+        raise MountResolutionError(
+            status_code=409,
+            code="CLIENT_TURN_CONFLICT",
+            retryable=False,
+        )
     if not required:
         return header_id or body_value
     if body_value is None:
@@ -562,14 +643,32 @@ async def chat(
         metadata=request.metadata.model_dump(exclude_none=True),
         session_id=request.session_id,
     )
-    # The only pre-context exception is deterministic acute-emergency guidance.
-    # Do not let missing/invalid auth suppress 911/988 instructions.
+    principal: Optional[Principal] = None
+    bearer: Optional[str] = None
+    direct_provider_host = _is_direct_provider_host()
+    if direct_provider_host:
+        # A named provider host is closed before any orchestration, including
+        # the otherwise pre-auth emergency shortcut. The anonymous public mount
+        # retains its deterministic emergency guidance below.
+        _require_embed_version(http_request)
+        authorization = _one_raw_header(http_request, "Authorization")
+        bearer = _raw_bearer(authorization)
+        principal = _principal_from_token(bearer)
+        _require_named_beta_provider(principal)
+        _require_local_named_beta_request(request)
+
+    # The public mount's only pre-context exception is deterministic acute-
+    # emergency guidance. It performs no model call or mount resolution.
     if safety.detect_emergency(request.message):
-        response = await _sovereign.handle(pipeline_request)
+        response = await _sovereign.handle(
+            pipeline_request,
+            principal=principal,
+        )
         return response.model_copy(
             update={"client_turn_id": request.client_turn_id}
         )
-    _require_embed_version(http_request)
+    if not direct_provider_host:
+        _require_embed_version(http_request)
     if _settings.mount_profile == MountProfile.PUBLIC:
         decision = _public_chat_limiter.check(_client_ip(http_request))
         if not decision.allowed:
@@ -588,7 +687,9 @@ async def chat(
         principal = None
         mount_context_token = bearer
     else:
-        principal = _principal_from_token(bearer)
+        if not direct_provider_host:
+            principal = _principal_from_token(bearer)
+        _require_named_beta_provider(principal)
         mount_context_token = None
     client_turn_id = _matched_client_turn_id(
         header_value=client_turn_value,
@@ -643,6 +744,14 @@ _PROVIDER_PATHS = [
      "message": "Anything concerning in her labs? Show me the A1C trend.",
      "intent": "lab_review"},
 ]
+_LOCAL_PROVIDER_PATHS = [
+    {"label": "Trace synthetic session prep",
+     "message": _LOCAL_VISIT_PREP_MESSAGE,
+     "intent": "visit_prep"},
+    {"label": "Trace an offline referral",
+     "message": _LOCAL_REFERRAL_MESSAGE,
+     "intent": "referral"},
+]
 
 
 def _required_capability_for_path(path: dict) -> Optional[str]:
@@ -673,12 +782,22 @@ async def welcome(http_request: Request) -> dict:
             )
     else:
         mount = _settings.deployment_mount
+        if mount.surface == "provider_assistant":
+            authorization = _one_raw_header(http_request, "Authorization")
+            bearer = _raw_bearer(authorization)
+            principal = _principal_from_token(bearer)
+            _require_named_beta_provider(principal)
     persona = (
         Persona.PROVIDER
         if mount.surface == "provider_assistant"
         else Persona.PATIENT
     )
-    if persona == Persona.PROVIDER:
+    local_fixture = _is_local_named_beta_fixture()
+    if local_fixture:
+        greeting = ("Welcome to the local named-provider walkthrough. Use only the "
+                    "synthetic guided paths below; do not enter real clinical, "
+                    "visit, or account information.")
+    elif persona == Persona.PROVIDER:
         greeting = (f"Welcome — I'm the {name} clinical assistant. I can prep your "
                     "next session, prepare an ERD ethics consult, explain a "
                     "diagnosis for a visit, or find a faithful specialist.")
@@ -688,7 +807,11 @@ async def welcome(http_request: Request) -> dict:
                     "teaching. I'm not a doctor and I can't diagnose or treat "
                     "anything — think of me as preparation for real care, not a "
                     "replacement for it.")
-    candidates = _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS
+    candidates = (
+        _LOCAL_PROVIDER_PATHS
+        if local_fixture
+        else _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS
+    )
     granted = set(mount.capabilities)
     if _settings.platform_agent_api_enabled:
         # The provider-first activation deliberately omits the labs lane even
@@ -715,6 +838,8 @@ async def welcome(http_request: Request) -> dict:
         "disclaimer": safety.disclaimer_for(persona),
         "emergency_note": "If this is an emergency, call 911 now.",
     }
+    if local_fixture:
+        payload["walkthrough_mode"] = "local_synthetic"
     if not _settings.platform_agent_api_enabled:
         # Temporary legacy-only sandbox labeling. The ratified v1 platform
         # WelcomeResponse is closed and intentionally carries neither field.
@@ -746,6 +871,13 @@ async def digest(
     )
     bearer = _raw_bearer(authorization)
     principal = _principal_from_token(bearer)
+    _require_named_beta_provider(principal)
+    if _is_local_named_beta_fixture():
+        raise SovereignHTTPError(
+            status_code=503,
+            code="SERVICE_UNAVAILABLE",
+            retryable=False,
+        )
     client_turn_id = _matched_client_turn_id(
         header_value=client_turn_value,
         body_value=request.client_turn_id,
