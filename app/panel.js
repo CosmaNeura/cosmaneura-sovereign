@@ -15,10 +15,7 @@
  *     embedVersion: "1.0",
  *     // The configured host returns its short-lived, audience-bound token.
  *     // For the direct Clerk pilot this is the cosmaneura-sovereign template.
- *     // forceRefresh is requested only after an explicit retry of a 401.
- *     getAuthToken: async request => request && request.forceRefresh
- *       ? rotateCurrentMountSession()
- *       : currentBearerToken,
+ *     getAuthToken: async () => currentBearerToken,
  *     getContext: async () => ({
  *       clientId: openRecord.threadKey,
  *       thread_ref: openRecord.assistantThreadRef,
@@ -484,13 +481,40 @@
     }
     setNamedBetaAccess(false);
 
-    async function freshBearerHeaders(request) {
-      var token = request === undefined
-        ? await opts.getAuthToken()
-        : await opts.getAuthToken(request);
+    function lockNamedBeta() {
+      if (state.destroyed) return;
+      state.generation += 1;
+      abort(state.chatController); abort(state.recordController);
+      abort(state.welcomeController);
+      state.chatController = null; state.recordController = null;
+      state.welcomeController = null; state.welcomePromise = null;
+      state.welcomeRenderGeneration = null;
+      state.clientId = null; state.history = null; state.persona = "patient";
+      state.recordReady = false; state.contextSnapshot = null;
+      state.recordHeaders = null; state.retryAttempt = null;
+      state.busy = false; state.switching = false;
+      clearEventHandlers("record"); clearOwnedTips();
+      input.value = ""; input.style.height = "auto";
+      thread.innerHTML = ""; chips.innerHTML = "";
+      sub.textContent = "Named beta · access required";
+      setGovernedChrome(null); setNamedBetaAccess(false);
+    }
+
+    async function freshBearerHeaders() {
+      var token;
+      try {
+        token = await opts.getAuthToken();
+      } catch (_error) {
+        var unavailable = new Error("Assistant bearer token is unavailable");
+        unavailable.authenticationUnavailable = true;
+        throw unavailable;
+      }
       if (typeof token !== "string" || token.length < 16 ||
-          token.length > 8192 || /\s/.test(token))
-        throw new Error("Assistant bearer token is invalid");
+          token.length > 8192 || /\s/.test(token)) {
+        var invalid = new Error("Assistant bearer token is invalid");
+        invalid.authenticationUnavailable = true;
+        throw invalid;
+      }
       return {
         "authorization": "Bearer " + token,
         "x-cosmaneura-embed-version": embedVersion,
@@ -846,21 +870,17 @@
         headers = attempt.initialHeaders;
         attempt.initialHeaders = null;
       } else {
-        // Explicit retry preserves the request body/UUID/draft but reacquires
-        // token and context together so rotation never freezes an old bearer.
-        var refreshRequest = attempt.forceRefresh === true
-          ? { forceRefresh: true }
-          : undefined;
-        var refreshed = await Promise.all([
-          opts.getContext(), freshBearerHeaders(refreshRequest)
-        ]);
-        attempt.forceRefresh = false;
+        // Explicit retry preserves the request body/UUID/draft, authenticates
+        // first, and only then reacquires the record context.
+        var refreshedHeaders = await freshBearerHeaders();
         if (!currentGeneration(attempt.generation)) throw new DOMException("stale", "AbortError");
-        if (!governedContext(refreshed[0], attempt.recordId)) {
+        var refreshedContext = await opts.getContext();
+        if (!currentGeneration(attempt.generation)) throw new DOMException("stale", "AbortError");
+        if (!governedContext(refreshedContext, attempt.recordId)) {
           loadThreadFor(null);
           throw new DOMException("record mismatch", "AbortError");
         }
-        headers = refreshed[1];
+        headers = refreshedHeaders;
       }
       headers = Object.assign({}, headers);
       headers["content-type"] = "application/json";
@@ -896,7 +916,7 @@
       try {
         // There is deliberately one fetch per user action. An explicit retry
         // reuses the same serialized body, UUID, draft, and record generation
-        // while acquiring a fresh bearer for token rotation.
+        // while acquiring a fresh bearer.
         var requestHeaders = await headersForAttempt(attempt);
         if (!currentGeneration(attempt.generation)) return;
         var r = await fetch(attempt.url, {
@@ -907,6 +927,10 @@
         });
         if (!currentGeneration(attempt.generation) ||
             state.chatController !== controller) return;
+        if (r.status === 401 || r.status === 403) {
+          lockNamedBeta();
+          return;
+        }
         if (r.headers.get("x-cosmaneura-embed-version") !== embedVersion) {
           paintAttemptFailure(
             b, attempt,
@@ -933,16 +957,12 @@
             loadThreadFor(null);
             return;
           }
-          if (r.status === 401) attempt.forceRefresh = true;
           var canRetry = Boolean(
-            r.status === 401 ||
-            (problem && problem.retryable === true &&
-             (r.status === 429 || r.status === 503))
+            problem && problem.retryable === true &&
+            (r.status === 429 || r.status === 503)
           );
           var message;
-          if (r.status === 401) {
-            message = "Your assistant session is no longer available. Sign in or reload before continuing.";
-          } else if (r.status === 426) {
+          if (r.status === 426) {
             message = "This assistant integration needs to be updated. Reload this page.";
           } else if (r.status === 503 && problem && problem.retryable === false) {
             message = "This turn is still pending. Your draft and turn identifier are preserved; reload its governed history later before starting a new request.";
@@ -969,7 +989,9 @@
         state.retryAttempt = null;
         if (input.value === attempt.text) input.value = "";
       } catch (error) {
-        if (currentGeneration(attempt.generation) && error.name !== "AbortError") {
+        if (currentGeneration(attempt.generation) && error.authenticationUnavailable) {
+          lockNamedBeta();
+        } else if (currentGeneration(attempt.generation) && error.name !== "AbortError") {
           paintAttemptFailure(
             b, attempt,
             error instanceof TypeError
@@ -998,10 +1020,12 @@
       state.busy = true; state.retryAttempt = null; syncControls();
 
       try {
-        var pair = await Promise.all([opts.getContext(), freshBearerHeaders()]);
+        var initialHeaders = await freshBearerHeaders();
         if (!currentGeneration(generation)) return;
         var recordId = state.clientId;
-        var context = governedContext(pair[0], recordId);
+        var suppliedContext = await opts.getContext();
+        if (!currentGeneration(generation)) return;
+        var context = governedContext(suppliedContext, recordId);
         if (!context) {
           loadThreadFor(null);
           return;
@@ -1022,20 +1046,21 @@
         b = bubble("a");
         var attempt = {
           url: url + "/chat",
-          initialHeaders: pair[1],
+          initialHeaders: initialHeaders,
           body: body,
           text: text,
           clientTurnId: clientTurnId,
           recordId: recordId,
           generation: generation,
-          forceRefresh: false,
         };
         state.retryAttempt = attempt;
         input.value = ""; input.style.height = "auto";
         handedOff = true;
         await runAttempt(attempt, b);
       } catch (error) {
-        if (currentGeneration(generation) && error.name !== "AbortError") {
+        if (currentGeneration(generation) && error.authenticationUnavailable) {
+          lockNamedBeta();
+        } else if (currentGeneration(generation) && error.name !== "AbortError") {
           if (!b) b = bubble("a");
           input.value = text;
           b.innerHTML = "<p>Couldn’t initialize the assistant request. Your draft is preserved.</p>";

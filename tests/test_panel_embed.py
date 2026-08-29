@@ -112,7 +112,7 @@ def test_record_switch_is_null_safe_and_rehydrates_governed_history_only():
     assert "!state.accessGranted || !state.recordReady" in panel
 
 
-def test_platform_turn_transport_uses_fresh_bearer_and_explicit_exact_retry():
+def test_provider_turn_transport_uses_fresh_bearer_and_explicit_exact_retry():
     panel = _panel_source()
 
     assert "getMountContext" not in panel
@@ -128,19 +128,28 @@ def test_platform_turn_transport_uses_fresh_bearer_and_explicit_exact_retry():
     assert "body: attempt.body" in panel
     assert "Retry this exact request" in panel
     assert "runAttempt(attempt, b)" in panel
-    assert "if (r.status === 401) attempt.forceRefresh = true" in panel
-    assert "? { forceRefresh: true }" in panel
-    assert "freshBearerHeaders(refreshRequest)" in panel
-    assert "attempt.forceRefresh = false" in panel
+    assert "forceRefresh" not in panel
+    assert "var refreshedHeaders = await freshBearerHeaders()" in panel
+    assert "var refreshedContext = await opts.getContext()" in panel
     assert "state.retryAttempt = attempt" in panel
     assert "input.value = attempt.text" in panel
     assert "error instanceof TypeError" in panel
     assert 'problem.retryable === true' in panel
     assert 'problem.retryable === false' in panel
     assert "d.client_turn_id !== attempt.clientTurnId" in panel
-    assert "opts.getContext(), freshBearerHeaders(refreshRequest)" in panel
     assert "attempt.initialHeaders = null" in panel
-    assert "initialHeaders: pair[1]" in panel
+    assert "initialHeaders: initialHeaders" in panel
+
+
+def test_post_bootstrap_auth_loss_revokes_provider_panel_state():
+    panel = _panel_source()
+
+    assert "function lockNamedBeta()" in panel
+    assert "state.generation += 1" in panel
+    assert 'thread.innerHTML = ""; chips.innerHTML = ""' in panel
+    assert "setGovernedChrome(null); setNamedBetaAccess(false)" in panel
+    assert "if (r.status === 401 || r.status === 403)" in panel
+    assert "error.authenticationUnavailable" in panel
 
 
 def test_non_2xx_safety_fallback_is_validated_and_not_committed_as_success():
