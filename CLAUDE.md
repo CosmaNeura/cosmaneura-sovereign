@@ -1,8 +1,9 @@
 # CLAUDE.md — cosmaneura-sovereign
 
-> Architecture decisions for this system live in the `cosmaneura-architecture` repo, in `ARCHITECTURE.md`. Read it before making structural changes. If a change conflicts with it, stop and resolve the conflict rather than proceeding.
-
-⚠️ El `ARCHITECTURE.md` **de este repo** es una nota de diseño interna y está **superseded** por el del repo de governance. Ante conflicto, gana governance. Ver también `AUDIT.md` ahí: este servicio se construyó contra una spec anterior (multi-agente + persona) y aún no implementa la frontera de §4/§8 (mount context, capability gating vía la plataforma, sin estado propio).
+Las decisiones de arquitectura de Sovereign que aplican a este repositorio
+viven en `ARCHITECTURE.md`. Sovereign es una beta oscura con nombre propio: no
+es el hub de PHI de Cosmas y no se debe asumir que integraciones opcionales de
+plataforma estén habilitadas.
 
 ## Qué es
 
@@ -10,15 +11,23 @@ Una API de información de salud **guiada por la enseñanza católica**, con arq
 "Soberano Hobbesiano": cada request se enruta a uno de siete agentes de IA especialistas y
 luego se arbitra por conformidad doctrinal. **Magisterium AI** es la autoridad doctrinal /
 juez final; un LLM de razonamiento elegible para BAA (Anthropic Claude por defecto) hace la
-orquestación mecánica y el ruteo. White-label sobre MyCatholicDoctor.
+orquestación mecánica y el ruteo. Está diseñado para MyCatholicDoctor.
 
-Dos productos, un solo codebase, seleccionados por persona:
-- `patient` — build de consumidor, solo SOC 2, sin HIPAA, sin PHI.
-- `provider` — build clínico, SOC 2 + HIPAA, PHI permitido, requiere LLM cubierto por BAA.
+Dos rutas, un solo codebase, determinadas por autoridad resuelta en runtime; la
+`persona` del body no habilita la ruta provider:
+- `patient` — ruta de consumidor no-PHI; no acepta PHI.
+- `provider` — scaffold clínico cerrado; cualquier uso futuro de PHI requiere
+  identidad verificada, `BAA_ATTESTED` y un servicio de inferencia elegible para
+  BAA bajo un acuerdo aplicable. La atestación es configuración del operador,
+  no una certificación de Sovereign.
 
 Es explícitamente un **scaffold de ingeniería**, no un producto clínico o de cumplimiento
 certificado. Arranca en `MOCK_MODE=true` para que todo el pipeline corra end-to-end sin
 credenciales.
+
+No existen recursos de producción de Sovereign. Un merge a `main` no despliega.
+El job de producción es solo para el fundador y permanece bloqueado mientras
+`SOVEREIGN_DEPLOY_ENABLED` esté apagado; el latch debe permanecer apagado.
 
 ## Stack
 
@@ -28,8 +37,10 @@ credenciales.
 - httpx (async), beautifulsoup4 + lxml (job de refresh del directorio de partners).
 - De-id de PHI: azure-health-deidentification + azure-identity (opcional; baseline regex por defecto).
 - LLM: Anthropic Messages API (default, BAA-eligible vía ZDR) o Azure OpenAI.
-- Deploy: imagen nixpacks → Azure Container Apps, infra en Terraform, CI GitHub Actions con OIDC de Azure.
-- Deps con rangos `~=` en `requirements.txt`. No hay lockfile. **Puro Python — sin Node.**
+- Scaffold de despliegue (no provisionado en producción): imagen nixpacks → Azure Container Apps, infra en Terraform, CI GitHub Actions con OIDC de Azure.
+- Deps declaradas en `requirements.txt` y fijadas para CI en
+  `requirements.lock` / `requirements-ci.lock`. El backend es Python; el repo
+  también contiene JavaScript del panel y CI valida su sintaxis con Node.
 
 ## Estructura
 
@@ -69,33 +80,31 @@ PYTHONPATH=. uvicorn app.main:app --reload
 PYTHONPATH=. python -m pytest tests/ -q   # como corre CI (pytest, no el target make)
 ```
 
-**No hay linter/formatter configurado** (sin ruff/black/mypy/pyproject.toml).
+CI ejecuta Ruff según `pyproject.toml`; no hay un formatter o mypy configurado.
 
 ## Notas de arquitectura
 
 - **Entrypoint:** `app/main.py` → singleton `Sovereign` en `app/sovereign/orchestrator.py`.
 - **Pipeline (`Sovereign.handle`):** check de emergencia (corta a 911/988 antes de cualquier gate
-  de auth) → resolución de mount (Agent API en modo plataforma; JWT verificado solo en modo
-  legacy) → gate de seguridad (provider/PHI requiere actor/capabilities resueltos y
-  `baa_attested`) → persistencia canónica de `user_accepted` → ruteo (intent + tier doctrinal;
-  ETHICS_CONSULT fuerza tier HIGH siempre) → dispatch (DOCTRINAL → Magisterium directo;
-  REFERRAL/CONCIERGE/ENGAGEMENT/ETHICS_CONSULT/VISIT_PREP/PLAN_WORKBENCH/LAB_REVIEW → agente; SMALL_TALK →
-  LLM) → arbitraje doctrinal por Magisterium sobre una copia **con PHI removido** → disclaimer de
-  seguridad → persistencia canónica de `final_response` → auditoría/uso de modelo en plataforma → egress.
+  de auth) → resolución local de persona/autoridad → gate de seguridad (provider/PHI requiere
+  identidad verificada y `baa_attested`) → ruteo (intent + tier doctrinal; ETHICS_CONSULT fuerza
+  tier HIGH siempre) → dispatch (DOCTRINAL → Magisterium directo;
+  REFERRAL/CONCIERGE/ENGAGEMENT/ETHICS_CONSULT/VISIT_PREP/PLAN_WORKBENCH/LAB_REVIEW → uno de siete
+  agentes; SMALL_TALK → LLM) → arbitraje doctrinal por Magisterium sobre una copia **con PHI
+  removido** → disclaimer de seguridad → auditoría local con hash de contenido → egress.
 - **La frontera de PHI es central:** `ComplianceProfile.phi_boundary_enforced` significa que los
-  identificadores se de-identifican antes de que cualquier llamada salga de la frontera cubierta
-  por BAA (Magisterium, ClinicalTrials.gov, NPPES). Magisterium NO es business associate: solo ve
+  identificadores se de-identifican antes de cualquier llamada a un servicio no cubierto
+  (Magisterium, ClinicalTrials.gov, NPPES). Magisterium NO es
+  business associate: solo ve
   texto de-identificado. `assert_no_phi` en `compliance/phi.py` es un tripwire que lanza
   `PHIBoundaryViolation`.
-- **La autorización de personal pertenece a la práctica:** Cosmaneura no verifica licencias o
-  credenciales profesionales como condición de acceso. El estado de credenciales es informativo y
-  no controla registro, prueba, facturación, uso continuo, entitlement, capacidades ni acceso a
-  PHI. Core resuelve identidad, membresía/rol autorizados por la práctica, estado legal/BAA,
-  suscripción, tenant, consentimiento, alcance y rollout; Sovereign consume esa autoridad.
-- **Sin medios clínicos crudos:** Sovereign no recibe audio, video ni chunks. Solo recibe el texto
-  mínimo necesario y autorizado por Core para la capacidad solicitada.
+- **Sin medios clínicos crudos:** Sovereign no expone carga de audio, video ni chunks. Los campos
+  provider pueden recibir contexto sintético para probar el scaffold, pero no autorizan material
+  clínico real y Sovereign no lo persiste.
+- **Integraciones cerradas:** `PLATFORM_AGENT_API_ENABLED=false` y
+  `FEATURE_ATHENA_LABS=false` permanecen apagados en esta beta; no hay signup público.
 - **Modos del Soberano** (`SovereignMode`): `HYBRID` (default) vs `LITERAL` (Magisterium en cada request).
-- **Modos de auth** (`AuthMode`): `disabled` (dev/patient), `dev_hs256` (local), `oidc` (prod, requerido para provider/PHI).
+- **Modos de auth** (`AuthMode`): `disabled` (dev/patient), `dev_hs256` (local), `oidc` (requisito para cualquier despliegue futuro provider/PHI; no implica que producción exista).
 - **Hardening en main.py:** CORS deny-by-default (nunca `*`), límite de body 256 KB, security
   headers, 401 genéricos que nunca revelan detalle del token.
 - Convenciones: `from __future__ import annotations`, async en todo, docstrings explicativos,
