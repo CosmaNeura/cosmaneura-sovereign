@@ -476,7 +476,8 @@
     function syncControls() {
       var disabled = state.destroyed || state.busy || state.switching ||
         !state.accessGranted || !state.recordReady || state.clientId === null;
-      input.disabled = disabled; fmt.disabled = disabled; send.disabled = disabled;
+      input.disabled = disabled; fmt.disabled = disabled || state.localFixture;
+      send.disabled = disabled;
     }
 
     function setNamedBetaAccess(granted) {
@@ -597,6 +598,7 @@
       state.persona = w.persona === "provider" ? "provider" : "patient";
       state.localFixture = w.walkthrough_mode === "local_synthetic" && service.loopback;
       input.readOnly = state.localFixture;
+      if (state.localFixture) fmt.value = "chat";
       sub.textContent = state.localFixture ? "Local synthetic walkthrough" : state.persona === "provider"
         ? "Faithful clinical assistant" : "Faithful health assistant";
       input.placeholder = state.localFixture ? "Use a synthetic guided prompt…" : state.persona === "provider"

@@ -342,6 +342,8 @@ async function main() {
          "provider preflight did not reveal panel launcher");
   assert(send.disabled === false, "send stayed disabled after record handshake");
   assert(input.readOnly === true, "local walkthrough accepted free-form input");
+  assert(controller.root.querySelector(".cnp-fmt").disabled === true,
+         "local walkthrough allowed output-format changes");
   assert(historyNotifications === 1, "governed history callback was not notified");
 
   input.value = "first governed turn";
@@ -359,6 +361,8 @@ async function main() {
   const sent = JSON.parse(chatRequests[0].body);
   assert(Object.keys(sent).sort().join(",") === "client_turn_id,message,metadata",
          "first send included a forbidden top-level field");
+  assert(sent.metadata.output_format === "chat",
+         "local walkthrough did not send its locked chat format");
   assert(!("history" in sent) && !("persona" in sent), "first send replayed raw browser state");
   assert(find(controller.root, node => node.innerHTML.includes("Governed answer")),
          "successful governed answer was not rendered");

@@ -398,6 +398,7 @@ _LOCAL_PROVIDER_CONTEXT = {
     "clientId": "synthetic_walkthrough_01",
     "thread_ref": "thread_synthetic_walkthrough_01",
     "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
+    "output_format": "chat",
     "care_model": "synthetic walkthrough",
 }
 
@@ -871,6 +872,12 @@ async def digest(
     bearer = _raw_bearer(authorization)
     principal = _principal_from_token(bearer)
     _require_named_beta_provider(principal)
+    if _is_local_named_beta_fixture():
+        raise SovereignHTTPError(
+            status_code=503,
+            code="SERVICE_UNAVAILABLE",
+            retryable=False,
+        )
     client_turn_id = _matched_client_turn_id(
         header_value=client_turn_value,
         body_value=request.client_turn_id,

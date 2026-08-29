@@ -59,6 +59,7 @@ def test_mount_validates_https_or_explicit_same_origin_loopback():
     assert "setNamedBetaAccess(true)" in panel
     assert 'typeof opts.onAccessChange === "function"' in panel
     assert "input.readOnly = state.localFixture" in panel
+    assert "fmt.disabled = disabled || state.localFixture" in panel
     assert "welcomeData().then" not in panel
 
 

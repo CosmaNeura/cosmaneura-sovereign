@@ -45,6 +45,8 @@ record content into this local fixture.
   stays unavailable.
 - A missing, expired, malformed, wrong-role, or no-role token cannot reveal the
   panel or request fixture context/history.
+- The fixture accepts only the two guided requests with its exact synthetic
+  context. Its legacy `/digest` bridge is unavailable.
 - The local launcher pins `MOCK_MODE=true`, `PLATFORM_AGENT_API_ENABLED=false`,
   `FEATURE_ATHENA_LABS=false`, and `BAA_ATTESTED=false`.
 

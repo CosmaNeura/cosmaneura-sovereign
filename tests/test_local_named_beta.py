@@ -76,6 +76,7 @@ def test_named_provider_completes_real_mock_orchestrator_walkthrough_offline():
                     "clientId": "synthetic_walkthrough_01",
                     "thread_ref": "thread_synthetic_walkthrough_01",
                     "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
+                    "output_format": "chat",
                     "care_model": "synthetic walkthrough",
                 },
             },
@@ -94,6 +95,7 @@ def test_named_provider_completes_real_mock_orchestrator_walkthrough_offline():
                     "clientId": "synthetic_walkthrough_01",
                     "thread_ref": "thread_synthetic_walkthrough_01",
                     "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
+                    "output_format": "chat",
                     "care_model": "synthetic walkthrough",
                 },
             },
@@ -112,10 +114,42 @@ def test_named_provider_completes_real_mock_orchestrator_walkthrough_offline():
                     "clientId": "synthetic_walkthrough_01",
                     "thread_ref": "thread_synthetic_walkthrough_01",
                     "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
+                    "output_format": "chat",
                     "care_model": "synthetic walkthrough",
                 },
             },
         )
+        context_turn_id = str(uuid.uuid4())
+        context_rejected = client.post(
+            "/chat",
+            headers={
+                **headers,
+                "X-Cosmaneura-Client-Turn-ID": context_turn_id,
+            },
+            json={
+                "client_turn_id": context_turn_id,
+                "message": guided["message"],
+                "metadata": {
+                    "clientId": "synthetic_walkthrough_01",
+                    "thread_ref": "thread_synthetic_walkthrough_01",
+                    "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
+                    "output_format": "note",
+                    "care_model": "synthetic walkthrough",
+                },
+            },
+        )
+        digest_guard = AsyncMock(
+            side_effect=AssertionError("local fixture attempted digest orchestration")
+        )
+        with patch.object(main_module._sovereign, "digest", digest_guard):
+            digest = client.post(
+                "/digest",
+                headers=headers,
+                json={
+                    "persona": "provider",
+                    "sessions": ["arbitrary session text"],
+                },
+            )
 
     assert response.status_code == 200
     result = response.json()
@@ -128,6 +162,11 @@ def test_named_provider_completes_real_mock_orchestrator_walkthrough_offline():
     assert referral.json()["structured"]["matches"]
     assert rejected.status_code == 400
     assert rejected.json()["code"] == "VALIDATION_FAILED"
+    assert context_rejected.status_code == 400
+    assert context_rejected.json()["code"] == "VALIDATION_FAILED"
+    assert digest.status_code == 503
+    assert digest.json()["code"] == "SERVICE_UNAVAILABLE"
+    assert digest_guard.await_count == 0
     assert no_network.await_count == 0
 
 
