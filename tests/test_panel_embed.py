@@ -36,11 +36,13 @@ def test_versioned_panel_and_deprecated_alias_are_byte_identical():
     )
 
 
-def test_mount_validates_exact_https_origin_and_required_governed_callbacks():
+def test_mount_validates_https_or_explicit_same_origin_loopback():
     panel = _panel_source()
 
-    assert "var url = exactHttpsOrigin(opts.sovereignUrl)" in panel
-    assert 'parsed.protocol !== "https:"' in panel
+    assert "exactServiceOrigin(opts.sovereignUrl, opts.allowLoopbackHttp)" in panel
+    assert '["localhost", "127.0.0.1", "[::1]"]' in panel
+    assert "window.location.origin === parsed.origin" in panel
+    assert 'parsed.protocol !== "https:" && !loopback' in panel
     assert "parsed.username || parsed.password" in panel
     assert 'parsed.pathname !== "/" || parsed.search || parsed.hash' in panel
     assert "parsed.origin !== value" in panel
@@ -55,6 +57,8 @@ def test_mount_validates_exact_https_origin_and_required_governed_callbacks():
     assert "Sovereign named beta · unavailable" in panel
     assert "setNamedBetaAccess(false)" in panel
     assert "setNamedBetaAccess(true)" in panel
+    assert 'typeof opts.onAccessChange === "function"' in panel
+    assert "input.readOnly = state.localFixture" in panel
     assert "welcomeData().then" not in panel
 
 
@@ -264,17 +268,21 @@ def test_panel_first_send_exact_retry_success_and_record_reset_runtime():
     )
 
 
-def test_demo_surfaces_are_inert_named_beta_boundaries():
-    for path in DEMO_PATHS:
-        source = path.read_text()
-        normalized = source.casefold()
+def test_demo_surfaces_keep_entry_closed_and_mount_only_with_a_pasted_token():
+    landing, dashboard = (path.read_text() for path in DEMO_PATHS)
 
-        assert "named beta" in normalized
-        assert "unavailable" in normalized
-        assert "<form" not in normalized
-        assert "<textarea" not in normalized
-        assert "fetch(" not in source
-        assert "CosmaNeuraPanel.mount" not in source
+    assert "named beta" in landing.casefold()
+    assert 'href="/demo/dashboard"' in landing
+    assert "valid provider fixture token" in landing
+    assert '<script src="/embed/v1/panel.js"></script>' in dashboard
+    assert "window.CosmaNeuraPanel.mount" in dashboard
+    assert 'type="password"' in dashboard
+    assert "allowLoopbackHttp:true" in dashboard
+    assert "await panel.setRecord(fixtureId)" in dashboard
+    assert "synthetic_walkthrough_01" in dashboard
+    assert "localStorage" not in dashboard
+    assert "sessionStorage" not in dashboard
+    assert "location.hash" not in dashboard
 
 
 def test_host_surface_has_no_overclaimed_or_writeback_copy():

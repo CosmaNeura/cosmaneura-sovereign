@@ -3,31 +3,77 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Sovereign panel — named beta</title>
+<title>Sovereign provider walkthrough</title>
 <style>
-  :root{color-scheme:light;--page:#f4f7fa;--card:#fff;--line:#dbe3eb;
-    --ink:#142033;--muted:#5d6d80;--navy:#152744;--gold:#b88b2e}
-  *{box-sizing:border-box}
-  body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;
-    background:var(--page);color:var(--ink);
-    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-  main{width:min(600px,100%);padding:36px;border:1px solid var(--line);
-    border-radius:16px;background:var(--card);box-shadow:0 16px 42px rgba(21,39,68,.1)}
-  .label{color:var(--gold);font-size:12px;font-weight:800;letter-spacing:.12em;
-    text-transform:uppercase}
-  h1{margin:.35em 0;color:var(--navy);font-size:clamp(28px,6vw,42px);line-height:1.15}
-  p{margin:.8em 0;color:var(--muted)}
-  .boundary{margin-top:22px;padding-top:18px;border-top:1px solid var(--line);font-size:14px}
+  :root{--page:#eef3f7;--card:#fff;--line:#d8e1e9;--ink:#142033;--muted:#617185;--navy:#152744;--gold:#b88b2e;--ok:#187449}
+  *{box-sizing:border-box} body{min-height:100vh;margin:0;background:var(--page);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  header{padding:16px 24px;background:var(--navy);color:#fff;display:flex;align-items:center;gap:12px}.mark{width:34px;height:34px;border-radius:9px;background:var(--gold);display:grid;place-items:center;color:#19130a;font-weight:900}.sub{font-size:12px;color:#b9c7d8}
+  main{max-width:980px;margin:0 auto;padding:34px 24px 80px}.eyebrow{color:var(--gold);font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase} h1{margin:.25em 0 .35em;color:var(--navy);font-size:clamp(28px,5vw,42px)} p{color:var(--muted)}
+  .grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(260px,.8fr);gap:18px;margin-top:24px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;box-shadow:0 8px 24px rgba(21,39,68,.06)} h2{margin:0 0 8px;font-size:18px}.fixture{display:inline-block;padding:4px 8px;border-radius:999px;background:#e7f5ed;color:var(--ok);font-size:11px;font-weight:800}.steps{margin:14px 0 0;padding-left:20px;color:var(--muted)}
+  form{display:flex;gap:8px;margin-top:14px} input{min-width:0;flex:1;padding:11px;border:1px solid #b8c5d1;border-radius:9px;font:inherit} button{padding:11px 14px;border:0;border-radius:9px;background:var(--navy);color:#fff;font-weight:800;cursor:pointer} button:disabled{opacity:.55;cursor:default}.status{margin-top:10px;min-height:24px;font-size:13px}.boundary{font-size:12px;color:var(--muted);border-top:1px solid var(--line);margin-top:18px;padding-top:14px}@media(max-width:760px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-  <main aria-labelledby="title">
-    <div class="label">Sovereign named beta</div>
-    <h1 id="title">The provider panel is unavailable.</h1>
-    <p>Only a signed-in provider named for this pilot may open the assistant
-      through the approved private host.</p>
-    <p class="boundary">This preview contains no clinical records and accepts no
-      clinical input. Merging code does not publish or deploy the panel.</p>
-  </main>
+<header><div class="mark">S</div><div><strong>Sovereign</strong><div class="sub">Named beta · provider walkthrough</div></div></header>
+<main>
+  <div class="eyebrow">Synthetic workspace</div>
+  <h1>Watch one request move through the Sovereign.</h1>
+  <p>This fixture uses deterministic mock responses and opaque synthetic context. It is not connected to live records or external clinical systems.</p>
+  <div class="grid">
+    <section class="card" aria-labelledby="access-title">
+      <span class="fixture">Local synthetic fixture</span>
+      <h2 id="access-title">Named-provider access</h2>
+      <p>Paste the short-lived token copied by the launcher. It stays in this page's memory and is cleared when the page closes.</p>
+      <form id="access-form">
+        <input id="access-token" type="password" autocomplete="off" spellcheck="false" aria-label="Local provider fixture token" placeholder="Paste local fixture token" />
+        <button id="unlock" type="submit">Open panel</button>
+      </form>
+      <div class="status" id="status" role="status" aria-live="polite">The panel is unavailable until access is verified.</div>
+      <div class="boundary">Use only the guided prompts. Do not enter health, visit, or account information.</div>
+    </section>
+    <aside class="card">
+      <h2>Walkthrough</h2>
+      <ol class="steps">
+        <li>Open the panel after provider access is verified.</li>
+        <li>Select a synthetic guided path.</li>
+        <li>Review the draft, then choose Send.</li>
+        <li>See the routed capability and final review in the response.</li>
+      </ol>
+    </aside>
+  </div>
+</main>
+<script src="/embed/v1/panel.js"></script>
+<script>
+(function(){
+  "use strict";
+  var form=document.getElementById("access-form"),field=document.getElementById("access-token");
+  var status=document.getElementById("status"),unlock=document.getElementById("unlock");
+  var token=null,panel=null,fixtureId="synthetic_walkthrough_01";
+  function message(text){status.textContent=text;}
+  form.addEventListener("submit",async function(event){
+    event.preventDefault();
+    var candidate=field.value.trim();field.value="";
+    if(candidate.length<16||candidate.length>8192||/\s/.test(candidate)){
+      message("Named-beta access unavailable. Check the local launcher and try again.");return;
+    }
+    token=candidate;unlock.disabled=true;message("Verifying named-provider access…");
+    if(panel)panel.destroy();
+    try{
+      panel=window.CosmaNeuraPanel.mount({
+        sovereignUrl:window.location.origin,embedVersion:"1.0",allowLoopbackHttp:true,
+        getAuthToken:async function(){if(!token)throw new Error("unavailable");return token;},
+        getContext:async function(){return{clientId:fixtureId,thread_ref:"thread_synthetic_walkthrough_01",context_snapshot_ref:"snapshot_synthetic_walkthrough_01",care_model:"synthetic walkthrough"};},
+        loadHistory:async function(){return null;},
+        onHumanContact:async function(){message("No live handoff is connected in this synthetic walkthrough.");},
+        onAccessChange:function(granted){if(!granted){token=null;form.hidden=false;unlock.disabled=false;message("Named-beta access unavailable. No fixture context is displayed.");}}
+      });
+      var ready=await panel.setRecord(fixtureId);
+      if(ready===null){token=null;panel.destroy();panel=null;throw new Error("denied");}
+      form.hidden=true;message("Provider fixture ready. Choose a guided path in the open panel.");panel.open();
+    }catch(_error){token=null;unlock.disabled=false;message("Named-beta access unavailable. Check the local launcher and try again.");}
+  });
+  window.addEventListener("pagehide",function(){token=null;if(panel)panel.destroy();});
+})();
+</script>
 </body>
 </html>

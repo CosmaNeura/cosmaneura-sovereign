@@ -632,7 +632,9 @@ def test_dashboard_harness_gated_by_demo_flag():
         assert r.status_code == 200
         assert "named beta" in r.text.lower()
         assert "unavailable" in r.text.lower()
-        assert "CosmaNeuraPanel.mount" not in r.text
+        assert "CosmaNeuraPanel.mount" in r.text
+        assert 'type="password"' in r.text
+        assert "synthetic_walkthrough_01" in r.text
     finally:
         os.environ.pop("DEMO_UI_ENABLED", None)
         app.config.get_settings.cache_clear()

@@ -1502,6 +1502,14 @@ def test_direct_clerk_provider_host_is_named_beta_only_before_orchestration():
                     json=chat_body,
                     headers=authorized(provider_token),
                 )
+                conflicting_turn = client.post(
+                    "/chat",
+                    json={**chat_body, "client_turn_id": str(uuid.uuid4())},
+                    headers={
+                        **authorized(provider_token),
+                        "X-Cosmaneura-Client-Turn-ID": chat_body["client_turn_id"],
+                    },
+                )
 
     assert missing.status_code == 401
     assert missing.json()["code"] == "CONTEXT_INVALID"
@@ -1514,6 +1522,8 @@ def test_direct_clerk_provider_host_is_named_beta_only_before_orchestration():
     assert wrong_role_chat.status_code == 403
     assert unsigned_emergency.status_code == 401
     assert allowed_chat.status_code == 200
+    assert conflicting_turn.status_code == 409
+    assert conflicting_turn.json()["code"] == "VALIDATION_FAILED"
     assert len(sovereign.calls) == 1
     assert sovereign.calls[0][1]["principal"].roles == ["provider"]
 

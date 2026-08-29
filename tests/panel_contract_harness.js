@@ -126,6 +126,7 @@ async function main() {
   let uuidCounter = 1;
   global.window = {
     innerWidth: 1200,
+    location: { origin: "https://host.example" },
     crypto: {
       randomUUID: () => `00000000-0000-4000-8000-${String(uuidCounter++).padStart(12, "0")}`,
     },
@@ -161,6 +162,7 @@ async function main() {
         paths: [],
         disclaimer: "Standard disclaimer",
         emergency_note: "Call 911 in an emergency.",
+        walkthrough_mode: "local_synthetic",
       });
     }
     assert(url.endsWith("/chat"), "unexpected URL");
@@ -210,7 +212,12 @@ async function main() {
       client_turn_id: requestBody.client_turn_id,
       citations: [],
       doctrinal_review: null,
-      structured: {},
+      structured: {
+        matches: [{
+          name: "Fixture Provider", specialty: "Family Medicine",
+          telehealth: true, booking_url: "https://directory.example/fixture",
+        }],
+      },
       safety_notice: null,
       presentation: {
         mode: "standard",
@@ -241,6 +248,19 @@ async function main() {
     assert(error.message.includes("HTTPS origin"), "invalid origin failed for wrong reason");
   }
   assert(invalidTokenCalls === 0, "origin validation acquired a token");
+  try {
+    window.CosmaNeuraPanel.mount({
+      sovereignUrl: "http://remote.example",
+      embedVersion: "1.0",
+      allowLoopbackHttp: true,
+      getAuthToken: async () => "opaque-token-invalid-1234",
+      getContext: async () => ({ clientId: "record_a" }),
+      onHumanContact: async () => {},
+    });
+    throw new Error("remote HTTP origin was accepted");
+  } catch (error) {
+    assert(error.message.includes("loopback HTTP"), "remote HTTP failed for wrong reason");
+  }
 
   async function assertNamedBetaLocked(mode) {
     welcomeMode = mode;
@@ -276,10 +296,12 @@ async function main() {
   await assertNamedBetaLocked("denied");
   await assertNamedBetaLocked("patient");
   welcomeMode = "provider";
+  window.location.origin = "http://127.0.0.1:8000";
 
   const controller = window.CosmaNeuraPanel.mount({
-    sovereignUrl: "https://sovereign.example",
+    sovereignUrl: "http://127.0.0.1:8000",
     embedVersion: "1.0",
+    allowLoopbackHttp: true,
     getAuthToken: async request => {
       tokenRequests.push(request);
       tokenSequence += 1;
@@ -319,6 +341,7 @@ async function main() {
   assert(controller.root.querySelector(".cnp-fab").hidden === false,
          "provider preflight did not reveal panel launcher");
   assert(send.disabled === false, "send stayed disabled after record handshake");
+  assert(input.readOnly === true, "local walkthrough accepted free-form input");
   assert(historyNotifications === 1, "governed history callback was not notified");
 
   input.value = "first governed turn";
@@ -339,6 +362,10 @@ async function main() {
   assert(!("history" in sent) && !("persona" in sent), "first send replayed raw browser state");
   assert(find(controller.root, node => node.innerHTML.includes("Governed answer")),
          "successful governed answer was not rendered");
+  assert(find(controller.root, node => node.innerHTML.includes("Sovereign route")),
+         "local walkthrough did not expose the routed orchestrator path");
+  assert(find(controller.root, node => node.textContent === "Fixture Provider"),
+         "structured directory option was not rendered");
 
   const oldContact = find(controller.root, node => node.textContent === "Contact support");
   assert(oldContact, "governed contact action was not rendered");

@@ -70,6 +70,8 @@
     "color:var(--accent);border:1px solid var(--line);border-radius:999px;padding:1px 7px;margin-bottom:6px}",
     ".cnp-cite{font-size:10.5px;color:var(--muted);margin-top:7px;border-top:1px solid var(--line);padding-top:6px}",
     ".cnp-trust{font-size:10.5px;color:var(--ok);margin-top:6px}",
+    ".cnp-route{font-size:10.5px;color:#b9dcef;margin:0 0 7px;padding:6px 8px;",
+    "border:1px solid #294964;border-radius:8px;background:#101e2b}",
     ".cnp-calc{margin-top:8px;background:#14231c;border:1px solid #2d4a3a;border-radius:9px;",
     "padding:7px 10px;font-size:11.5px}",
     ".cnp-calc-t{color:var(--ok);font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}",
@@ -84,8 +86,11 @@
     ".cnp-acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}",
     ".cnp-act{font-size:11.5px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);",
     "border-radius:7px;padding:4px 9px;cursor:pointer}.cnp-act:hover{border-color:var(--accent2)}",
+    ".cnp-cards{display:grid;gap:7px;margin-top:8px}.cnp-card{padding:8px 10px;border:1px solid var(--line);",
+    "border-radius:9px;background:var(--panel2)}.cnp-card-name{font-weight:700}.cnp-card-meta{color:var(--muted);font-size:11px}",
+    ".cnp-card a{display:inline-block;margin-top:5px;color:#9bd5f5;font-size:11px}",
     ".cnp-chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 14px 8px}",
-    ".cnp-chip{font-size:11.5px;color:var(--muted);background:var(--panel);border:1px solid var(--line);",
+    ".cnp-chip{font:inherit;font-size:11.5px;color:var(--muted);background:var(--panel);border:1px solid var(--line);",
     "border-radius:999px;padding:4px 10px;cursor:pointer}.cnp-chip:hover{color:var(--ink);border-color:var(--accent2)}",
     ".cnp-foot{border-top:1px solid var(--line);padding:10px 14px}",
     ".cnp-row{display:flex;gap:7px;align-items:flex-end}",
@@ -292,17 +297,20 @@
     return box;
   }
 
-  function exactHttpsOrigin(value) {
+  function exactServiceOrigin(value, allowLoopbackHttp) {
     if (typeof value !== "string" || !value) throw new Error("sovereignUrl is required");
     var parsed;
     try { parsed = new URL(value); } catch (_error) {
       throw new Error("sovereignUrl must be an absolute HTTPS origin");
     }
-    if (parsed.protocol !== "https:" || parsed.username || parsed.password ||
+    var loopback = allowLoopbackHttp === true && parsed.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "[::1]"].indexOf(parsed.hostname) >= 0 &&
+      window.location && window.location.origin === parsed.origin;
+    if ((parsed.protocol !== "https:" && !loopback) || parsed.username || parsed.password ||
         parsed.pathname !== "/" || parsed.search || parsed.hash ||
         parsed.origin !== value)
-      throw new Error("sovereignUrl must be an exact absolute HTTPS origin");
-    return parsed.origin;
+      throw new Error("sovereignUrl must be an exact HTTPS origin or same-origin loopback HTTP");
+    return { origin: parsed.origin, loopback: loopback };
   }
 
   function closedObject(value, keys) {
@@ -370,12 +378,13 @@
     if (typeof opts.onHumanContact !== "function")
       throw new Error("onHumanContact is required");
     // Parse and normalize no path at all before any credential callback runs.
-    var url = exactHttpsOrigin(opts.sovereignUrl);
+    var service = exactServiceOrigin(opts.sovereignUrl, opts.allowLoopbackHttp);
+    var url = service.origin;
     var embedVersion = opts.embedVersion;
     var state = {
       open: false, busy: false, switching: false, destroyed: false,
       clientId: null, history: null, persona: "patient", generation: 0,
-      accessGranted: false,
+      accessGranted: false, localFixture: false,
       recordReady: false, contextSnapshot: null, recordHeaders: null,
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
       recordController: null, chatController: null,
@@ -478,6 +487,8 @@
       rail.hidden = !state.accessGranted;
       if (!state.accessGranted && wasGranted) setOpen(false);
       syncControls();
+      if (state.accessGranted !== wasGranted && typeof opts.onAccessChange === "function")
+        Promise.resolve(opts.onAccessChange(state.accessGranted)).catch(function () {});
     }
     setNamedBetaAccess(false);
 
@@ -490,6 +501,8 @@
       state.welcomeController = null; state.welcomePromise = null;
       state.welcomeRenderGeneration = null;
       state.clientId = null; state.history = null; state.persona = "patient";
+      state.localFixture = false;
+      input.readOnly = false;
       state.recordReady = false; state.contextSnapshot = null;
       state.recordHeaders = null; state.retryAttempt = null;
       state.busy = false; state.switching = false;
@@ -574,7 +587,7 @@
         clean.terminology = value.terminology;
       }
       if (value.care_model != null) {
-        if (typeof value.care_model !== "string") return null;
+        if (typeof value.care_model !== "string" || value.care_model.length > 80) return null;
         clean.care_model = value.care_model;
       }
       return clean;
@@ -582,13 +595,20 @@
 
     function applyWelcomeUX(w) {
       state.persona = w.persona === "provider" ? "provider" : "patient";
-      sub.textContent = state.persona === "provider"
+      state.localFixture = w.walkthrough_mode === "local_synthetic" && service.loopback;
+      input.readOnly = state.localFixture;
+      sub.textContent = state.localFixture ? "Local synthetic walkthrough" : state.persona === "provider"
         ? "Faithful clinical assistant" : "Faithful health assistant";
-      input.placeholder = state.persona === "provider"
+      input.placeholder = state.localFixture ? "Use a synthetic guided prompt…" : state.persona === "provider"
         ? "Ask about the open record…" : "Ask a health or values question…";
     }
 
     function applyEnvironmentLabel(w) {
+      if (state.localFixture) {
+        sandboxBadge.textContent = "Local synthetic fixture · no live records";
+        sandboxBadge.hidden = false;
+        return;
+      }
       var hasLabsPath = (w.paths || []).some(function (path) {
         return path.intent === "lab_review";
       });
@@ -632,6 +652,7 @@
       state.recordController = recordController;
       state.clientId = recordId;
       state.history = null;
+      state.localFixture = false;
       state.recordReady = false;
       state.contextSnapshot = null;
       state.recordHeaders = null;
@@ -741,7 +762,8 @@
         d.textContent = w.disclaimer; b.appendChild(d);
         chips.innerHTML = "";
         (w.paths || []).forEach(function (p) {
-          var c = document.createElement("div"); c.className = "cnp-chip"; c.textContent = p.label;
+          var c = document.createElement("button"); c.className = "cnp-chip"; c.textContent = p.label;
+          c.setAttribute("type", "button");
           c.onclick = function () {
             if (!currentGeneration(generation) || !state.recordReady) return;
             input.value = p.message; input.focus();
@@ -762,6 +784,10 @@
       var suppressed = new Set(presentation.suppress);
       var html = "";
       setGovernedChrome(presentation);
+      if (state.localFixture && d.intent)
+        html += '<div class="cnp-route">Sovereign route · ' +
+          esc(String(d.intent).replace(/_/g, " ")) +
+          (d.doctrinal_review ? " · final review recorded" : "") + "</div>";
       if (presentation.mode === "emergency") {
         b.classList.add("cnp-emg");
         html += '<div class="cnp-emg-h">⚠ This may be an emergency</div>';
@@ -784,6 +810,25 @@
           ? "✓ Reviewed for conformity with Catholic teaching"
           : "✓ Revised in keeping with Catholic teaching";
         b.appendChild(t);
+      }
+      var matches = d.structured && d.structured.matches;
+      if (!suppressed.has("structured_cards") && Array.isArray(matches) && matches.length) {
+        var cards = document.createElement("div"); cards.className = "cnp-cards";
+        matches.slice(0, 4).forEach(function (match) {
+          var card = document.createElement("div"); card.className = "cnp-card";
+          var name = document.createElement("div"); name.className = "cnp-card-name";
+          name.textContent = match.name || "Directory option"; card.appendChild(name);
+          var meta = document.createElement("div"); meta.className = "cnp-card-meta";
+          meta.textContent = [match.specialty, match.telehealth ? "telehealth" : "in person"]
+            .filter(Boolean).join(" · "); card.appendChild(meta);
+          if (typeof match.booking_url === "string" && /^https:\/\//.test(match.booking_url)) {
+            var link = document.createElement("a"); link.href = match.booking_url;
+            link.target = "_blank"; link.rel = "noopener noreferrer";
+            link.textContent = "Open directory"; card.appendChild(link);
+          }
+          cards.appendChild(card);
+        });
+        b.appendChild(cards);
       }
       var comp = d.structured && d.structured.computed;
       if (!suppressed.has("structured_cards") && comp && Object.keys(comp).length) {
