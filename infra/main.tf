@@ -439,6 +439,18 @@ resource "azurerm_federated_identity_credential" "ghactions" {
   subject = "repo:${var.github_repository}:environment:${local.deployment_context.github_environment}"
 }
 
+# A federated principal with no Azure role cannot discover or select the
+# subscription during azure/login. Reader on this isolated resource group is
+# the minimum bootstrap grant; publish/deploy mutations retain their narrower
+# resource-specific roles below.
+resource "azurerm_role_assignment" "github_resource_group_reader" {
+  count                = local.github_deploy_enabled ? 1 : 0
+  scope                = azurerm_resource_group.main.id
+  role_definition_name = "Reader"
+  principal_id         = azurerm_user_assigned_identity.ghactions[0].principal_id
+  principal_type       = "ServicePrincipal"
+}
+
 # Push images to ACR.
 resource "azurerm_role_assignment" "github_acr_push" {
   count                = local.github_deploy_enabled ? 1 : 0
