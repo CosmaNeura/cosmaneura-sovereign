@@ -6,6 +6,8 @@ then omit ``--self-test`` and open the printed loopback URL.
 """
 from __future__ import annotations
 
+# ruff: noqa: E402 -- app.main must see the closed demo environment at import time.
+
 import argparse
 import asyncio
 import json
