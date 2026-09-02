@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
+import re
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -271,6 +272,13 @@ class Settings(BaseSettings):
     # same-key retries. Keep telemetry failure from consuming the chat timeout.
     platform_write_timeout_seconds: float = Field(default=3.0, ge=0.1, le=10.0)
 
+    # Session Prep's first operational slice is intentionally restricted to one
+    # explicitly configured synthetic staging handle. The feature remains off
+    # by default and has no real-PHI mode; broader activation requires a later
+    # reviewed control change.
+    feature_session_prep: bool = False
+    session_prep_synthetic_context_ref: Optional[str] = None
+
     # Anonymous public traffic is limited in-process before any model call.
     # Container Apps is configured with a single public replica until a shared
     # rate-limit store is introduced.
@@ -471,6 +479,10 @@ def validate_deployment_configuration(settings: Settings) -> None:
             forbidden.append("LABS_ALLOW_PATIENT_SEARCH")
         if settings.platform_agent_api_enabled:
             forbidden.append("PLATFORM_AGENT_API_ENABLED")
+        if settings.feature_session_prep:
+            forbidden.append("FEATURE_SESSION_PREP")
+        if _has_value(settings.session_prep_synthetic_context_ref):
+            forbidden.append("SESSION_PREP_SYNTHETIC_CONTEXT_REF")
         for name, value in (
             ("PLATFORM_AGENT_API_BASE_URL", settings.platform_agent_api_base_url),
             ("PLATFORM_AGENT_API_SCOPE", settings.platform_agent_api_scope),
@@ -499,6 +511,23 @@ def validate_deployment_configuration(settings: Settings) -> None:
     if not _has_value(settings.mount_tenant_id):
         raise DeploymentConfigurationError(
             "MOUNT_PROFILE=provider_assistant requires MOUNT_TENANT_ID."
+        )
+    if settings.feature_session_prep:
+        context_ref = settings.session_prep_synthetic_context_ref or ""
+        if not settings.platform_agent_api_enabled:
+            raise DeploymentConfigurationError(
+                "FEATURE_SESSION_PREP requires platform Agent API authority."
+            )
+        if not re.fullmatch(
+            r"context_synthetic_[A-Za-z0-9._~-]{1,142}", context_ref,
+        ):
+            raise DeploymentConfigurationError(
+                "FEATURE_SESSION_PREP requires one exact synthetic staging "
+                "SESSION_PREP_SYNTHETIC_CONTEXT_REF."
+            )
+    elif _has_value(settings.session_prep_synthetic_context_ref):
+        raise DeploymentConfigurationError(
+            "SESSION_PREP_SYNTHETIC_CONTEXT_REF requires FEATURE_SESSION_PREP=true."
         )
     if settings.platform_agent_api_enabled:
         if settings.auth_mode != AuthMode.DISABLED:

@@ -63,6 +63,15 @@ from app.clients.platform_usage import (
     successful_usage_refs,
     usage_reporting_complete,
 )
+from app.clients.session_prep import (
+    SessionPrepClient,
+    SessionPrepDeliveryError,
+)
+from app.clients.session_prep_contract import (
+    SessionPrepContextReadArguments,
+    SessionPrepContextReadRequest,
+    SessionPrepDetail,
+)
 from app.clients.labs import (
     LabsCategory,
     LabsPurpose,
@@ -81,6 +90,7 @@ from app.schemas import (ALL_PRESENTATION_SUPPRESSIONS, ChatRequest,
                          ChatResponse, Citation, CompassionateSafetyFallback,
                          DigestRequest, DigestResponse, DoctrinalSensitivity,
                          EmergencyPresentation, Intent,
+                         SessionPrepResponse,
                          SensitiveDisclosurePresentation,
                          StandardPresentation)
 from app.security.auth import Principal
@@ -96,6 +106,8 @@ from app.security.record_grant import (
 )
 from app.sovereign.arbiter import DoctrinalArbiter
 from app.sovereign.router import Router
+from app.session_prep import (SessionPrepOutcome, project_session_prep_result,
+                              render_session_prep_text)
 
 
 # Routed intents fail closed: a new routed Intent receives no authority until
@@ -163,6 +175,8 @@ _AUTHORITY_METADATA_KEYS = frozenset({
 })
 
 _DEFAULT_SANDBOX_LOOKBACK_DAYS = 730
+_SESSION_PREP_ACTION_CODE = "session-prep.open"
+_SESSION_PREP_ACTION_MESSAGE = "Open Session Prep"
 
 
 _DIAGNOSIS_CLAIM_RE = re.compile(
@@ -274,7 +288,8 @@ class Sovereign:
                      PlatformConversationClient
                  ] = None,
                  platform_usage_client: Optional[PlatformUsageClient] = None,
-                 mount_bootstrapper: Optional[MountBootstrapper] = None):
+                 mount_bootstrapper: Optional[MountBootstrapper] = None,
+                 session_prep_client: Optional[SessionPrepClient] = None):
         self.s = settings or get_settings()
         self.llm = LLMClient(self.s)
         self.magisterium = MagisteriumClient(self.s)
@@ -292,6 +307,10 @@ class Sovereign:
                     or platform_audit_client is None
                     or platform_conversation_client is None
                     or platform_usage_client is None
+                    or (
+                        self.s.feature_session_prep
+                        and session_prep_client is None
+                    )
                 )
                 else None
             )
@@ -323,12 +342,21 @@ class Sovereign:
                 workload_token_provider=token_provider,  # type: ignore[arg-type]
                 timeout_seconds=self.s.platform_write_timeout_seconds,
             )
+            self.session_prep = session_prep_client or (
+                SessionPrepClient(
+                    platform_base_url=self.s.platform_agent_api_base_url or "",
+                    workload_token_provider=token_provider,  # type: ignore[arg-type]
+                )
+                if self.s.feature_session_prep
+                else None
+            )
         else:
             self.mount_resolver = mount_resolver or PinnedResolver.from_settings(self.s)
             self.mount_bootstrapper = mount_bootstrapper
             self.platform_audit = platform_audit_client
             self.platform_conversation = platform_conversation_client
             self.platform_usage = platform_usage_client
+            self.session_prep = session_prep_client
         self.agents = {
             Intent.REFERRAL: ReferralAgent(self.s, self.llm),
             Intent.CONCIERGE: ConciergeAgent(self.s, self.llm),
@@ -356,6 +384,187 @@ class Sovereign:
             trace_id=trace_id,
             mount_context_token=mount_context_token,
         ))
+
+    async def read_session_prep(
+        self,
+        *,
+        client_turn_id: uuid.UUID,
+        context_snapshot_ref: str,
+        mount_context_token: Optional[str],
+    ) -> SessionPrepOutcome:
+        """Read and directly project the Core-owned synthetic prepared brief."""
+        deactivate_usage_context()
+        trace_id = uuid.uuid4().hex
+        if (
+            not self.s.feature_session_prep
+            or not self.s.platform_agent_api_enabled
+            or self.session_prep is None
+            or self.platform_conversation is None
+        ):
+            raise MountResolutionError(
+                status_code=403,
+                code="CAPABILITY_DENIED",
+                retryable=False,
+            )
+
+        resolution = await self.mount_resolver.resolve(MountResolveRequest(
+            client_turn_id=client_turn_id,
+            trace_id=trace_id,
+            mount_context_token=mount_context_token,
+        ))
+        trace_id = resolution.trace_id
+        mount = resolution.context
+        if mount.surface != "provider_assistant" or mount.auth_tier != "provider":
+            raise MountResolutionError(
+                status_code=403,
+                code="MOUNT_SURFACE_MISMATCH",
+                retryable=False,
+            )
+        if mount.actor_id is None:
+            raise MountResolutionError(
+                status_code=401,
+                code="VERIFIED_ACTOR_REQUIRED",
+                retryable=False,
+            )
+        if "session-prep:read" not in mount.capabilities:
+            raise MountResolutionError(
+                status_code=403,
+                code="CAPABILITY_DENIED",
+                retryable=False,
+            )
+        if (
+            self.s.session_prep_synthetic_context_ref is None
+            or context_snapshot_ref
+            != self.s.session_prep_synthetic_context_ref
+        ):
+            raise MountResolutionError(
+                status_code=409,
+                code="RECORD_CONTEXT_MISMATCH",
+                retryable=False,
+            )
+        if resolution.interaction_ref is None or mount_context_token is None:
+            raise MountResolutionError(
+                status_code=503,
+                code="PLATFORM_PERSISTENCE_UNAVAILABLE",
+                retryable=True,
+            )
+
+        turn = PlatformTurn(
+            interaction_ref=resolution.interaction_ref,
+            client_turn_id=resolution.client_turn_id,
+            trace_id=trace_id,
+            mount_context_token=mount_context_token,
+        )
+        try:
+            accepted = await self.platform_conversation.write_provider_action(
+                turn=turn,
+                action_code=_SESSION_PREP_ACTION_CODE,
+                message=_SESSION_PREP_ACTION_MESSAGE,
+            )
+        except ConversationDeliveryError as error:
+            raise self._delivery_mount_error(
+                error=error,
+                owner="conversation",
+                trace_id=trace_id,
+            ) from None
+        except Exception:
+            error = ConversationDeliveryError("unavailable", retryable=False)
+            raise self._delivery_mount_error(
+                error=error,
+                owner="conversation",
+                trace_id=trace_id,
+            ) from None
+
+        contract_request = SessionPrepContextReadRequest(
+            tool_name="session-prep.context.read",
+            tool_version="1.0.0",
+            subject_ref=None,
+            arguments=SessionPrepContextReadArguments(
+                source_turn_ref=accepted.turn_ref,
+                context_snapshot_ref=context_snapshot_ref,
+                purpose="session_prep",
+                detail=SessionPrepDetail.BRIEF,
+            ),
+        )
+        try:
+            contract_response = await self.session_prep.read(
+                turn=turn,
+                request=contract_request,
+            )
+        except SessionPrepDeliveryError as error:
+            code = {
+                "auth": (
+                    "CAPABILITY_DENIED"
+                    if error.status_code == 403
+                    else "CONTEXT_INVALID"
+                    if error.status_code == 401
+                    else "PLATFORM_UNAVAILABLE"
+                ),
+                "conflict": "RECORD_CONTEXT_MISMATCH",
+                "schema": "SESSION_PREP_SCHEMA_INVALID",
+                "unavailable": "PLATFORM_UNAVAILABLE",
+            }[error.category]
+            raise MountResolutionError(
+                status_code=error.status_code,
+                code=code,
+                retryable=error.retryable,
+            ) from None
+
+        projection: SessionPrepResponse = project_session_prep_result(
+            contract_response.result,
+            client_turn_id=resolution.client_turn_id,
+        )
+        final_text = render_session_prep_text(projection)
+        presentation = StandardPresentation(
+            mode="standard",
+            suppress=[
+                "disclaimer",
+                "intent_badge",
+                "doctrinal_badge",
+                "citations",
+                "structured_cards",
+                "feature_actions",
+                "guided_paths",
+            ],
+            human_contact=None,
+        )
+        try:
+            await self.platform_conversation.write_final_response(
+                turn=turn,
+                expected_turn_ref=accepted.turn_ref,
+                answer=final_text,
+                outcome=(
+                    "unavailable"
+                    if projection.state == "unavailable"
+                    else "completed"
+                ),
+                presentation=presentation.model_dump(mode="json"),
+            )
+        except ConversationDeliveryError as error:
+            raise self._delivery_mount_error(
+                error=error,
+                owner="conversation",
+                trace_id=trace_id,
+            ) from None
+        except Exception:
+            error = ConversationDeliveryError("unavailable", retryable=False)
+            raise self._delivery_mount_error(
+                error=error,
+                owner="conversation",
+                trace_id=trace_id,
+            ) from None
+
+        self.audit.record(
+            trace_id=trace_id,
+            profile=ComplianceProfile(Persona.PROVIDER),
+            event="session_prep_projected",
+            details={
+                "state": projection.state,
+                "freshness": projection.freshness,
+                "source_count": projection.source_count,
+            },
+        )
+        return SessionPrepOutcome(response=projection, trace_id=trace_id)
 
     async def handle(
         self,

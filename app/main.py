@@ -25,7 +25,8 @@ from app.config import (AuthMode, MountProfile, Persona, get_settings,
 from app.schemas import (ChatRequest, ChatResponse,
                          CompassionateSafetyFallback, DigestRequest,
                          DigestResponse, EmbedChatRequest, EmbedChatResponse,
-                         Intent, SovereignProblemDetails)
+                         Intent, SessionPrepRequest, SessionPrepResponse,
+                         SovereignProblemDetails)
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
 from app.security.mount import MountResolutionError
 from app.security.rate_limit import TokenBucketRateLimiter
@@ -45,7 +46,9 @@ _public_chat_limiter = TokenBucketRateLimiter(
 
 _EMBED_VERSION = "1.0"
 _EMBED_VERSION_HEADER = "X-Cosmaneura-Embed-Version"
-_PROTECTED_EMBED_PATHS = frozenset({"/welcome", "/chat", "/digest"})
+_PROTECTED_EMBED_PATHS = frozenset({
+    "/welcome", "/chat", "/digest", "/session-prep",
+})
 _CORS_ALLOW_METHODS = ("GET", "POST")
 _CORS_ALLOW_HEADERS = (
     "content-type",
@@ -705,6 +708,32 @@ async def chat(
     return response.model_copy(update={"client_turn_id": client_turn_id})
 
 
+@app.post("/session-prep", response_model=SessionPrepResponse)
+async def session_prep(
+    request: SessionPrepRequest,
+    http_request: Request,
+    http_response: Response,
+) -> SessionPrepResponse:
+    """Run one explicit, synthetic-only provider Session Prep action."""
+    _require_embed_version(http_request)
+    authorization = _one_raw_header(http_request, "Authorization")
+    mount_context_token = _raw_bearer(authorization)
+    client_turn_id = _matched_client_turn_id(
+        header_value=_one_raw_header(
+            http_request, "X-Cosmaneura-Client-Turn-ID"
+        ),
+        body_value=request.client_turn_id,
+        required=True,
+    )
+    outcome = await _sovereign.read_session_prep(
+        client_turn_id=client_turn_id,
+        context_snapshot_ref=request.context_snapshot_ref,
+        mount_context_token=mount_context_token,
+    )
+    http_response.headers["X-Trace-ID"] = outcome.trace_id
+    return outcome.response
+
+
 # The AI speaks first (see INTERACTION_DESIGN.md). Deterministic, config-served
 # greeting + guided paths — no LLM call, nothing for the arbiter to review, and
 # each path maps 1:1 to an Intent so a tapped chip is a near-perfect routing
@@ -744,6 +773,11 @@ _PROVIDER_PATHS = [
      "message": "Anything concerning in her labs? Show me the A1C trend.",
      "intent": "lab_review"},
 ]
+_SESSION_PREP_PATH = {
+    "label": "Open Session Prep",
+    "message": "Open Session Prep",
+    "intent": "session_prep",
+}
 _LOCAL_PROVIDER_PATHS = [
     {"label": "Trace synthetic session prep",
      "message": _LOCAL_VISIT_PREP_MESSAGE,
@@ -756,6 +790,8 @@ _LOCAL_PROVIDER_PATHS = [
 
 def _required_capability_for_path(path: dict) -> Optional[str]:
     """Return no grant for malformed or newly added, unmapped welcome paths."""
+    if path.get("intent") == "session_prep":
+        return "session-prep:read"
     try:
         intent = Intent(path["intent"])
     except (KeyError, TypeError, ValueError):
@@ -807,11 +843,22 @@ async def welcome(http_request: Request) -> dict:
                     "teaching. I'm not a doctor and I can't diagnose or treat "
                     "anything — think of me as preparation for real care, not a "
                     "replacement for it.")
-    candidates = (
-        _LOCAL_PROVIDER_PATHS
-        if local_fixture
-        else _PROVIDER_PATHS if persona == Persona.PROVIDER else _PATIENT_PATHS
-    )
+    if local_fixture:
+        candidates = _LOCAL_PROVIDER_PATHS
+    elif persona == Persona.PROVIDER:
+        candidates = (
+            [
+                _SESSION_PREP_PATH,
+                *[
+                    path for path in _PROVIDER_PATHS
+                    if path["intent"] != "visit_prep"
+                ],
+            ]
+            if _settings.feature_session_prep
+            else _PROVIDER_PATHS
+        )
+    else:
+        candidates = _PATIENT_PATHS
     granted = set(mount.capabilities)
     if _settings.platform_agent_api_enabled:
         # The provider-first activation deliberately omits the labs lane even

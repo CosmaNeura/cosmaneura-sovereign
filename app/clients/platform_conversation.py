@@ -328,6 +328,27 @@ class PlatformConversationClient:
             },
         )
 
+    async def write_provider_action(
+        self,
+        *,
+        turn: PlatformTurn,
+        action_code: str,
+        message: str,
+    ) -> ConversationReceipt:
+        """Persist one authenticated provider UI action before tool reliance."""
+        if not re.fullmatch(r"[a-z][a-z0-9._-]{1,127}", action_code):
+            raise ValueError("invalid provider action code")
+        return await self._write(
+            turn=turn,
+            phase="user_accepted",
+            payload={
+                "phase": "user_accepted",
+                "ingress_kind": "provider_ui_action",
+                "action_code": action_code,
+                "message": {"content_type": "text/plain", "content": message},
+            },
+        )
+
     async def write_final_response(
         self,
         *,

@@ -57,6 +57,17 @@
     "letter-spacing:.45px;text-transform:uppercase}",
     ".cnp-sandbox[hidden]{display:none}",
     ".cnp-x{margin-left:auto;background:none;border:none;color:var(--muted);font-size:19px;cursor:pointer}",
+    ".cnp-prep{padding:10px 14px;border-bottom:1px solid var(--line);background:#111a26}",
+    ".cnp-prep[hidden]{display:none}.cnp-prep-go{width:100%;background:var(--panel2);",
+    "border:1px solid var(--accent2);color:var(--ink);border-radius:9px;padding:8px 11px;",
+    "font-weight:700;cursor:pointer}.cnp-prep-go:disabled{opacity:.5}",
+    ".cnp-prep-view{margin-top:9px;padding:10px;border:1px solid var(--line);border-radius:9px;",
+    "background:var(--panel)}.cnp-prep-view[hidden]{display:none}",
+    ".cnp-prep-state{font-size:10px;text-transform:uppercase;letter-spacing:.55px;",
+    "color:var(--accent);font-weight:800}.cnp-prep-meta{font-size:10.5px;color:var(--muted);margin-top:3px}",
+    ".cnp-prep-section{margin-top:9px}.cnp-prep-section h4{font-size:11px;margin:0 0 3px;",
+    "color:#b9dcef;text-transform:uppercase;letter-spacing:.4px}.cnp-prep-section p{margin:0}",
+    ".cnp-prep-section ul{margin:2px 0 0;padding-left:18px}",
     ".cnp-thread{flex:1;overflow-y:auto;padding:14px}",
     ".cnp-msg{margin:10px 0;display:flex}.cnp-msg.cnp-u{justify-content:flex-end}",
     ".cnp-b{max-width:88%;padding:10px 13px;border-radius:12px;background:var(--panel);",
@@ -386,8 +397,9 @@
       clientId: null, history: null, persona: "patient", generation: 0,
       accessGranted: false, localFixture: false,
       recordReady: false, contextSnapshot: null, recordHeaders: null,
+      sessionPrepAvailable: false, prepBusy: false,
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
-      recordController: null, chatController: null,
+      recordController: null, chatController: null, prepController: null,
       retryAttempt: null,
     };
     var ownedTips = [];
@@ -408,6 +420,8 @@
       '    <div class="cnp-sub">Named beta · access required</div>' +
       '    <div class="cnp-sandbox" hidden></div></div>' +
       '    <button class="cnp-x" title="Close">×</button></div>' +
+      '  <div class="cnp-prep" hidden><button class="cnp-prep-go" type="button">Open Session Prep</button>' +
+      '    <div class="cnp-prep-view" role="status" aria-live="polite" hidden></div></div>' +
       '  <div class="cnp-thread"></div>' +
       '  <div class="cnp-chips"></div>' +
       '  <div class="cnp-foot"><div class="cnp-row">' +
@@ -427,7 +441,9 @@
         thread = root.querySelector(".cnp-thread"), chips = root.querySelector(".cnp-chips"),
         input = root.querySelector(".cnp-in"), send = root.querySelector(".cnp-send"),
         fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox"),
-        sub = root.querySelector(".cnp-sub");
+        sub = root.querySelector(".cnp-sub"), prep = root.querySelector(".cnp-prep"),
+        prepGo = root.querySelector(".cnp-prep-go"),
+        prepView = root.querySelector(".cnp-prep-view");
 
     function bubble(cls) {
       var w = document.createElement("div"); w.className = "cnp-msg " + (cls === "u" ? "cnp-u" : "");
@@ -447,6 +463,14 @@
     function clearOwnedTips() {
       ownedTips.forEach(function (tip) { tip.remove(); });
       ownedTips.length = 0;
+    }
+
+    function clearSessionPrep() {
+      abort(state.prepController);
+      state.prepController = null;
+      state.prepBusy = false;
+      prepView.innerHTML = "";
+      prepView.hidden = true;
     }
 
     function listen(target, event, handler, scope) {
@@ -474,10 +498,12 @@
     }
 
     function syncControls() {
-      var disabled = state.destroyed || state.busy || state.switching ||
+      var disabled = state.destroyed || state.busy || state.prepBusy || state.switching ||
         !state.accessGranted || !state.recordReady || state.clientId === null;
       input.disabled = disabled; fmt.disabled = disabled || state.localFixture;
       send.disabled = disabled;
+      prep.hidden = !state.sessionPrepAvailable;
+      prepGo.disabled = disabled || state.prepBusy;
     }
 
     function setNamedBetaAccess(granted) {
@@ -503,10 +529,12 @@
       state.welcomeRenderGeneration = null;
       state.clientId = null; state.history = null; state.persona = "patient";
       state.localFixture = false;
+      state.sessionPrepAvailable = false;
       input.readOnly = false;
       state.recordReady = false; state.contextSnapshot = null;
       state.recordHeaders = null; state.retryAttempt = null;
       state.busy = false; state.switching = false;
+      clearSessionPrep();
       clearEventHandlers("record"); clearOwnedTips();
       input.value = ""; input.style.height = "auto";
       thread.innerHTML = ""; chips.innerHTML = "";
@@ -597,12 +625,15 @@
     function applyWelcomeUX(w) {
       state.persona = w.persona === "provider" ? "provider" : "patient";
       state.localFixture = w.walkthrough_mode === "local_synthetic" && service.loopback;
+      state.sessionPrepAvailable = state.persona === "provider" &&
+        (w.paths || []).some(function (path) { return path.intent === "session_prep"; });
       input.readOnly = state.localFixture;
       if (state.localFixture) fmt.value = "chat";
       sub.textContent = state.localFixture ? "Local synthetic walkthrough" : state.persona === "provider"
         ? "Faithful clinical assistant" : "Faithful health assistant";
       input.placeholder = state.localFixture ? "Use a synthetic guided prompt…" : state.persona === "provider"
         ? "Ask about the open record…" : "Ask a health or values question…";
+      syncControls();
     }
 
     function applyEnvironmentLabel(w) {
@@ -647,6 +678,9 @@
         (recordId.length < 1 || recordId.length > 128);
       if (invalidRecordId) recordId = null;
       var generation = ++state.generation;
+      // Synchronously remove every prior-scope Session Prep byte before any
+      // authentication, host-context, welcome, or history request begins.
+      clearSessionPrep();
       abort(state.chatController); abort(state.recordController);
       abort(state.welcomeController);
       state.chatController = null;
@@ -655,6 +689,7 @@
       state.clientId = recordId;
       state.history = null;
       state.localFixture = false;
+      state.sessionPrepAvailable = false;
       state.recordReady = false;
       state.contextSnapshot = null;
       state.recordHeaders = null;
@@ -764,6 +799,10 @@
         d.textContent = w.disclaimer; b.appendChild(d);
         chips.innerHTML = "";
         (w.paths || []).forEach(function (p) {
+          if (p.intent === "session_prep") {
+            prepGo.textContent = p.label;
+            return;
+          }
           var c = document.createElement("button"); c.className = "cnp-chip"; c.textContent = p.label;
           c.setAttribute("type", "button");
           c.onclick = function () {
@@ -909,6 +948,298 @@
         }
       } catch (_error) {}
       return null;
+    }
+
+    function validPrepTextList(value, minimum) {
+      return Array.isArray(value) && value.length >= minimum && value.length <= 8 &&
+        value.every(function (item) {
+          return typeof item === "string" && item.length >= 1 && item.length <= 1000;
+        });
+    }
+
+    function governedSessionPrep(value) {
+      var keys = [
+        "client_turn_id", "state", "freshness", "current_through", "source_count",
+        "prepared_brief", "retry_after_seconds", "reason_code",
+      ];
+      if (!closedObject(value, keys) || typeof value.client_turn_id !== "string" ||
+          !UUID_V4.test(value.client_turn_id) ||
+          ["ready", "refreshing", "pending", "unavailable"].indexOf(value.state) < 0 ||
+          !Number.isInteger(value.source_count) || value.source_count < 0 ||
+          value.source_count > 6) return null;
+      var content = value.state === "ready" || value.state === "refreshing";
+      if (!content) {
+        if (value.freshness !== "none" || value.current_through !== null ||
+            value.source_count !== 0 || value.prepared_brief !== null) return null;
+        if (value.state === "pending") {
+          if (value.reason_code !== "generation_pending" ||
+              !Number.isInteger(value.retry_after_seconds) ||
+              value.retry_after_seconds < 1 || value.retry_after_seconds > 300) return null;
+        } else if (value.retry_after_seconds !== null ||
+                   ["no_eligible_sources", "context_not_available"].indexOf(value.reason_code) < 0) {
+          return null;
+        }
+        return value;
+      }
+      if (typeof value.current_through !== "string" ||
+          !/(?:Z|[+-]\d{2}:\d{2})$/.test(value.current_through) ||
+          isNaN(Date.parse(value.current_through)) || value.source_count < 1) return null;
+      if (value.state === "ready" &&
+          (value.freshness !== "current" || value.retry_after_seconds !== null ||
+           value.reason_code !== null)) return null;
+      if (value.state === "refreshing" &&
+          (value.freshness !== "stale" || value.reason_code !== "refresh_in_progress" ||
+           !Number.isInteger(value.retry_after_seconds) ||
+           value.retry_after_seconds < 1 || value.retry_after_seconds > 300)) return null;
+      var brief = value.prepared_brief;
+      if (!closedObject(brief, [
+        "recap", "trajectory_and_material_changes", "talking_points",
+        "open_threads", "cautions", "suggested_outline", "patient_reported",
+      ]) || typeof brief.recap !== "string" || brief.recap.length < 1 ||
+          brief.recap.length > 4000 ||
+          !validPrepTextList(brief.trajectory_and_material_changes, 0) ||
+          !validPrepTextList(brief.talking_points, 1) ||
+          !validPrepTextList(brief.open_threads, 0) ||
+          !validPrepTextList(brief.cautions, 0) ||
+          !validPrepTextList(brief.suggested_outline, 1)) return null;
+      if (brief.patient_reported !== null &&
+          (!closedObject(brief.patient_reported, ["label", "summary"]) ||
+           brief.patient_reported.label !== "Patient-reported Visit Prep" ||
+           typeof brief.patient_reported.summary !== "string" ||
+           brief.patient_reported.summary.length < 1 ||
+           brief.patient_reported.summary.length > 2000)) return null;
+      return value;
+    }
+
+    function prepSection(title, values) {
+      if (!values.length) return;
+      var section = document.createElement("div"); section.className = "cnp-prep-section";
+      var heading = document.createElement("h4"); heading.textContent = title;
+      section.appendChild(heading);
+      if (values.length === 1) {
+        var paragraph = document.createElement("p"); paragraph.textContent = values[0];
+        section.appendChild(paragraph);
+      } else {
+        var list = document.createElement("ul");
+        values.forEach(function (value) {
+          var item = document.createElement("li"); item.textContent = value;
+          list.appendChild(item);
+        });
+        section.appendChild(list);
+      }
+      prepView.appendChild(section);
+    }
+
+    function renderSessionPrep(value, recordId, generation) {
+      if (!currentGeneration(generation) || state.clientId !== recordId) return;
+      prepView.innerHTML = "";
+      prepView.hidden = false;
+      var stateLabel = document.createElement("div"); stateLabel.className = "cnp-prep-state";
+      stateLabel.textContent = value.state === "ready" ? "Session Prep ready" :
+        value.state === "refreshing" ? "Session Prep refreshing" :
+        value.state === "pending" ? "Session Prep pending" : "Session Prep unavailable";
+      prepView.appendChild(stateLabel);
+      if (value.state === "pending" || value.state === "unavailable") {
+        var empty = document.createElement("p");
+        empty.textContent = value.state === "pending"
+          ? "The prepared brief is still being generated. No clinical content is available yet."
+          : value.reason_code === "no_eligible_sources"
+            ? "No eligible finalized notes are available for this encounter."
+            : "Session Prep is not available for this encounter.";
+        prepView.appendChild(empty);
+        if (value.state === "pending") {
+          var check = document.createElement("button"); check.className = "cnp-retry";
+          check.textContent = "Check again";
+          check.onclick = function () {
+            if (currentGeneration(generation) && state.clientId === recordId)
+              return requestSessionPrep();
+          };
+          prepView.appendChild(check);
+        }
+        return;
+      }
+      var meta = document.createElement("div"); meta.className = "cnp-prep-meta";
+      meta.textContent = "Current through " + fdate(value.current_through) + " · " +
+        value.source_count + (value.source_count === 1 ? " source" : " sources");
+      prepView.appendChild(meta);
+      if (value.state === "refreshing") {
+        var stale = document.createElement("p");
+        stale.textContent = "This still-authorized brief is stale while Core updates it.";
+        prepView.appendChild(stale);
+      }
+      var brief = value.prepared_brief;
+      prepSection("Recap", [brief.recap]);
+      prepSection("Trajectory and material changes", brief.trajectory_and_material_changes);
+      prepSection("Talking points", brief.talking_points);
+      prepSection("Open threads", brief.open_threads);
+      prepSection("Cautions", brief.cautions);
+      prepSection("Suggested outline", brief.suggested_outline);
+      if (brief.patient_reported)
+        prepSection(brief.patient_reported.label, [brief.patient_reported.summary]);
+      if (value.state === "refreshing") {
+        var refresh = document.createElement("button"); refresh.className = "cnp-retry";
+        refresh.textContent = "Refresh Session Prep";
+        refresh.onclick = function () {
+          if (currentGeneration(generation) && state.clientId === recordId)
+            return requestSessionPrep();
+        };
+        prepView.appendChild(refresh);
+      }
+    }
+
+    function paintPrepFailure(attempt, message, allowRetry) {
+      prepView.innerHTML = "";
+      prepView.hidden = false;
+      var label = document.createElement("div"); label.className = "cnp-prep-state";
+      label.textContent = "Session Prep unavailable"; prepView.appendChild(label);
+      var text = document.createElement("p"); text.textContent = message;
+      prepView.appendChild(text);
+      if (!allowRetry) return;
+      var retry = document.createElement("button"); retry.className = "cnp-retry";
+      retry.textContent = "Retry this exact Session Prep request";
+      retry.onclick = function () {
+        if (state.prepBusy || state.switching || state.destroyed ||
+            !currentGeneration(attempt.generation)) return;
+        return runSessionPrepAttempt(attempt);
+      };
+      prepView.appendChild(retry);
+    }
+
+    async function prepHeadersForAttempt(attempt) {
+      var headers = attempt.initialHeaders;
+      if (headers) {
+        attempt.initialHeaders = null;
+      } else {
+        headers = await freshBearerHeaders();
+        if (!currentGeneration(attempt.generation))
+          throw new DOMException("stale", "AbortError");
+        var refreshed = governedContext(await opts.getContext(), attempt.recordId);
+        if (!currentGeneration(attempt.generation))
+          throw new DOMException("stale", "AbortError");
+        if (!refreshed || refreshed.context_snapshot_ref !== attempt.contextSnapshotRef) {
+          loadThreadFor(null);
+          throw new DOMException("record mismatch", "AbortError");
+        }
+      }
+      headers = Object.assign({}, headers);
+      headers["content-type"] = "application/json";
+      headers["x-cosmaneura-client-turn-id"] = attempt.clientTurnId;
+      return headers;
+    }
+
+    async function runSessionPrepAttempt(attempt) {
+      if (!currentGeneration(attempt.generation) || state.switching) return;
+      state.prepBusy = true; syncControls();
+      prepView.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
+      prepView.hidden = false;
+      var controller = new AbortController(); state.prepController = controller;
+      try {
+        var headers = await prepHeadersForAttempt(attempt);
+        if (!currentGeneration(attempt.generation)) return;
+        var response = await fetch(attempt.url, {
+          method: "POST", headers: headers, body: attempt.body, signal: controller.signal,
+        });
+        if (!currentGeneration(attempt.generation) || state.prepController !== controller) return;
+        if (response.status === 401 || response.status === 403) {
+          lockNamedBeta();
+          return;
+        }
+        if (response.headers.get("x-cosmaneura-embed-version") !== embedVersion) {
+          paintPrepFailure(attempt, "The Session Prep integration could not be verified.", false);
+          return;
+        }
+        if (!response.ok) {
+          var problem = await safeProblem(response);
+          if (!currentGeneration(attempt.generation) || state.prepController !== controller) return;
+          if (response.status === 409 && problem &&
+              problem.code === "RECORD_CONTEXT_MISMATCH") {
+            loadThreadFor(null);
+            return;
+          }
+          var retryable = Boolean(problem && problem.retryable === true &&
+            (response.status === 429 || response.status === 503));
+          paintPrepFailure(
+            attempt,
+            retryable ? "Session Prep is temporarily unavailable."
+              : "Session Prep could not be loaded for this encounter.",
+            retryable
+          );
+          return;
+        }
+        var value = governedSessionPrep(await response.json());
+        if (!currentGeneration(attempt.generation) || state.prepController !== controller) return;
+        if (!value || value.client_turn_id !== attempt.clientTurnId) {
+          paintPrepFailure(attempt, "The Session Prep response could not be verified.", false);
+          return;
+        }
+        renderSessionPrep(value, attempt.recordId, attempt.generation);
+      } catch (error) {
+        if (currentGeneration(attempt.generation) && error.authenticationUnavailable) {
+          lockNamedBeta();
+        } else if (currentGeneration(attempt.generation) && error.name !== "AbortError") {
+          paintPrepFailure(
+            attempt,
+            error instanceof TypeError ? "The Session Prep connection was interrupted."
+              : "The Session Prep request could not be verified.",
+            error instanceof TypeError
+          );
+        }
+      } finally {
+        if (currentGeneration(attempt.generation) && state.prepController === controller) {
+          state.prepController = null; state.prepBusy = false; syncControls();
+        }
+      }
+    }
+
+    async function requestSessionPrep() {
+      if (state.busy || state.prepBusy || state.switching || state.destroyed ||
+          !state.sessionPrepAvailable || !state.recordReady || state.clientId === null) return;
+      var generation = state.generation;
+      // A new action never retains a previous brief while authority and the
+      // encounter-scoped comparison handle are being re-evaluated.
+      clearSessionPrep();
+      state.prepBusy = true; syncControls();
+      try {
+        var headers = await freshBearerHeaders();
+        if (!currentGeneration(generation)) return;
+        var recordId = state.clientId;
+        var context = governedContext(await opts.getContext(), recordId);
+        if (!currentGeneration(generation)) return;
+        if (!context || !context.context_snapshot_ref) {
+          loadThreadFor(null);
+          return;
+        }
+        if (!state.contextSnapshot ||
+            state.contextSnapshot.context_snapshot_ref !== context.context_snapshot_ref) {
+          loadThreadFor(recordId);
+          return;
+        }
+        var clientTurnId = freshClientTurnId();
+        var body = JSON.stringify({
+          client_turn_id: clientTurnId,
+          context_snapshot_ref: context.context_snapshot_ref,
+        });
+        var attempt = {
+          url: url + "/session-prep", initialHeaders: headers, body: body,
+          clientTurnId: clientTurnId, contextSnapshotRef: context.context_snapshot_ref,
+          recordId: recordId, generation: generation,
+        };
+        await runSessionPrepAttempt(attempt);
+      } catch (error) {
+        if (currentGeneration(generation) && error.authenticationUnavailable) {
+          lockNamedBeta();
+        } else if (currentGeneration(generation) && error.name !== "AbortError") {
+          paintPrepFailure(
+            { generation: generation },
+            "Couldn’t initialize Session Prep for this encounter.",
+            false
+          );
+        }
+      } finally {
+        if (currentGeneration(generation) && state.prepController === null) {
+          state.prepBusy = false; syncControls();
+        }
+      }
     }
 
     async function headersForAttempt(attempt) {
@@ -1145,6 +1476,7 @@
       if (state.destroyed) return;
       state.destroyed = true;
       state.generation += 1;
+      clearSessionPrep();
       abort(state.chatController); abort(state.recordController);
       abort(state.welcomeController);
       state.chatController = null; state.recordController = null;
@@ -1152,6 +1484,7 @@
       state.history = null; state.clientId = null; state.welcomePromise = null;
       state.accessGranted = false;
       state.recordReady = false; state.contextSnapshot = null; state.recordHeaders = null;
+      state.sessionPrepAvailable = false;
       state.retryAttempt = null;
       if (savedPad !== null) {
         document.body.style.paddingRight = savedPad;
@@ -1165,6 +1498,7 @@
 
     fab.onclick = function () { setOpen(!state.open); };
     root.querySelector(".cnp-x").onclick = function () { setOpen(false); };
+    prepGo.onclick = requestSessionPrep;
     send.onclick = ask;
     listen(input, "keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
