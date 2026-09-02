@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, TypeAdapter, field_validator
 from pydantic import model_validator
 
 
@@ -36,6 +36,8 @@ ProvenanceReason = Literal[
 MAX_SOURCES = 6
 MAX_PROVENANCE = 8
 STALE_WINDOW = timedelta(minutes=15)
+Version = Annotated[int, Field(strict=True, ge=1, le=2_147_483_647)]
+RetrySeconds = Annotated[int, Field(strict=True, ge=1, le=300)]
 
 
 class ClosedModel(BaseModel):
@@ -68,7 +70,9 @@ def _aware(value: Optional[datetime]) -> Optional[datetime]:
 
 
 def _timestamp_wire(value: object) -> object:
-    if isinstance(value, str) and not 20 <= len(value) <= 35:
+    if value is not None and (
+        not isinstance(value, str) or not 20 <= len(value) <= 35
+    ):
         raise ValueError("timestamp must contain 20 to 35 characters")
     return value
 
@@ -81,9 +85,9 @@ def _unique(values: list[str]) -> list[str]:
 
 class SessionPrepProvenance(ClosedModel):
     source_class: SourceClass
-    included: bool
+    included: StrictBool
     source_ref: Optional[OpaqueRef]
-    source_version: Optional[int] = Field(ge=1, le=2_147_483_647)
+    source_version: Optional[Version]
     source_at: Optional[datetime]
     author_class: Optional[AuthorClass]
     reason_code: ProvenanceReason
@@ -177,7 +181,7 @@ class SessionPrepSupportingContext(ClosedModel):
     source_ref: OpaqueRef
     source_class: SourceClass
     author_class: AuthorClass
-    source_version: int = Field(ge=1, le=2_147_483_647)
+    source_version: Version
     source_at: datetime
     summary: str = Field(min_length=1, max_length=2_000)
     excerpts: list[SessionPrepSupportingExcerpt] = Field(min_length=1, max_length=8)
@@ -192,18 +196,18 @@ class SessionPrepContentResult(ClosedModel):
     completeness: Literal["complete", "partial"]
     current_through: datetime
     snapshot_ref: OpaqueRef
-    snapshot_version: int = Field(ge=1, le=2_147_483_647)
+    snapshot_version: Version
     snapshot_generated_at: datetime
     snapshot_supersedes_ref: Optional[OpaqueRef]
     source_version_digest: Digest
     brief_ref: OpaqueRef
-    brief_version: int = Field(ge=1, le=2_147_483_647)
+    brief_version: Version
     brief_generated_at: datetime
     brief_supersedes_ref: Optional[OpaqueRef]
     brief_generator_version: LineageVersion
     brief_prompt_version: LineageVersion
     brief_model_profile: Optional[LineageVersion]
-    source_count: int = Field(ge=1, le=MAX_SOURCES)
+    source_count: Annotated[int, Field(strict=True, ge=1, le=MAX_SOURCES)]
     provenance: list[SessionPrepProvenance] = Field(min_length=1, max_length=MAX_PROVENANCE)
     prepared_brief: SessionPrepPreparedBrief
     supporting_context: Optional[list[SessionPrepSupportingContext]] = Field(
@@ -246,9 +250,15 @@ class SessionPrepContentResult(ClosedModel):
             class_items = [x for x in self.provenance if x.source_class == source_class]
             if sum(x.included for x in class_items) > maximum:
                 raise ValueError("included provenance exceeds provider_v1 class bounds")
-            excluded = sum(not x.included for x in class_items)
+            excluded_items = [x for x in class_items if not x.included]
+            excluded = len(excluded_items)
             if excluded > 1 or (not any(x.included for x in class_items) and excluded != 1):
                 raise ValueError("invalid class-level provenance disposition")
+            if any(x.included for x in class_items) and any(
+                x.reason_code in {"no_eligible_source", "source_not_enabled"}
+                for x in excluded_items
+            ):
+                raise ValueError("included provenance contradicts class disposition")
 
         partial = any(
             item.reason_code in {"selection_limit", "source_temporarily_unavailable"}
@@ -297,7 +307,7 @@ class SessionPrepReadyResult(SessionPrepContentResult):
 class SessionPrepRefreshingResult(SessionPrepContentResult):
     state: Literal["refreshing"]
     freshness: Literal["stale"]
-    retry_after_seconds: int = Field(ge=1, le=300)
+    retry_after_seconds: RetrySeconds
     reason_code: Literal["refresh_in_progress"]
 
 
@@ -319,7 +329,7 @@ class SessionPrepEmptyResult(ClosedModel):
     brief_generator_version: None
     brief_prompt_version: None
     brief_model_profile: None
-    source_count: Literal[0]
+    source_count: Annotated[int, Field(strict=True, ge=0, le=0)]
     provenance: list[SessionPrepProvenance] = Field(max_length=0)
     prepared_brief: None
     supporting_context: None
@@ -327,7 +337,7 @@ class SessionPrepEmptyResult(ClosedModel):
 
 class SessionPrepPendingResult(SessionPrepEmptyResult):
     state: Literal["pending"]
-    retry_after_seconds: int = Field(ge=1, le=300)
+    retry_after_seconds: RetrySeconds
     reason_code: Literal["generation_pending"]
 
 
@@ -347,8 +357,30 @@ SessionPrepContextReadResult = Annotated[
 _RESULT_ADAPTER = TypeAdapter(SessionPrepContextReadResult)
 
 
+class SessionPrepContextReadResponse(ClosedModel):
+    """Closed successful Agent API envelope for the exact Session Prep tool."""
+
+    tool_call_ref: OpaqueRef
+    tool_name: Literal["session-prep.context.read"]
+    tool_version: Literal["1.0.0"]
+    status: Literal["completed"]
+    approval_ref: None
+    access_intent_ref: None
+    access_outcome_ref: None
+    result_classification: Literal["phi_possible"]
+    result: SessionPrepContextReadResult
+    recorded_at: datetime
+
+    _wire_recorded = field_validator("recorded_at", mode="before")(_timestamp_wire)
+    _aware_recorded = field_validator("recorded_at")(_aware)
+
+
 def parse_session_prep_result(value: Any) -> SessionPrepContextReadResult:
     return _RESULT_ADAPTER.validate_python(value)
+
+
+def parse_session_prep_response(value: Any) -> SessionPrepContextReadResponse:
+    return SessionPrepContextReadResponse.model_validate(value)
 
 
 def validate_session_prep_exchange(
@@ -366,7 +398,7 @@ def validate_session_prep_exchange(
             raise ValueError("brief_generated_at cannot be in future")
         if (
             isinstance(result, SessionPrepRefreshingResult)
-            and result.brief_generated_at + STALE_WINDOW <= observed_at
+            and result.brief_generated_at + STALE_WINDOW < observed_at
         ):
             raise ValueError("refreshing result stale window has expired")
     return result
