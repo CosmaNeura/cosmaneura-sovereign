@@ -20,7 +20,7 @@
 <body>
 <header><div class="mark">S</div><div><strong>Sovereign Session Prep</strong><div class="sub">Synthetic beta vertical slice · local loopback</div></div></header>
 <main>
-  <span class="safe">No network · no secrets · no real PHI</span>
+  <span class="safe">No external network · no secrets · no real PHI</span>
   <div class="eyebrow" style="margin-top:20px">Tomorrow’s synthetic walkthrough</div>
   <h1>One prepared brief, through the real governed path.</h1>
   <p>The panel calls Sovereign’s real <code>/session-prep</code> endpoint. Sovereign records a canonical provider action, invokes the bounded Core v1 client, validates the typed response, and directly projects only approved brief text.</p>
@@ -91,8 +91,9 @@
   }
   buttons.forEach(function(button){button.onclick=function(){return run(button.dataset.mode);};});
   (async function(){
-    panel.open();var ready=await panel.setRecord(recordId);
+    var ready=await panel.setRecord(recordId);
     if(ready===null)throw new Error("synthetic record unavailable");
+    panel.open();
     await run("ready");
   })().catch(function(){status.textContent="Could not initialize the synthetic demo.";busy(false);});
   window.addEventListener("pagehide",function(){panel.destroy();});
