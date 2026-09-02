@@ -40,7 +40,8 @@ class FakeElement {
     this.children = [];
     if (this.className === "cnp-root" && value.includes("cnp-rail")) {
       const names = ["cnp-gate", "cnp-fab", "cnp-rail", "cnp-thread", "cnp-chips", "cnp-in",
-                     "cnp-send", "cnp-fmt", "cnp-sandbox", "cnp-sub", "cnp-x"];
+                     "cnp-send", "cnp-fmt", "cnp-sandbox", "cnp-sub", "cnp-x",
+                     "cnp-prep", "cnp-prep-go", "cnp-prep-view"];
       this._mountNodes = {};
       names.forEach(name => {
         const node = new FakeElement(
@@ -144,6 +145,10 @@ async function main() {
   let historyLoads = 0;
   let chatMode = "service-retry";
   const chatRequests = [];
+  let sessionPrepAdvertised = false;
+  let sessionPrepMode = "ready";
+  let releaseSessionPrep = null;
+  const sessionPrepRequests = [];
   let humanContacts = 0;
   let historyNotifications = 0;
 
@@ -159,10 +164,57 @@ async function main() {
         partner_name: "Test",
         persona: welcomeMode,
         greeting: "Hello",
-        paths: [],
+        paths: sessionPrepAdvertised ? [{
+          label: "Open Session Prep", message: "Open Session Prep", intent: "session_prep",
+        }] : [],
         disclaimer: "Standard disclaimer",
         emergency_note: "Call 911 in an emergency.",
         walkthrough_mode: "local_synthetic",
+      });
+    }
+    if (url.endsWith("/session-prep")) {
+      sessionPrepRequests.push({
+        body: options.body,
+        authorization: options.headers.authorization,
+        turn: options.headers["x-cosmaneura-client-turn-id"],
+      });
+      const mode = sessionPrepMode;
+      if (mode === "late-ready")
+        await new Promise(resolve => { releaseSessionPrep = resolve; });
+      if (mode === "service-retry") {
+        sessionPrepMode = "ready";
+        return response(503, {
+          code: "SERVICE_UNAVAILABLE", retryable: true,
+        });
+      }
+      if (mode === "forbidden") {
+        return response(403, { code: "CAPABILITY_DENIED", retryable: false });
+      }
+      const requestBody = JSON.parse(options.body);
+      const resultMode = mode === "late-ready" ? "ready" : mode;
+      const content = resultMode === "ready" || resultMode === "refreshing";
+      return response(200, {
+        client_turn_id: requestBody.client_turn_id,
+        state: resultMode,
+        freshness: resultMode === "ready" ? "current" :
+          resultMode === "refreshing" ? "stale" : "none",
+        current_through: content ? "2026-09-02T12:00:00Z" : null,
+        source_count: content ? 1 : 0,
+        prepared_brief: content ? {
+          recap: resultMode === "refreshing"
+            ? "Only the returned stale brief is visible."
+            : "Direct prepared-brief content.",
+          trajectory_and_material_changes: [],
+          talking_points: ["Confirm interval changes."],
+          open_threads: [], cautions: [],
+          suggested_outline: ["Review the prior plan."],
+          patient_reported: null,
+        } : null,
+        retry_after_seconds: resultMode === "refreshing" || resultMode === "pending"
+          ? 5 : null,
+        reason_code: resultMode === "refreshing" ? "refresh_in_progress" :
+          resultMode === "pending" ? "generation_pending" :
+          resultMode === "unavailable" ? "context_not_available" : null,
       });
     }
     assert(url.endsWith("/chat"), "unexpected URL");
@@ -416,6 +468,150 @@ async function main() {
   assert(revoked.root.querySelector(".cnp-thread").children.length === 0,
          "403 left governed history visible");
   revoked.destroy();
+
+  // Session Prep is advertised only by a server-filtered governed path. Its
+  // browser request contains no record, patient, note, source, or artifact data.
+  sessionPrepAdvertised = true;
+  sessionPrepMode = "ready";
+  currentRecord = "record_prep_a";
+  let currentContextRef = "context_synthetic_001";
+  const prepController = window.CosmaNeuraPanel.mount({
+    sovereignUrl: "https://sovereign.example",
+    embedVersion: "1.0",
+    getAuthToken: async () => {
+      tokenSequence += 1;
+      return `opaque-token-prep-${String(tokenSequence).padStart(2, "0")}-abcdefghijkl`;
+    },
+    getContext: async () => ({
+      clientId: currentRecord,
+      thread_ref: `thread_${currentRecord}`,
+      context_snapshot_ref: currentContextRef,
+      digest_ref: "digest_must_not_cross_prep",
+      terminology: "client",
+      care_model: "must not cross",
+    }),
+    onHumanContact: async () => {},
+    loadHistory: async () => null,
+  });
+  await prepController.setRecord(currentRecord);
+  const prepGo = prepController.root.querySelector(".cnp-prep-go");
+  const prepView = prepController.root.querySelector(".cnp-prep-view");
+  assert(prepController.root.querySelector(".cnp-prep").hidden === false,
+         "governed Session Prep path did not reveal the action");
+  await prepGo.onclick();
+  const firstPrep = JSON.parse(sessionPrepRequests[0].body);
+  assert(Object.keys(firstPrep).sort().join(",") ===
+         "client_turn_id,context_snapshot_ref",
+         "Session Prep request carried extra browser data");
+  assert(firstPrep.context_snapshot_ref === "context_synthetic_001",
+         "Session Prep request did not use the current comparison handle");
+  const firstPrepWire = sessionPrepRequests[0].body;
+  ["record_prep_a", "digest_must_not_cross_prep", "care model",
+   "patient", "note", "source_ref", "brief_ref"].forEach(value => {
+    assert(!firstPrepWire.includes(value), "Session Prep leaked browser context: " + value);
+  });
+  assert(find(prepView, node => node.textContent === "Session Prep ready"),
+         "ready state was not rendered");
+  assert(find(prepView, node => node.textContent === "Direct prepared-brief content."),
+         "prepared brief was not projected directly");
+  assert(find(prepView, node => node.textContent.includes("1 source")),
+         "human-readable source summary was not rendered");
+  let renderedPrepSurface = "";
+  walk(prepController.root, node => {
+    renderedPrepSurface += " " + node.textContent + " " + node.innerHTML;
+  });
+  ["context_synthetic_001", "record_prep_a", "digest_must_not_cross_prep",
+   "opaque-token-prep", "source_ref", "brief_ref"].forEach(value => {
+    assert(!renderedPrepSurface.includes(value), "Session Prep leaked into the DOM: " + value);
+  });
+  ["localStorage", "sessionStorage", "indexedDB", "caches.open"].forEach(api => {
+    assert(!source.includes(api), "Session Prep uses browser persistence: " + api);
+  });
+
+  // A pending result replaces the old content rather than retaining it.
+  sessionPrepMode = "pending";
+  await prepGo.onclick();
+  assert(find(prepView, node => node.textContent === "Session Prep pending"),
+         "pending state was not rendered");
+  assert(!find(prepView, node => node.textContent === "Direct prepared-brief content."),
+         "pending state retained prior clinical content");
+
+  // A refreshing result may render only the stale brief returned by that call.
+  sessionPrepMode = "refreshing";
+  await prepGo.onclick();
+  assert(find(prepView, node => node.textContent === "Session Prep refreshing"),
+         "refreshing state was not rendered");
+  assert(find(prepView, node => node.textContent === "Only the returned stale brief is visible."),
+         "refreshing did not render its returned stale brief");
+  assert(!find(prepView, node => node.textContent === "Direct prepared-brief content."),
+         "refreshing retained the preceding brief");
+
+  sessionPrepMode = "unavailable";
+  await prepGo.onclick();
+  assert(find(prepView, node => node.textContent === "Session Prep unavailable"),
+         "unavailable state was not rendered");
+  assert(!find(prepView, node => node.textContent === "Only the returned stale brief is visible."),
+         "unavailable retained stale clinical content");
+
+  // Browser transport retry preserves the exact logical action and UUID while
+  // acquiring a fresh bearer and rechecking the same encounter handle.
+  sessionPrepMode = "service-retry";
+  const retryStart = sessionPrepRequests.length;
+  await prepGo.onclick();
+  const prepRetry = find(prepView, node =>
+    node.textContent === "Retry this exact Session Prep request");
+  assert(prepRetry, "retryable Session Prep error did not offer exact retry");
+  await prepRetry.onclick();
+  const retryRequests = sessionPrepRequests.slice(retryStart);
+  assert(retryRequests.length === 2, "Session Prep retry made an unexpected request count");
+  assert(retryRequests[0].body === retryRequests[1].body &&
+         retryRequests[0].turn === retryRequests[1].turn,
+         "Session Prep retry changed its body or client turn");
+  assert(retryRequests[0].authorization !== retryRequests[1].authorization,
+         "Session Prep retry did not acquire a fresh bearer");
+
+  // Even a noncooperative late response from record A cannot render after the
+  // synchronous A-to-B clear and generation change.
+  sessionPrepMode = "late-ready";
+  const lateRecordResponse = prepGo.onclick();
+  for (let i = 0; i < 5 && !releaseSessionPrep; i += 1) await Promise.resolve();
+  assert(releaseSessionPrep, "late record response was not held");
+  currentRecord = "record_prep_b";
+  currentContextRef = "context_synthetic_002";
+  const recordSwitch = prepController.setRecord(currentRecord);
+  assert(prepView.hidden === true && prepView.children.length === 0,
+         "record switch did not synchronously clear Session Prep");
+  releaseSessionPrep(); releaseSessionPrep = null;
+  await lateRecordResponse;
+  assert(!find(prepView, node => node.textContent === "Direct prepared-brief content."),
+         "late prior-record response repopulated Session Prep");
+  await recordSwitch;
+  sessionPrepMode = "ready";
+  await prepGo.onclick();
+  assert(find(prepView, node => node.textContent === "Direct prepared-brief content."),
+         "new record did not render its prepared brief");
+  sessionPrepMode = "late-ready";
+  const lateEncounterResponse = prepGo.onclick();
+  for (let i = 0; i < 5 && !releaseSessionPrep; i += 1) await Promise.resolve();
+  currentContextRef = "context_synthetic_003";
+  const encounterSwitch = prepController.setRecord(currentRecord);
+  assert(prepView.hidden === true && prepView.children.length === 0,
+         "encounter switch did not synchronously clear Session Prep");
+  releaseSessionPrep(); releaseSessionPrep = null;
+  await lateEncounterResponse;
+  assert(!find(prepView, node => node.textContent === "Direct prepared-brief content."),
+         "late prior-encounter response repopulated Session Prep");
+  await encounterSwitch;
+
+  // Revocation is terminal and clears every rendered byte rather than showing
+  // the previous authorized brief as fallback.
+  sessionPrepMode = "forbidden";
+  await prepGo.onclick();
+  assert(prepView.hidden === true && prepView.children.length === 0,
+         "revocation retained Session Prep content");
+  assert(prepController.root.querySelector(".cnp-gate").hidden === false,
+         "revocation did not restore the closed named-beta gate");
+  prepController.destroy();
 }
 
 main().catch(error => {

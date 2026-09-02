@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
 
@@ -254,6 +255,119 @@ class EmbedChatResponse(ChatResponse):
     """Successful v1 HTTP response; correlation is never optional on wire."""
 
     client_turn_id: uuid.UUID
+
+
+class SessionPrepRequest(ClosedWireModel):
+    """Minimal browser request for one explicit Session Prep UI action.
+
+    The browser supplies only correlation and the short-lived comparison handle
+    for its currently open encounter. Actor, tenant, patient, record, encounter,
+    capability, and source-turn selectors are deliberately absent.
+    """
+
+    client_turn_id: CanonicalClientTurnId
+    context_snapshot_ref: str = Field(
+        min_length=8,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9._~-]{8,160}$",
+    )
+
+
+class SessionPrepProjectedPatientReport(ClosedWireModel):
+    label: Literal["Patient-reported Visit Prep"]
+    summary: str = Field(min_length=1, max_length=2_000)
+
+
+class SessionPrepProjectedBrief(ClosedWireModel):
+    """Browser-safe direct projection with all opaque source refs removed."""
+
+    recap: str = Field(min_length=1, max_length=4_000)
+    trajectory_and_material_changes: list[str] = Field(max_length=8)
+    talking_points: list[str] = Field(min_length=1, max_length=8)
+    open_threads: list[str] = Field(max_length=8)
+    cautions: list[str] = Field(max_length=8)
+    suggested_outline: list[str] = Field(min_length=1, max_length=8)
+    patient_reported: Optional[SessionPrepProjectedPatientReport]
+
+    @field_validator(
+        "trajectory_and_material_changes",
+        "talking_points",
+        "open_threads",
+        "cautions",
+        "suggested_outline",
+    )
+    @classmethod
+    def _bounded_section_text(cls, values: list[str]) -> list[str]:
+        if any(not 1 <= len(value) <= 1_000 for value in values):
+            raise ValueError("invalid projected Session Prep section")
+        return values
+
+
+class SessionPrepResponse(ClosedWireModel):
+    """Closed, minimized browser projection of the four Core-owned states."""
+
+    client_turn_id: uuid.UUID
+    state: Literal["ready", "refreshing", "pending", "unavailable"]
+    freshness: Literal["current", "stale", "none"]
+    current_through: Optional[datetime]
+    source_count: int = Field(ge=0, le=6)
+    prepared_brief: Optional[SessionPrepProjectedBrief]
+    retry_after_seconds: Optional[int] = Field(default=None, ge=1, le=300)
+    reason_code: Optional[Literal[
+        "refresh_in_progress",
+        "generation_pending",
+        "no_eligible_sources",
+        "context_not_available",
+    ]]
+
+    @model_validator(mode="after")
+    def _state_is_closed_and_minimal(self) -> "SessionPrepResponse":
+        if self.state == "ready":
+            valid = (
+                self.freshness == "current"
+                and self.current_through is not None
+                and self.source_count >= 1
+                and self.prepared_brief is not None
+                and self.retry_after_seconds is None
+                and self.reason_code is None
+            )
+        elif self.state == "refreshing":
+            valid = (
+                self.freshness == "stale"
+                and self.current_through is not None
+                and self.source_count >= 1
+                and self.prepared_brief is not None
+                and self.retry_after_seconds is not None
+                and self.reason_code == "refresh_in_progress"
+            )
+        elif self.state == "pending":
+            valid = (
+                self.freshness == "none"
+                and self.current_through is None
+                and self.source_count == 0
+                and self.prepared_brief is None
+                and self.retry_after_seconds is not None
+                and self.reason_code == "generation_pending"
+            )
+        else:
+            valid = (
+                self.freshness == "none"
+                and self.current_through is None
+                and self.source_count == 0
+                and self.prepared_brief is None
+                and self.retry_after_seconds is None
+                and self.reason_code in {
+                    "no_eligible_sources", "context_not_available",
+                }
+            )
+        if not valid:
+            raise ValueError("invalid Session Prep browser state")
+        if self.current_through is not None and (
+            self.current_through.tzinfo is None
+            or self.current_through.utcoffset() is None
+        ):
+            raise ValueError("Session Prep timestamps must include an offset")
+        return self
 
 
 class CompassionateSafetyFallback(ClosedWireModel):
