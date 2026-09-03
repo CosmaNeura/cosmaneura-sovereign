@@ -189,13 +189,13 @@ def test_destroy_aborts_work_and_removes_record_tooltips():
 def test_browser_context_and_chat_exclude_the_server_owned_session_prep_ref():
     panel = _panel_source()
 
-    assert '"clientId", "thread_ref", "context_snapshot_ref", "digest_ref"' in panel
+    assert '"clientId", "thread_ref", "digest_ref", "terminology", "care_model"' in panel
     context_governor = panel[
         panel.index("function governedContext(value, recordId)"):
         panel.index("function governedChatMetadata(context, outputFormat)")
     ]
+    assert "context_snapshot_ref" not in context_governor
     assert '["thread_ref", "digest_ref"].forEach' in context_governor
-    assert 'clean["context_snapshot_ref"]' not in context_governor
     assert "meta[key] = context[key]" in panel
     chat_projection = panel[
         panel.index("function governedChatMetadata(context, outputFormat)"):
@@ -246,6 +246,12 @@ def test_v1_request_schema_is_closed_requires_turn_and_makes_persona_optional():
             client_turn_id=turn_id,
             message="synthetic",
             metadata={"note_template": "sentinel PHI"},
+        )
+    with pytest.raises(ValidationError):
+        EmbedChatRequest(
+            client_turn_id=turn_id,
+            message="synthetic",
+            metadata={"context_snapshot_ref": "context_synthetic_001"},
         )
     with pytest.raises(ValidationError):
         EmbedChatRequest(

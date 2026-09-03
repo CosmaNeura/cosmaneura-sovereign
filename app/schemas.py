@@ -98,11 +98,6 @@ class HostContextHints(ClosedWireModel):
     thread_ref: Optional[str] = Field(
         default=None, pattern=r"^[A-Za-z0-9._~-]{8,160}$", max_length=160,
     )
-    # Accepted temporarily for older non-panel callers, but the official panel
-    # never requests, retains, or projects this server-owned Session Prep ref.
-    context_snapshot_ref: Optional[str] = Field(
-        default=None, pattern=r"^[A-Za-z0-9._~-]{8,160}$", max_length=160,
-    )
     digest_ref: Optional[str] = Field(
         default=None, pattern=r"^[A-Za-z0-9._~-]{8,160}$", max_length=160,
     )
