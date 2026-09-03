@@ -33,6 +33,10 @@ RECEIPT_SCHEMA = "cosmaneura.session-prep.synthetic-ui-ux-evidence.v1"
 MAX_WORKSHEET_BYTES = 16 * 1024
 MAX_RECEIPT_BYTES = 16 * 1024
 MAX_VERIFIER_BYTES = 64 * 1024
+MAX_GIT_TREE_BYTES = 256 * 1024
+MAX_TRACKED_FILE_BYTES = 1024 * 1024
+MAX_TRACKED_TREE_BYTES = 8 * 1024 * 1024
+MAX_TRACKED_PATHS = 4096
 MAX_JSON_DEPTH = 8
 MAX_WORKSHEET_AGE = dt.timedelta(hours=24)
 SOURCE_COMMIT_TIME = dt.datetime(2026, 9, 3, 20, 3, 13, tzinfo=dt.UTC)
@@ -614,6 +618,101 @@ def _run_git(repo: Path, arguments: Sequence[str], maximum: int) -> bytes:
     return completed.stdout
 
 
+def _nul_records(raw: bytes) -> list[bytes]:
+    if not raw.endswith(b"\0"):
+        _fail("The demo checkout index is invalid")
+    records = raw[:-1].split(b"\0")
+    if (
+        not records
+        or len(records) > MAX_TRACKED_PATHS
+        or any(not item for item in records)
+    ):
+        _fail("The demo checkout index is invalid")
+    return records
+
+
+def _git_blob_oid(raw: bytes) -> bytes:
+    header = f"blob {len(raw)}\0".encode("ascii")
+    return hashlib.sha1(header + raw, usedforsecurity=False).hexdigest().encode("ascii")
+
+
+def _verify_tracked_worktree(top_level: Path) -> None:
+    object_format = _run_git(top_level, ["rev-parse", "--show-object-format"], 32)
+    if object_format != b"sha1\n":
+        _fail("The demo checkout object format is unsupported")
+
+    index_raw = _run_git(
+        top_level,
+        ["ls-files", "--stage", "-v", "-z"],
+        MAX_GIT_TREE_BYTES,
+    )
+    tree_raw = _run_git(
+        top_level,
+        ["ls-tree", "-r", "-z", "--full-tree", UI_SOURCE_COMMIT],
+        MAX_GIT_TREE_BYTES,
+    )
+
+    index: dict[bytes, tuple[bytes, bytes]] = {}
+    for record in _nul_records(index_raw):
+        try:
+            tag, remainder = record[:1], record[2:]
+            metadata, relative_raw = remainder.split(b"\t", 1)
+            mode, oid, stage = metadata.split(b" ")
+        except ValueError:
+            _fail("The demo checkout index is invalid")
+        if (
+            record[1:2] != b" "
+            or tag != b"H"
+            or stage != b"0"
+            or not relative_raw
+            or relative_raw in index
+        ):
+            _fail("The demo checkout has hidden or unsupported index state")
+        index[relative_raw] = (mode, oid)
+
+    expected: dict[bytes, tuple[bytes, bytes]] = {}
+    for record in _nul_records(tree_raw):
+        try:
+            metadata, relative_raw = record.split(b"\t", 1)
+            mode, object_type, oid = metadata.split(b" ")
+        except ValueError:
+            _fail("The pinned demo tree is invalid")
+        if object_type != b"blob" or not relative_raw or relative_raw in expected:
+            _fail("The pinned demo tree contains unsupported entries")
+        expected[relative_raw] = (mode, oid)
+
+    if index != expected:
+        _fail("The demo checkout index does not match the pinned tree")
+
+    total_bytes = 0
+    for relative_raw, (mode, oid) in expected.items():
+        relative = Path(os.fsdecode(relative_raw))
+        if relative.is_absolute() or ".." in relative.parts:
+            _fail("The pinned demo tree path is invalid")
+        candidate = top_level / relative
+        if mode in {b"100644", b"100755"}:
+            try:
+                if candidate.resolve(strict=True) != candidate.absolute():
+                    _fail("The demo checkout path is not canonical")
+            except OSError:
+                _fail("The demo checkout path could not be inspected")
+            raw = _read_bounded_regular(candidate, MAX_TRACKED_FILE_BYTES)
+        elif mode == b"120000":
+            try:
+                if not candidate.is_symlink():
+                    _fail("The demo checkout link does not match the pinned tree")
+                raw = os.fsencode(os.readlink(candidate))
+            except OSError:
+                _fail("The demo checkout link could not be inspected")
+            if len(raw) > MAX_TRACKED_FILE_BYTES:
+                _fail("The demo checkout link exceeds the maximum size")
+        else:
+            _fail("The pinned demo tree mode is unsupported")
+        total_bytes += len(raw)
+        if total_bytes > MAX_TRACKED_TREE_BYTES or _git_blob_oid(raw) != oid:
+            _fail("The demo checkout bytes do not match the pinned tree")
+
+
 def _verify_demo_checkout(repo: Path) -> Path:
     top_level_raw = _run_git(repo, ["rev-parse", "--show-toplevel"], 4 * 1024)
     try:
@@ -647,6 +746,7 @@ def _verify_demo_checkout(repo: Path) -> Path:
         _fail("The demo checkout is not detached")
     if status_output != b"":
         _fail("The demo checkout is not clean")
+    _verify_tracked_worktree(top_level)
     return top_level
 
 

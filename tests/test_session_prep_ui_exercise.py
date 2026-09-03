@@ -567,6 +567,67 @@ def test_demo_preflight_requires_exact_detached_clean_checkout(tmp_path: Path) -
         REAL_VERIFY_DEMO_CHECKOUT(demo_repo)
 
 
+@pytest.mark.parametrize("index_flag", ["--skip-worktree", "--assume-unchanged"])
+def test_demo_preflight_rejects_hidden_index_flags(
+    tmp_path: Path, index_flag: str
+) -> None:
+    demo_repo = _detached_demo_repo(tmp_path)
+    relative = "tools/session_prep_demo.html"
+    subprocess.run(
+        ["git", "-C", str(demo_repo), "update-index", index_flag, relative],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    (demo_repo / relative).write_text("concealed drift\n", encoding="utf-8")
+    status = subprocess.run(
+        ["git", "-C", str(demo_repo), "status", "--porcelain=v1"],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert status.stdout == b""
+    with pytest.raises(exercise.ExerciseError):
+        REAL_VERIFY_DEMO_CHECKOUT(demo_repo)
+
+
+def test_demo_preflight_byte_compares_when_status_and_index_tag_are_blind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    demo_repo = _detached_demo_repo(tmp_path)
+    relative = "tools/session_prep_demo.html"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(demo_repo),
+            "update-index",
+            "--assume-unchanged",
+            relative,
+        ],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    (demo_repo / relative).write_text("concealed drift\n", encoding="utf-8")
+    original_run_git = exercise._run_git
+
+    def conceal_index_tag(repo: Path, arguments: list[str], maximum: int) -> bytes:
+        raw = original_run_git(repo, arguments, maximum)
+        if arguments == ["ls-files", "--stage", "-v", "-z"]:
+            return b"\0".join(
+                (b"H" + record[1:] if record.startswith(b"h ") else record)
+                for record in raw.split(b"\0")
+            )
+        return raw
+
+    monkeypatch.setattr(exercise, "_run_git", conceal_index_tag)
+
+    with pytest.raises(exercise.ExerciseError):
+        REAL_VERIFY_DEMO_CHECKOUT(demo_repo)
+
+
 def test_demo_subdirectory_cannot_bypass_evidence_path_containment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

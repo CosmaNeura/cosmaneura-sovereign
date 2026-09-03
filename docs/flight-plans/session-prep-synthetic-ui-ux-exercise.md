@@ -52,9 +52,11 @@ synthetic fixture appears.
 
 From the newer helper checkout, initialize a new private worksheet with the
 actual closed browser metadata. The helper first proves that `--demo-repo` is
-the clean detached pinned commit/tree. It then creates a new mode-`0600` file,
-refuses to overwrite any path, generates independent fresh `uxrun_` and
-`uxchallenge_` values, and leaves all 44 manual checks at `not-run`:
+the clean detached pinned commit/tree, rejects hidden index flags such as
+`skip-worktree` and `assume-unchanged`, and byte-compares every tracked file
+with the pinned tree. It then creates a new mode-`0600` file, refuses to
+overwrite any path, generates independent fresh `uxrun_` and `uxchallenge_`
+values, and leaves all 44 manual checks at `not-run`:
 
 ```bash
 umask 077
