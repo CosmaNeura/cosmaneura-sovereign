@@ -75,6 +75,7 @@
       resetButton=document.getElementById("authority-reset");
   var mountToken="synthetic-session-prep-mount-token",activeMountToken=mountToken,
       syntheticRecords=["synthetic_session_prep_record_a","synthetic_session_prep_record_b"],recordIndex=0,
+      syntheticThreads=["thread_synthetic_session_prep_a","thread_synthetic_session_prep_b"],
       recordId=syntheticRecords[recordIndex],authorityOpen=false,initialized=false,runBusy=false,boundaryBusy=true,
       boundaryOperation=null,scopeGeneration=0,confirmedMode=null,activeRunId=null;
   var nativeFetch=window.fetch.bind(window);
@@ -91,7 +92,7 @@
   var panel=window.CosmaNeuraPanel.mount({
     sovereignUrl:window.location.origin,embedVersion:"1.0",allowLoopbackHttp:true,
     getAuthToken:async function(){return activeMountToken;},
-    getContext:async function(){return{clientId:recordId,thread_ref:"thread_synthetic_session_prep",care_model:"synthetic-only"};},
+    getContext:async function(){return{clientId:recordId,thread_ref:syntheticThreads[recordIndex],care_model:"synthetic-only"};},
     loadHistory:async function(){return null;},onHumanContact:async function(){},
     onAccessChange:function(granted){
       authorityOpen=granted===true;
@@ -99,7 +100,10 @@
         invalidateScope();
         if(boundaryOperation==="switch")status.textContent="Switching synthetic records…";
         else if(boundaryOperation==="revoke")status.textContent="Synthetic authority was closed.";
-        else if(boundaryOperation!=="reset")status.textContent="Synthetic authority was closed.";
+        else if(boundaryOperation!=="reset"){
+          status.textContent="Synthetic authority was closed.";
+          hostStatus.textContent="Local synthetic access closed; displayed content and trace cleared.";
+        }
       }
       syncControls();
     }
@@ -214,7 +218,7 @@
       if(ready===null||!authorityOpen)throw new Error("synthetic record unavailable");
       panel.open();
       status.textContent="Synthetic record "+(recordIndex===0?"A":"B")+" is open. Choose a typed state.";
-      hostStatus.textContent="Synthetic record "+(recordIndex===0?"A":"B")+" active; prior evidence cleared.";
+      hostStatus.textContent="Synthetic record "+(recordIndex===0?"A":"B")+" active; prior displayed trace cleared.";
     }catch(_error){
       authorityOpen=false;panel.close();status.textContent="Synthetic record switch failed closed.";
       hostStatus.textContent="No synthetic record authority is active.";
@@ -229,7 +233,7 @@
     finally{
       authorityOpen=false;boundaryOperation=null;
       status.textContent="Synthetic authority was closed.";
-      hostStatus.textContent="Local synthetic access revoked; prepared content and evidence cleared.";
+      hostStatus.textContent="Local synthetic access revoked; displayed content and trace cleared.";
       setBoundaryBusy(false);
     }
   }

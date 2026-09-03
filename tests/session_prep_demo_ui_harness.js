@@ -229,6 +229,8 @@ async function main() {
       if (token !== "synthetic-session-prep-mount-token") return null;
       const context = await mountOptions.getContext();
       assert(context.clientId === recordId, "host context did not follow the record");
+      assert(context.thread_ref === `thread_synthetic_session_prep_${recordId.endsWith("_a") ? "a" : "b"}`,
+        "host thread context crossed synthetic records");
       activeRecord = recordId;
       accessGranted = true;
       mountOptions.onAccessChange(true);
@@ -357,8 +359,8 @@ async function main() {
     "record switch did not activate synthetic record B");
   assert(status.textContent === "Synthetic record B is open. Choose a typed state.",
     "record switch did not expose its bounded completion status");
-  assert(hostStatus.textContent === "Synthetic record B active; prior evidence cleared.",
-    "record switch did not confirm that evidence was cleared");
+  assert(hostStatus.textContent === "Synthetic record B active; prior displayed trace cleared.",
+    "record switch did not confirm that its displayed trace was cleared");
   assert(switchButton.disabled === false && revokeButton.disabled === false &&
     resetButton.disabled === true, "record switch left incorrect host controls enabled");
 
@@ -495,6 +497,9 @@ async function main() {
   await buttons[modes.indexOf("ready")].click();
   assert(status.textContent === "Synthetic authority was closed.",
     "mid-action authority loss was overwritten by a success or generic failure");
+  assert(hostStatus.textContent ===
+    "Local synthetic access closed; displayed content and trace cleared.",
+  "mid-action authority loss left a stale host boundary status");
   assert(status.getAttribute("aria-busy") === "false", "authority loss remained busy");
   assert(buttons.every(button => button.disabled === true),
     "authority loss left fixture controls enabled");
@@ -531,7 +536,7 @@ async function main() {
   assert(status.textContent === "Synthetic authority was closed.",
     "explicit revocation did not leave the panel closed");
   assert(hostStatus.textContent ===
-    "Local synthetic access revoked; prepared content and evidence cleared.",
+    "Local synthetic access revoked; displayed content and trace cleared.",
   "explicit revocation did not confirm its local, cleared boundary");
   assert(buttons.every(button => button.disabled === true) &&
     switchButton.disabled === true && revokeButton.disabled === true &&
@@ -573,7 +578,8 @@ async function main() {
     "synthetic-session-prep-mount-token",
     "synthetic_session_prep_record_a",
     "synthetic_session_prep_record_b",
-    "thread_synthetic_session_prep",
+    "thread_synthetic_session_prep_a",
+    "thread_synthetic_session_prep_b",
   ]) {
     assert(!renderedHostText.includes(hidden), `host UI exposed ${hidden}`);
     assert(!requests.some(request => String(request.url).includes(hidden) ||

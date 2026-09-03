@@ -246,6 +246,10 @@ def test_demo_assets_and_controller_are_local_and_non_persistent() -> None:
         'syntheticRecords=["synthetic_session_prep_record_a","synthetic_session_prep_record_b"]'
         in source
     )
+    assert (
+        'syntheticThreads=["thread_synthetic_session_prep_a","thread_synthetic_session_prep_b"]'
+        in source
+    )
     assert "activeMountToken=null" in source
     assert "localStorage" not in source
     assert "sessionStorage" not in source
