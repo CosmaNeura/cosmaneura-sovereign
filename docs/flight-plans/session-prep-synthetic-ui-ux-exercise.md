@@ -34,19 +34,60 @@ the exact objects. It never uses mutable working-tree bytes or an HTTP client.
 
 ## Before the exercise
 
-Use a clean local checkout containing the exact commit above. Do not use a
-deployed URL. Do not sign in. Do not paste, transcribe, photograph, or import
-provider, patient, appointment, note, transcript, credential, or other real
-data. Stop if the surface is not loopback-only or anything other than the
-bundled synthetic fixture appears.
-
-Run the existing offline checks, then start the loopback demo:
+Use a separate clean detached checkout whose `HEAD` is the exact pinned source
+commit above. The helper is intentionally run from the newer reviewed checkout
+that contains it; the demo must run from the detached source checkout. Create
+the latter without changing either checkout's tracked files:
 
 ```bash
-PYTHONPATH=. python tools/run_session_prep_demo.py --self-test
+git worktree add --detach /absolute/path/to/session-prep-ui-source \
+  e0736289f36b200a3daee59db3732482bab6fc5d
+```
+
+Do not use a deployed URL. Do not sign in. Do not paste, transcribe,
+photograph, or import provider, patient, appointment, note, transcript,
+credential, or other real data. Stop if the source checkout is not clean and
+detached, the surface is not loopback-only, or anything other than the bundled
+synthetic fixture appears.
+
+From the newer helper checkout, initialize a new private worksheet with the
+actual closed browser metadata. The helper first proves that `--demo-repo` is
+the clean detached pinned commit/tree, rejects hidden index flags such as
+`skip-worktree` and `assume-unchanged`, and byte-compares every tracked file
+with the pinned tree. It then creates a new mode-`0600` file, refuses to
+overwrite any path, generates independent fresh `uxrun_` and `uxchallenge_`
+values, and leaves all 44 manual checks at `not-run`:
+
+```bash
+umask 077
+PYTHONPATH=. python tools/prepare_session_prep_ui_exercise.py init \
+  /absolute/path/to/session-prep-ui-worksheet.json \
+  --browser-engine chromium \
+  --browser-major 140 \
+  --screen-reader voiceover \
+  --demo-repo /absolute/path/to/session-prep-ui-source
+```
+
+Use the actual browser major and one of the closed browser/screen-reader
+values shown by `--help`. `--demo-repo` must name the worktree root itself, not
+a subdirectory. The worksheet accepts no name, identifier, note, comment,
+screenshot, URL, credential, or other free-form field. Keep it local and never
+commit it. Both the worksheet and eventual receipt paths must remain outside
+the detached demo checkout; the helper rejects either path inside it so
+evidence creation cannot dirty the observed source tree. The run ID and
+challenge bind the later receipt to one declared exercise but are not
+signatures, identity proof, or proof that the browser actions occurred.
+
+Then, from the detached source checkout, run the existing offline checks and
+start the loopback demo:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. \
+  python tools/run_session_prep_demo.py --self-test
 node tests/session_prep_demo_ui_harness.js tools/session_prep_demo.html
 node tests/panel_contract_harness.js app/panel.js
-PYTHONPATH=. python tools/run_session_prep_demo.py --port 8765
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. \
+  python tools/run_session_prep_demo.py --port 8765
 ```
 
 Open only `http://127.0.0.1:8765/demo/session-prep`. Keep the browser network
@@ -54,14 +95,6 @@ panel and storage inspector open. A failed, partial, ambiguous, or unobserved
 manual check is not `pass`: stop without creating a receipt and record the
 defect in the normal synthetic issue workflow. Never add explanatory text to
 the JSON.
-
-Immediately before starting, generate a fresh `uxrun_` exercise ID and
-`uxchallenge_` challenge, each followed by 32 lowercase hexadecimal
-characters. Keep them only in the local synthetic evidence record. They bind
-the receipt fields to one declared exercise but are not signatures, identity
-proof, or proof that the browser actions occurred. Finish validation within 24
-hours of `observed_at_utc`; future timestamps are rejected without clock-skew
-allowance.
 
 ## Manual observations
 
@@ -104,14 +137,40 @@ contains synthetic authority/context values; the boundary is that no real
 credential, provider/patient data, raw note, or server-owned Session Prep
 handle leaks across the tested surfaces.
 
+Immediately after each successful manual observation, change only its exact
+worksheet status from `not-run` to `pass`. Do not bulk-promote checks. If any
+observation fails, is partial, ambiguous, or was not performed, leave it
+`not-run`, do not seal a receipt, and use the normal synthetic defect workflow.
+Do not add a note or explanation to the worksheet.
+
+After all 44 observations pass, return to the newer helper checkout and seal
+to a new path:
+
+```bash
+PYTHONPATH=. python tools/prepare_session_prep_ui_exercise.py seal \
+  /absolute/path/to/session-prep-ui-worksheet.json \
+  /absolute/path/to/synthetic-ui-evidence.json \
+  --demo-repo /absolute/path/to/session-prep-ui-source
+```
+
+Sealing single-reads a bounded regular worksheet, rejects links, special
+files, stale or future starts, unknown fields, type coercion, live/PHI scope,
+and every non-`pass` status. Both initialization and sealing require the demo
+checkout to remain at the exact detached commit/tree with no tracked or
+untracked changes. Sealing sets `observed_at_utc`, forces every readiness claim
+false, calculates the receipt digest, and runs the unchanged committed
+verifier plus its exact offline harnesses before publishing a new mode-`0600`
+receipt. It does not overwrite a file. Success still establishes only an
+unauthenticated, unproven operator attestation. Finish sealing within 24 hours
+of initialization.
+
 ## Closed receipt format
 
 The JSON below is an intentionally non-acceptable, non-PHI schema specimen.
 Its placeholders and zero browser version must fail validation. It is not
-evidence that an exercise occurred and must not be reused as one. Create a new
-local receipt only after every manual item passes. Replace `observed_at_utc`,
-`exercise_id`, `challenge`, `browser_engine`, `browser_major`, and
-`screen_reader` with the actual bounded metadata:
+evidence that an exercise occurred and must not be copied or edited into one.
+Use the worksheet helper above to create a new local receipt only after every
+manual item passes. The helper supplies the six variable metadata fields:
 
 - timestamp: canonical UTC seconds (`YYYY-MM-DDTHH:MM:SSZ`), after the pinned
   commit, no more than 24 hours old, and not even one second in the future;
@@ -277,10 +336,10 @@ readiness, duplicate, or type-coerced values are rejected.
 
 `evidence_sha256` is the SHA-256 of canonical JSON for the nested `evidence`
 object (`ensure_ascii=true`, keys sorted, and separators `,` and `:` without
-extra whitespace). Recalculate it after setting the six variable metadata
-fields. This self-digest detects accidental mutation; it is not a signature or
-authentication mechanism. Do not place the receipt or any value from it on a
-command line.
+extra whitespace). The helper calculates it after setting the six variable
+metadata fields. This self-digest detects accidental mutation; it is not a
+signature or authentication mechanism. Do not place any value from the
+receipt on a command line.
 
 Validate from the Sovereign repository:
 
@@ -319,4 +378,4 @@ On failure, stop the exercise, preserve default-off controls, discard the
 unaccepted receipt, and investigate with synthetic data only. Do not replace a
 failed observation with `pass`, add a notes field, weaken the schema, or point
 the verifier at a live endpoint. This change has no runtime or deployed state;
-withdrawing it requires only reverting its documentation, verifier, and tests.
+withdrawing it requires only reverting its documentation, helper, and tests.
