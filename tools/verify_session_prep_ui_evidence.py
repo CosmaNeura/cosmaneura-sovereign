@@ -389,8 +389,8 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
         ).replace(tzinfo=dt.UTC)
     except ValueError:
         _fail("The observation timestamp is invalid")
-    if observed_at < SOURCE_COMMIT_TIME:
-        _fail("The observation predates the pinned source")
+    if observed_at <= SOURCE_COMMIT_TIME:
+        _fail("The observation does not follow the pinned source")
     now = _utc_now()
     if observed_at > now:
         _fail("The observation timestamp is in the future")

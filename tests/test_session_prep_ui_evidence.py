@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import datetime as dt
 import hashlib
 import json
@@ -139,6 +140,19 @@ def test_runbook_json_specimen_is_intentionally_rejected() -> None:
     receipt = json.loads(matches[0])
     with pytest.raises(evidence.EvidenceError):
         evidence.validate_receipt(receipt)
+
+    normalized = copy.deepcopy(receipt)
+    document = normalized["evidence"]
+    document["observed_at_utc"] = OBSERVED_AT
+    document["exercise_id"] = EXERCISE_ID
+    document["challenge"] = CHALLENGE
+    document["environment"]["browser_engine"] = "chromium"
+    document["environment"]["browser_major"] = 140
+    document["environment"]["screen_reader"] = "voiceover"
+    normalized["evidence_sha256"] = evidence._digest(document)
+
+    assert normalized == _receipt()
+    evidence.validate_receipt(normalized)
 
 
 @pytest.mark.parametrize(
@@ -429,6 +443,7 @@ def test_json_scalar_types_cannot_smuggle_equivalent_values(
         ("2026-09-03T16:05:00-04:00", "2026-09-03T20:06:00Z"),
         ("2026-09-03 20:05:00Z", "2026-09-03T20:06:00Z"),
         ("2026-09-03T20:03:12Z", "2026-09-03T20:06:00Z"),
+        ("2026-09-03T20:03:13Z", "2026-09-03T20:06:00Z"),
         ("2026-09-03T20:06:01Z", "2026-09-03T20:06:00Z"),
         ("2026-09-03T20:05:00Z", "2026-09-04T20:05:01Z"),
     ],
@@ -458,6 +473,31 @@ def test_timestamp_accepts_exact_now_and_exact_max_age(
         receipt = _receipt()
         monkeypatch.setattr(evidence, "_utc_now", lambda now=now: now)
         evidence.validate_receipt(receipt)
+
+
+def test_timestamp_accepts_the_first_second_after_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_at = "2026-09-03T20:03:14Z"
+    document = evidence._expected_evidence(
+        observed_at,
+        EXERCISE_ID,
+        CHALLENGE,
+        "chromium",
+        140,
+        "voiceover",
+    )
+    receipt = {
+        "evidence": document,
+        "evidence_sha256": evidence._digest(document),
+    }
+    monkeypatch.setattr(
+        evidence,
+        "_utc_now",
+        lambda: dt.datetime(2026, 9, 3, 20, 3, 14, tzinfo=dt.UTC),
+    )
+
+    evidence.validate_receipt(receipt)
 
 
 @pytest.mark.parametrize("engine", ["chrome", "Chromium", "safari", "synthetic"])
