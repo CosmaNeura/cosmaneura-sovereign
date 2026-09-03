@@ -389,7 +389,6 @@ class Sovereign:
         self,
         *,
         client_turn_id: uuid.UUID,
-        context_snapshot_ref: str,
         mount_context_token: Optional[str],
     ) -> SessionPrepOutcome:
         """Read and directly project the Core-owned synthetic prepared brief."""
@@ -432,11 +431,8 @@ class Sovereign:
                 code="CAPABILITY_DENIED",
                 retryable=False,
             )
-        if (
-            self.s.session_prep_synthetic_context_ref is None
-            or context_snapshot_ref
-            != self.s.session_prep_synthetic_context_ref
-        ):
+        context_snapshot_ref = self.s.session_prep_synthetic_context_ref
+        if context_snapshot_ref is None:
             raise MountResolutionError(
                 status_code=409,
                 code="RECORD_CONTEXT_MISMATCH",

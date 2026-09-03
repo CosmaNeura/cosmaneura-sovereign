@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.main import app
-from app.schemas import EmbedChatRequest, EmbedChatResponse
+from app.schemas import (EmbedChatRequest, EmbedChatResponse,
+                         SessionPrepRequest)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -185,17 +186,35 @@ def test_destroy_aborts_work_and_removes_record_tooltips():
     assert "root.remove(); style.remove()" in panel
 
 
-def test_initial_v1_context_is_refs_only_and_raw_clinical_bridges_are_absent():
+def test_browser_context_and_chat_exclude_the_server_owned_session_prep_ref():
     panel = _panel_source()
 
-    assert '"clientId", "thread_ref", "context_snapshot_ref", "digest_ref"' in panel
+    assert '"clientId", "thread_ref", "digest_ref", "terminology", "care_model"' in panel
+    context_governor = panel[
+        panel.index("function governedContext(value, recordId)"):
+        panel.index("function governedChatMetadata(context, outputFormat)")
+    ]
+    assert "context_snapshot_ref" not in context_governor
+    assert '["thread_ref", "digest_ref"].forEach' in context_governor
     assert "meta[key] = context[key]" in panel
+    chat_projection = panel[
+        panel.index("function governedChatMetadata(context, outputFormat)"):
+        panel.index("function applyWelcomeUX(w)")
+    ]
+    assert '"clientId", "thread_ref", "digest_ref", "terminology", "care_model"' in (
+        chat_projection
+    )
+    assert "context_snapshot_ref" not in chat_projection
     assert "Object.assign(meta, ctx)" not in panel
     assert "...ctx" not in panel
+    request_builder_start = panel.index(
+        "var meta = governedChatMetadata(context, fmt.value)"
+    )
     request_builder = panel[
-        panel.index("var meta = { output_format: fmt.value }"):
-        panel.index("var clientTurnId = freshClientTurnId()")
+        request_builder_start:
+        panel.index("var clientTurnId = freshClientTurnId()", request_builder_start)
     ]
+    assert "context_snapshot_ref" not in request_builder
     for forbidden in (
         "journey_digest", "prior_sessions", "case_context", "labs",
         "patient_metrics", "calorie_target", "macro_split", "note_template",
@@ -232,7 +251,21 @@ def test_v1_request_schema_is_closed_requires_turn_and_makes_persona_optional():
         EmbedChatRequest(
             client_turn_id=turn_id,
             message="synthetic",
+            metadata={"context_snapshot_ref": "context_synthetic_001"},
+        )
+    with pytest.raises(ValidationError):
+        EmbedChatRequest(
+            client_turn_id=turn_id,
+            message="synthetic",
             unknown="forbidden",
+        )
+
+    session_prep = SessionPrepRequest(client_turn_id=turn_id)
+    assert session_prep.model_dump(mode="json") == {"client_turn_id": turn_id}
+    with pytest.raises(ValidationError):
+        SessionPrepRequest(
+            client_turn_id=turn_id,
+            context_snapshot_ref="context_synthetic_001",
         )
 
 

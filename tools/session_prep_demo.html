@@ -40,7 +40,7 @@
     <section class="card">
       <h2>Runtime path</h2>
       <div class="path">
-        <div class="step"><span class="number">1</span><span>Browser sends only a client-turn UUID and synthetic comparison handle.</span></div>
+        <div class="step"><span class="number">1</span><span>Browser sends only a client-turn UUID; the synthetic comparison handle remains server-side.</span></div>
         <div class="step"><span class="number">2</span><span>Sovereign resolves injected platform authority and persists <code>session-prep.open</code>.</span></div>
         <div class="step"><span class="number">3</span><span>The production client invokes <code>session-prep.context.read@1.0.0</code> over an in-memory Core transport.</span></div>
         <div class="step"><span class="number">4</span><span>Validated text reaches the dedicated panel renderer without LLM or Magisterium rewriting.</span></div>
@@ -62,7 +62,7 @@
   var panel=window.CosmaNeuraPanel.mount({
     sovereignUrl:window.location.origin,embedVersion:"1.0",allowLoopbackHttp:true,
     getAuthToken:async function(){return mountToken;},
-    getContext:async function(){return{clientId:recordId,thread_ref:"thread_synthetic_session_prep",context_snapshot_ref:"context_synthetic_001",care_model:"synthetic-only"};},
+    getContext:async function(){return{clientId:recordId,thread_ref:"thread_synthetic_session_prep",care_model:"synthetic-only"};},
     loadHistory:async function(){return null;},onHumanContact:async function(){},
     onAccessChange:function(granted){if(!granted)status.textContent="Synthetic authority was closed.";}
   });

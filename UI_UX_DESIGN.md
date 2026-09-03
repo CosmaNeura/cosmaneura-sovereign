@@ -91,7 +91,6 @@ optional:
     getContext: async () => ({
       clientId: openRecord.threadKey,
       thread_ref: openRecord.assistantThreadRef,
-      context_snapshot_ref: openRecord.assistantSnapshotRef,
       digest_ref: openRecord.journeyDigestRef,
       terminology: settings.terminology,
       care_model: openRecord.careModel,
@@ -135,8 +134,12 @@ A panel can only send what the host gives it, and browser replay of prior notes
 would expand both the PHI surface and request ambiguity. The governed answer is
 the platform snapshot/digest boundary:
 
-1. **Context snapshots.** The host sends an opaque `context_snapshot_ref`;
-   authorized server-to-server retrieval decides the minimum necessary content.
+1. **Context snapshots.** The browser never receives a Session Prep
+   `context_snapshot_ref`. For the synthetic-only slice, Sovereign derives the
+   exact configured reference after resolving mount authority and places it in
+   the server-to-server Core tool request. Generic host context, `POST /chat`,
+   the browser `POST /session-prep` body, URLs, DOM, and browser storage never
+   receive it. Core decides the minimum necessary content under that authority.
 2. **The journey digest.** In platform mode the host uses the ratified platform
    digest operation at note-write time and passes only its opaque reference to
    governed consumers. Sovereign's legacy `POST /digest` is unavailable when
@@ -152,7 +155,6 @@ nonclinical presentation hints are sent. Every raw migration bridge is rejected:
   "message": "<what the clinician typed>",
   "metadata": {
     "clientId": "opaque-host-thread-key",
-    "context_snapshot_ref": "snapshot_opaque",
     "thread_ref": "thread_opaque",
     "digest_ref": "digest_opaque",
     "care_model": "internal family systems",  // from the client's profile
@@ -161,6 +163,11 @@ nonclinical presentation hints are sent. Every raw migration bridge is rejected:
   }
 }
 ```
+
+The browser's separate Session Prep action sends only a fresh `client_turn_id`
+in its JSON body. After mount/capability validation, Sovereign adds the exact
+server-configured `context_snapshot_ref` only to its server-to-server Core tool
+request. The browser never receives, renders, or persists that handle.
 
 The user experience this buys: Scott opens a client's record, clicks the rail,
 and types "help me prep the next session" — **no pasting, no uploading, no

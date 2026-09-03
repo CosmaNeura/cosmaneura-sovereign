@@ -62,7 +62,7 @@
       panel=window.CosmaNeuraPanel.mount({
         sovereignUrl:window.location.origin,embedVersion:"1.0",allowLoopbackHttp:true,
         getAuthToken:async function(){if(!token)throw new Error("unavailable");return token;},
-        getContext:async function(){return{clientId:fixtureId,thread_ref:"thread_synthetic_walkthrough_01",context_snapshot_ref:"snapshot_synthetic_walkthrough_01",care_model:"synthetic walkthrough"};},
+        getContext:async function(){return{clientId:fixtureId,thread_ref:"thread_synthetic_walkthrough_01",care_model:"synthetic walkthrough"};},
         loadHistory:async function(){return null;},
         onHumanContact:async function(){message("No live handoff is connected in this synthetic walkthrough.");},
         onAccessChange:function(granted){if(!granted){token=null;form.hidden=false;unlock.disabled=false;message("Named-beta access unavailable. No fixture context is displayed.");}}

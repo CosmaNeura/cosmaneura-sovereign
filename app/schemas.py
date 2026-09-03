@@ -98,9 +98,6 @@ class HostContextHints(ClosedWireModel):
     thread_ref: Optional[str] = Field(
         default=None, pattern=r"^[A-Za-z0-9._~-]{8,160}$", max_length=160,
     )
-    context_snapshot_ref: Optional[str] = Field(
-        default=None, pattern=r"^[A-Za-z0-9._~-]{8,160}$", max_length=160,
-    )
     digest_ref: Optional[str] = Field(
         default=None, pattern=r"^[A-Za-z0-9._~-]{8,160}$", max_length=160,
     )
@@ -260,17 +257,13 @@ class EmbedChatResponse(ChatResponse):
 class SessionPrepRequest(ClosedWireModel):
     """Minimal browser request for one explicit Session Prep UI action.
 
-    The browser supplies only correlation and the short-lived comparison handle
-    for its currently open encounter. Actor, tenant, patient, record, encounter,
-    capability, and source-turn selectors are deliberately absent.
+    The browser supplies only correlation. The server derives the configured
+    synthetic context handle after resolving mount authority; actor, tenant,
+    patient, record, encounter, capability, handle, and source-turn selectors
+    are deliberately absent from browser ingress.
     """
 
     client_turn_id: CanonicalClientTurnId
-    context_snapshot_ref: str = Field(
-        min_length=8,
-        max_length=160,
-        pattern=r"^[A-Za-z0-9._~-]{8,160}$",
-    )
 
 
 class SessionPrepProjectedPatientReport(ClosedWireModel):

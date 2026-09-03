@@ -400,7 +400,6 @@ _LOCAL_PROVIDER_MESSAGES = {
 _LOCAL_PROVIDER_CONTEXT = {
     "clientId": "synthetic_walkthrough_01",
     "thread_ref": "thread_synthetic_walkthrough_01",
-    "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
     "output_format": "chat",
     "care_model": "synthetic walkthrough",
 }
@@ -727,7 +726,6 @@ async def session_prep(
     )
     outcome = await _sovereign.read_session_prep(
         client_turn_id=client_turn_id,
-        context_snapshot_ref=request.context_snapshot_ref,
         mount_context_token=mount_context_token,
     )
     http_response.headers["X-Trace-ID"] = outcome.trace_id

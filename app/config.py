@@ -273,9 +273,10 @@ class Settings(BaseSettings):
     platform_write_timeout_seconds: float = Field(default=3.0, ge=0.1, le=10.0)
 
     # Session Prep's first operational slice is intentionally restricted to one
-    # explicitly configured synthetic staging handle. The feature remains off
-    # by default and has no real-PHI mode; broader activation requires a later
-    # reviewed control change.
+    # explicitly configured, server-only synthetic staging handle. It must never
+    # be projected into host hydration or browser requests. The feature remains
+    # off by default and has no real-PHI mode; broader activation requires a
+    # later reviewed control change.
     feature_session_prep: bool = False
     session_prep_synthetic_context_ref: Optional[str] = None
 
