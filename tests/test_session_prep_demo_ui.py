@@ -99,6 +99,7 @@ def test_demo_has_a_named_four_state_control_and_live_feedback() -> None:
         if node.tag == "h2"
     }
     assert headings["state-controls-title"] == "Exercise each typed state"
+    assert headings["host-controls-title"] == "Exercise host boundaries"
     assert headings["trace-title"] == "Sanitized Core wire trace"
 
     group = next(node for node in document.nodes if node.attrs.get("class") == "modes")
@@ -129,11 +130,50 @@ def test_demo_has_a_named_four_state_control_and_live_feedback() -> None:
     assert all(button.attrs["aria-pressed"] == "false" for button in buttons)
 
     by_id = {node.attrs["id"]: node for node in document.nodes if "id" in node.attrs}
+    host_group = next(
+        node for node in document.nodes if node.attrs.get("class") == "host-actions"
+    )
+    assert host_group.attrs == {
+        "class": "host-actions",
+        "role": "group",
+        "aria-labelledby": "host-controls-title",
+        "aria-describedby": "host-controls-note",
+    }
+    assert [
+        by_id[name].text.strip()
+        for name in ("record-switch", "authority-revoke", "authority-reset")
+    ] == [
+        "Switch synthetic record",
+        "Revoke synthetic access",
+        "Reset synthetic access",
+    ]
+    assert all(
+        by_id[name].attrs["type"] == "button"
+        for name in ("record-switch", "authority-revoke", "authority-reset")
+    )
+    assert "disabled" not in by_id["record-switch"].attrs
+    assert "disabled" not in by_id["authority-revoke"].attrs
+    assert "disabled" in by_id["authority-reset"].attrs
+    note = by_id["host-controls-note"].text
+    for claim in (
+        "Local simulation only.",
+        "do not prove provider identity",
+        "platform authorization",
+        "server-side record or encounter binding",
+    ):
+        assert claim in note
+
     status = by_id["demo-status"]
     assert status.attrs["role"] == "status"
     assert status.attrs["aria-live"] == "polite"
     assert status.attrs["aria-atomic"] == "true"
     assert status.attrs["aria-busy"] == "true"
+
+    host_status = by_id["host-status"]
+    assert host_status.attrs["role"] == "status"
+    assert host_status.attrs["aria-live"] == "polite"
+    assert host_status.attrs["aria-atomic"] == "true"
+    assert host_status.attrs["aria-busy"] == "true"
 
     trace_status = by_id["trace-status"]
     assert trace_status.attrs["role"] == "status"
@@ -202,6 +242,11 @@ def test_demo_assets_and_controller_are_local_and_non_persistent() -> None:
     assert 'window.fetch("/demo/session-prep/state/"+mode,{method:"POST"})' in source
     assert 'window.fetch("/demo/session-prep/trace",{cache:"no-store"' in source
     assert 'options.headers["X-Cosmaneura-Demo-Run-ID"]=activeRunId' in source
+    assert (
+        'syntheticRecords=["synthetic_session_prep_record_a","synthetic_session_prep_record_b"]'
+        in source
+    )
+    assert "activeMountToken=null" in source
     assert "localStorage" not in source
     assert "sessionStorage" not in source
     assert not [

@@ -10,7 +10,7 @@
   header{height:70px;padding:0 30px;background:var(--navy);color:#fff;display:flex;align-items:center;gap:13px;box-shadow:0 5px 20px #1527442a}.mark{width:38px;height:38px;border-radius:10px;background:var(--gold);display:grid;place-items:center;color:#1c170d;font-weight:900}.sub{color:#b9c9dc;font-size:12px}
   main{max-width:1050px;margin:auto;padding:38px 330px 70px 28px}.eyebrow{text-transform:uppercase;letter-spacing:.13em;color:var(--eyebrow);font-size:11px;font-weight:900}h1{font-size:clamp(30px,5vw,48px);line-height:1.08;margin:8px 0 12px;max-width:700px}p{color:var(--muted)}
   .safe{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;background:#e2f4e9;color:var(--ok);font-size:11px;font-weight:850}.safe:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok)}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:26px}.card{background:var(--paper);border:1px solid var(--line);border-radius:15px;padding:20px;box-shadow:0 10px 30px #17304b0d}.card h2{font-size:16px;margin:0 0 6px}.modes{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:15px}button{border:0;border-radius:9px;padding:10px 12px;background:var(--navy);color:#fff;font-weight:800;cursor:pointer}button:hover{background:var(--blue)}button:focus-visible{outline:3px solid var(--blue);outline-offset:3px}button:disabled{opacity:.55;cursor:wait}.mode[aria-pressed="true"]{box-shadow:inset 0 0 0 2px #fff}.mode.refreshing{background:#795f20}.mode.pending{background:#59687b}.mode.unavailable{background:#7a4250}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:26px}.card{background:var(--paper);border:1px solid var(--line);border-radius:15px;padding:20px;box-shadow:0 10px 30px #17304b0d}.card h2{font-size:16px;margin:0 0 6px}.modes,.host-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:15px}button{border:0;border-radius:9px;padding:10px 12px;background:var(--navy);color:#fff;font-weight:800;cursor:pointer}button:hover{background:var(--blue)}button:focus-visible{outline:3px solid var(--blue);outline-offset:3px}button:disabled{opacity:.55;cursor:wait}.mode[aria-pressed="true"]{box-shadow:inset 0 0 0 2px #fff}.mode.refreshing{background:#795f20}.mode.pending{background:#59687b}.mode.unavailable,.host-revoke{background:#7a4250}.host-reset{background:#245c86;grid-column:1/-1}.simulation{border:2px solid var(--gold);background:#fff8e9;color:#6a5425;border-radius:10px;padding:10px 12px;font-size:12px;font-weight:750}.host-status{margin-top:12px;color:#4e6279;font-size:12px;font-weight:800}
   .path{display:grid;gap:8px;margin-top:12px}.step{display:grid;grid-template-columns:26px 1fr;gap:8px;align-items:start;color:var(--muted);font-size:13px}.number{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#e7eef5;color:var(--blue);font-size:11px;font-weight:900}
   .trace{grid-column:1/-1}.trace-head{display:flex;align-items:center;justify-content:space-between}.trace-status{font-size:12px;color:var(--ok);font-weight:800}.calls{display:grid;gap:7px;margin-top:12px}.call{border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:#f8fafc;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}.call b{color:var(--blue)}.empty{font-size:13px;color:var(--muted)}
   .boundary{margin-top:16px;padding:12px;border-left:3px solid var(--gold);background:#fff8e9;color:#6a5425;font-size:12px}.legend{display:flex;gap:7px;flex-wrap:wrap;margin-top:14px}.pill{font-size:10px;font-weight:800;border:1px solid var(--line);border-radius:999px;padding:4px 8px;background:#fff;color:#4e6279}
@@ -22,7 +22,7 @@
 <header><div class="mark">S</div><div><strong>Sovereign Session Prep</strong><div class="sub">Synthetic beta vertical slice · local loopback</div></div></header>
 <main>
   <span class="safe">No external network · no secrets · no real PHI</span>
-  <div class="eyebrow" style="margin-top:20px">Tomorrow’s synthetic walkthrough</div>
+  <div class="eyebrow" style="margin-top:20px">Synthetic beta walkthrough</div>
   <h1>One prepared brief, through the real governed path.</h1>
   <p>The panel calls Sovereign’s real <code>/session-prep</code> endpoint. Sovereign records a canonical provider action, invokes the bounded Core v1 client, validates the typed response, and directly projects only approved brief text.</p>
   <div class="legend"><span class="pill">Default-off feature gate</span><span class="pill">Exact synthetic context</span><span class="pill">3 calls / 10 seconds</span><span class="pill">No second model rewrite</span></div>
@@ -38,7 +38,17 @@
       </div>
       <div id="demo-status" class="boundary" role="status" aria-live="polite" aria-atomic="true" aria-busy="true">Opening the synthetic record…</div>
     </section>
-    <section class="card">
+    <section class="card" aria-labelledby="host-controls-title">
+      <h2 id="host-controls-title">Exercise host boundaries</h2>
+      <p id="host-controls-note" class="simulation"><strong>Local simulation only.</strong> These controls do not prove provider identity, platform authorization, or server-side record or encounter binding.</p>
+      <div class="host-actions" role="group" aria-labelledby="host-controls-title" aria-describedby="host-controls-note">
+        <button type="button" id="record-switch">Switch synthetic record</button>
+        <button type="button" id="authority-revoke" class="host-revoke">Revoke synthetic access</button>
+        <button type="button" id="authority-reset" class="host-reset" disabled>Reset synthetic access</button>
+      </div>
+      <div id="host-status" class="host-status" role="status" aria-live="polite" aria-atomic="true" aria-busy="true">Opening synthetic record A…</div>
+    </section>
+    <section class="card trace">
       <h2>Runtime path</h2>
       <div class="path">
         <div class="step"><span class="number">1</span><span>Browser sends only a client-turn UUID; the synthetic comparison handle remains server-side.</span></div>
@@ -59,8 +69,14 @@
 (function(){
   "use strict";
   var status=document.getElementById("demo-status"),calls=document.getElementById("calls"),
-      traceStatus=document.getElementById("trace-status"),buttons=[].slice.call(document.querySelectorAll(".mode"));
-  var mountToken="synthetic-session-prep-mount-token",recordId="synthetic_session_prep_record",authorityOpen=false,confirmedMode=null,activeRunId=null;
+      traceStatus=document.getElementById("trace-status"),hostStatus=document.getElementById("host-status"),
+      modeButtons=[].slice.call(document.querySelectorAll(".mode")),
+      switchButton=document.getElementById("record-switch"),revokeButton=document.getElementById("authority-revoke"),
+      resetButton=document.getElementById("authority-reset");
+  var mountToken="synthetic-session-prep-mount-token",activeMountToken=mountToken,
+      syntheticRecords=["synthetic_session_prep_record_a","synthetic_session_prep_record_b"],recordIndex=0,
+      recordId=syntheticRecords[recordIndex],authorityOpen=false,initialized=false,runBusy=false,boundaryBusy=true,
+      boundaryOperation=null,scopeGeneration=0,confirmedMode=null,activeRunId=null;
   var nativeFetch=window.fetch.bind(window);
   window.fetch=function(input,options){
     var target=typeof input==="string"?input:input&&input.url;
@@ -74,21 +90,40 @@
   };
   var panel=window.CosmaNeuraPanel.mount({
     sovereignUrl:window.location.origin,embedVersion:"1.0",allowLoopbackHttp:true,
-    getAuthToken:async function(){return mountToken;},
+    getAuthToken:async function(){return activeMountToken;},
     getContext:async function(){return{clientId:recordId,thread_ref:"thread_synthetic_session_prep",care_model:"synthetic-only"};},
     loadHistory:async function(){return null;},onHumanContact:async function(){},
     onAccessChange:function(granted){
       authorityOpen=granted===true;
-      if(!authorityOpen){activeRunId=null;confirmedMode=null;selectMode(null);status.textContent="Synthetic authority was closed.";}
-      busy(false);
+      if(!authorityOpen){
+        invalidateScope();
+        if(boundaryOperation==="switch")status.textContent="Switching synthetic records…";
+        else if(boundaryOperation==="revoke")status.textContent="Synthetic authority was closed.";
+        else if(boundaryOperation!=="reset")status.textContent="Synthetic authority was closed.";
+      }
+      syncControls();
     }
   });
-  function busy(value){
-    status.setAttribute("aria-busy",value?"true":"false");
-    buttons.forEach(function(button){button.disabled=value||!authorityOpen;});
+  function syncControls(){
+    status.setAttribute("aria-busy",runBusy||boundaryBusy?"true":"false");
+    hostStatus.setAttribute("aria-busy",boundaryBusy?"true":"false");
+    modeButtons.forEach(function(button){button.disabled=runBusy||boundaryBusy||!authorityOpen;});
+    switchButton.disabled=boundaryBusy||!authorityOpen;
+    revokeButton.disabled=boundaryBusy||!authorityOpen;
+    resetButton.disabled=boundaryBusy||authorityOpen||!initialized;
+  }
+  function setRunBusy(value){runBusy=value;syncControls();}
+  function setBoundaryBusy(value){boundaryBusy=value;syncControls();}
+  function clearEvidence(){
+    confirmedMode=null;selectMode(null);
+    calls.innerHTML='<div class="empty" role="listitem">No Core calls for the current synthetic record.</div>';
+    traceStatus.textContent="Waiting for a current synthetic run";
+  }
+  function invalidateScope(){
+    scopeGeneration+=1;activeRunId=null;runBusy=false;clearEvidence();
   }
   function selectMode(mode){
-    buttons.forEach(function(button){
+    modeButtons.forEach(function(button){
       button.setAttribute("aria-pressed",button.dataset.mode===mode?"true":"false");
     });
   }
@@ -117,11 +152,12 @@
       write.state===expectedOutcome&&
       Number.isInteger(write.characters)&&write.characters>0;
   }
-  async function refreshTrace(mode,runId){
+  async function refreshTrace(mode,runId,generation){
     var response=await window.fetch("/demo/session-prep/trace",{cache:"no-store",headers:{"X-Cosmaneura-Demo-Run-ID":runId}});
     if(!response.ok||response.status!==200)throw new Error("trace unavailable");
     var trace=await response.json();
     if(!verifiedTrace(trace,mode,runId))throw new Error("trace verification failed");
+    if(generation!==scopeGeneration)return false;
     calls.innerHTML="";
     trace.calls.forEach(function(call){
       var row=document.createElement("div");row.className="call";row.setAttribute("role","listitem");
@@ -130,40 +166,99 @@
     });
     if(!trace.calls.length)calls.innerHTML='<div class="empty" role="listitem">No Core calls yet.</div>';
     traceStatus.textContent=trace.calls.length+" verified Core call"+(trace.calls.length===1?"":"s");
+    return true;
   }
   async function run(mode){
-    var runId=null;
-    busy(true);status.textContent="Running the "+mode+" fixture through Sovereign…";
+    var runId=null,generation=scopeGeneration;
+    setRunBusy(true);status.textContent="Running the "+mode+" fixture through Sovereign…";
     try{
       var stateResponse=await window.fetch("/demo/session-prep/state/"+mode,{method:"POST"});
+      if(generation!==scopeGeneration)return;
       if(!stateResponse.ok||stateResponse.status!==200)throw new Error("state unavailable");
       var selected=await stateResponse.json();
+      if(generation!==scopeGeneration)return;
       if(!exactKeys(selected,["mode","run_id"])||selected.mode!==mode||!validRunId(selected.run_id))throw new Error("state mismatch");
       runId=selected.run_id;activeRunId=runId;
       if(!authorityOpen)throw new Error("authority unavailable");
       var action=panel.root.querySelector(".cnp-prep-go");
       if(!action||typeof action.onclick!=="function")throw new Error("action unavailable");
       await action.onclick();
+      if(generation!==scopeGeneration)return;
       if(activeRunId===runId)activeRunId=null;
       if(!authorityOpen)throw new Error("authority unavailable");
-      await refreshTrace(mode,runId);
+      if(!await refreshTrace(mode,runId,generation))return;
       if(!authorityOpen)throw new Error("authority unavailable");
       confirmedMode=mode;selectMode(confirmedMode);
       status.textContent="Rendered the "+mode+" state through the real vertical slice.";
     }catch(_error){
-      selectMode(confirmedMode);
-      if(authorityOpen)status.textContent="The synthetic run failed closed. Check the local terminal.";
+      if(generation===scopeGeneration){
+        selectMode(confirmedMode);
+        if(authorityOpen)status.textContent="The synthetic run failed closed. Check the local terminal.";
+      }
     }
-    finally{if(activeRunId===runId)activeRunId=null;busy(false);}
+    finally{
+      if(activeRunId===runId)activeRunId=null;
+      if(generation===scopeGeneration)setRunBusy(false);
+    }
   }
-  buttons.forEach(function(button){button.onclick=function(){return run(button.dataset.mode);};});
-  busy(true);
+  function beginBoundary(message){
+    boundaryOperation=message;setBoundaryBusy(true);invalidateScope();panel.close();
+  }
+  async function switchRecord(){
+    beginBoundary("switch");
+    recordIndex=recordIndex===0?1:0;recordId=syntheticRecords[recordIndex];
+    status.textContent="Switching synthetic records…";
+    hostStatus.textContent="Switching to synthetic record "+(recordIndex===0?"A":"B")+"…";
+    try{
+      var ready=await panel.setRecord(recordId);
+      if(ready===null||!authorityOpen)throw new Error("synthetic record unavailable");
+      panel.open();
+      status.textContent="Synthetic record "+(recordIndex===0?"A":"B")+" is open. Choose a typed state.";
+      hostStatus.textContent="Synthetic record "+(recordIndex===0?"A":"B")+" active; prior evidence cleared.";
+    }catch(_error){
+      authorityOpen=false;panel.close();status.textContent="Synthetic record switch failed closed.";
+      hostStatus.textContent="No synthetic record authority is active.";
+    }finally{boundaryOperation=null;setBoundaryBusy(false);}
+  }
+  async function revokeAccess(){
+    beginBoundary("revoke");activeMountToken=null;
+    status.textContent="Synthetic authority was closed.";
+    hostStatus.textContent="Revoking local synthetic access…";
+    try{await panel.setRecord(recordId);}
+    catch(_error){}
+    finally{
+      authorityOpen=false;boundaryOperation=null;
+      status.textContent="Synthetic authority was closed.";
+      hostStatus.textContent="Local synthetic access revoked; prepared content and evidence cleared.";
+      setBoundaryBusy(false);
+    }
+  }
+  async function resetAccess(){
+    beginBoundary("reset");activeMountToken=mountToken;
+    status.textContent="Resetting local synthetic access…";
+    hostStatus.textContent="Resetting local synthetic access…";
+    try{
+      var ready=await panel.setRecord(recordId);
+      if(ready===null||!authorityOpen)throw new Error("synthetic authority unavailable");
+      panel.open();
+      status.textContent="Synthetic access reset. Choose a typed state.";
+      hostStatus.textContent="Local synthetic access reset for record "+(recordIndex===0?"A":"B")+".";
+    }catch(_error){
+      activeMountToken=null;authorityOpen=false;panel.close();
+      status.textContent="Synthetic access reset failed closed.";
+      hostStatus.textContent="Local synthetic access remains revoked.";
+    }finally{boundaryOperation=null;setBoundaryBusy(false);}
+  }
+  modeButtons.forEach(function(button){button.onclick=function(){return run(button.dataset.mode);};});
+  switchButton.onclick=switchRecord;revokeButton.onclick=revokeAccess;resetButton.onclick=resetAccess;
+  syncControls();
   (async function(){
     var ready=await panel.setRecord(recordId);
     if(ready===null)throw new Error("synthetic record unavailable");
-    panel.open();
+    initialized=true;setBoundaryBusy(false);panel.open();
+    hostStatus.textContent="Synthetic record A active.";
     await run("ready");
-  })().catch(function(){authorityOpen=false;status.textContent="Could not initialize the synthetic demo.";busy(false);});
+  })().catch(function(){authorityOpen=false;initialized=true;status.textContent="Could not initialize the synthetic demo.";hostStatus.textContent="No synthetic record authority is active.";setBoundaryBusy(false);});
   window.addEventListener("pagehide",function(){panel.destroy();});
 })();
 /* SESSION_PREP_DEMO_CONTROLLER_END */

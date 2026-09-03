@@ -45,6 +45,7 @@ class FakeElement {
   }
 
   click() {
+    if (this.disabled) return;
     if (typeof this.onclick === "function") return this.onclick();
   }
 }
@@ -106,6 +107,12 @@ async function main() {
   const calls = new FakeElement("div", { role: "list" });
   const traceStatus = new FakeElement("span");
   traceStatus.textContent = "Waiting";
+  const hostStatus = new FakeElement("div", { "aria-busy": "true" });
+  hostStatus.textContent = "Opening synthetic record A…";
+  const switchButton = new FakeElement("button", { type: "button" });
+  const revokeButton = new FakeElement("button", { type: "button" });
+  const resetButton = new FakeElement("button", { type: "button", disabled: "" });
+  resetButton.disabled = true;
   const modes = ["ready", "refreshing", "pending", "unavailable"];
   const buttons = modes.map(mode => {
     const button = new FakeElement("button", {
@@ -119,17 +126,25 @@ async function main() {
     "demo-status": status,
     calls,
     "trace-status": traceStatus,
+    "host-status": hostStatus,
+    "record-switch": switchButton,
+    "authority-revoke": revokeButton,
+    "authority-reset": resetButton,
   };
 
   let mountOptions;
   let opened = 0;
+  let closed = 0;
   let destroyed = 0;
+  let accessGranted = false;
+  let activeRecord = null;
   let currentMode = "ready";
   let failNextState = false;
   let nextStateStatus = 200;
   let nextStatePayload = null;
   let nextTraceStatus = 200;
   let heldState = null;
+  let heldAction = null;
   let actionBehavior = "success";
   let traceMutation = null;
   let actionCalls = 0;
@@ -137,6 +152,7 @@ async function main() {
   let currentRunId = null;
   let runCounter = 0;
   const requests = [];
+  const recordChanges = [];
   const listeners = {};
 
   function runId(number) {
@@ -184,6 +200,7 @@ async function main() {
     actionCalls += 1;
     if (actionBehavior === "error") throw new Error("synthetic action failure");
     if (actionBehavior === "revoke") {
+      accessGranted = false;
       mountOptions.onAccessChange(false);
       return;
     }
@@ -201,11 +218,24 @@ async function main() {
   const panel = {
     root: { querySelector: selector => selector === ".cnp-prep-go" ? prepAction : null },
     setRecord: async recordId => {
-      assert(recordId === "synthetic_session_prep_record", "unexpected synthetic record");
+      assert(["synthetic_session_prep_record_a", "synthetic_session_prep_record_b"]
+        .includes(recordId), "unexpected synthetic record");
+      recordChanges.push(recordId);
+      if (accessGranted) {
+        accessGranted = false;
+        mountOptions.onAccessChange(false);
+      }
+      const token = await mountOptions.getAuthToken();
+      if (token !== "synthetic-session-prep-mount-token") return null;
+      const context = await mountOptions.getContext();
+      assert(context.clientId === recordId, "host context did not follow the record");
+      activeRecord = recordId;
+      accessGranted = true;
       mountOptions.onAccessChange(true);
-      return 1;
+      return recordChanges.length;
     },
     open: () => { opened += 1; },
+    close: () => { closed += 1; },
     destroy: () => { destroyed += 1; },
   };
   const document = {
@@ -246,6 +276,7 @@ async function main() {
       assert(options.headers["X-Cosmaneura-Demo-Run-ID"] === currentRunId,
         "panel action did not carry the current server-issued run id");
       latestTrace = traceFor(currentMode, currentRunId);
+      if (heldAction) await heldAction.promise;
       return response({}, 200);
     }
     assert(url === "/demo/session-prep/trace", "unexpected demo request: " + url);
@@ -294,6 +325,53 @@ async function main() {
     "trace rows were not semantic list items");
   assert(traceStatus.textContent === "3 verified Core calls", "ready trace count was unclear");
   const initialRunId = currentRunId;
+
+  heldAction = deferred();
+  const actionsBeforeStaleRun = actionCalls;
+  const traceRequestsBeforeStaleRun = requests.filter(request =>
+    request.url.endsWith("/trace")).length;
+  const staleRun = buttons[modes.indexOf("refreshing")].click();
+  await until(() => actionCalls === actionsBeforeStaleRun + 1,
+    "held record A action did not start");
+  assert(status.getAttribute("aria-busy") === "true",
+    "held record A action was not busy");
+  assert(switchButton.disabled === false && revokeButton.disabled === false,
+    "host boundary controls could not interrupt a held action");
+
+  const switchPromise = switchButton.click();
+  assert(closed === 1, "record switch did not close the panel immediately");
+  assert(selectedMode() === null, "record switch retained prior mode evidence");
+  assert(calls.children.length === 0 && calls.innerHTML.includes("current synthetic record"),
+    "record switch did not clear prior trace evidence immediately");
+  assert(traceStatus.textContent === "Waiting for a current synthetic run",
+    "record switch retained the prior trace status");
+  assert(status.textContent === "Switching synthetic records…",
+    "record switch did not expose a live transition status");
+  await switchPromise;
+  assert(activeRecord === "synthetic_session_prep_record_b",
+    "record switch did not activate synthetic record B");
+  assert(status.textContent === "Synthetic record B is open. Choose a typed state.",
+    "record switch did not expose its bounded completion status");
+  assert(hostStatus.textContent === "Synthetic record B active; prior evidence cleared.",
+    "record switch did not confirm that evidence was cleared");
+  assert(switchButton.disabled === false && revokeButton.disabled === false &&
+    resetButton.disabled === true, "record switch left incorrect host controls enabled");
+
+  heldAction.resolve();
+  heldAction = null;
+  await staleRun;
+  assert(status.textContent === "Synthetic record B is open. Choose a typed state.",
+    "late record A action repainted record B status");
+  assert(selectedMode() === null, "late record A action selected a state on record B");
+  assert(calls.children.length === 0,
+    "late record A action repainted record B trace evidence");
+  assert(requests.filter(request => request.url.endsWith("/trace")).length ===
+    traceRequestsBeforeStaleRun, "late record A action requested stale trace evidence");
+
+  await buttons[modes.indexOf("ready")].click();
+  assert(status.textContent === "Rendered the ready state through the real vertical slice.",
+    "ready did not work after record switching");
+  assert(selectedMode() === "ready", "ready was not selected after record switching");
 
   for (const mode of ["refreshing", "unavailable"]) {
     await buttons[modes.indexOf(mode)].click();
@@ -412,6 +490,50 @@ async function main() {
   assert(buttons.every(button => button.disabled === true),
     "authority loss left fixture controls enabled");
   assert(selectedMode() === null, "authority loss retained a confirmed mode");
+  assert(switchButton.disabled === true && revokeButton.disabled === true &&
+    resetButton.disabled === false, "authority loss exposed unsafe host controls");
+
+  actionBehavior = "success";
+  await resetButton.click();
+  assert(activeRecord === "synthetic_session_prep_record_b",
+    "synthetic reset changed the active record");
+  assert(status.textContent === "Synthetic access reset. Choose a typed state.",
+    "synthetic reset did not expose its completion status");
+  assert(hostStatus.textContent === "Local synthetic access reset for record B.",
+    "synthetic reset did not remain explicitly local");
+  assert(buttons.every(button => button.disabled === false),
+    "synthetic reset did not restore typed-state controls");
+  assert(resetButton.disabled === true,
+    "synthetic reset remained available while authority was open");
+
+  await buttons[modes.indexOf("pending")].click();
+  assert(selectedMode() === "pending" && calls.children.length === 3,
+    "typed states did not work after synthetic reset");
+
+  const closesBeforeExplicitRevocation = closed;
+  const revokePromise = revokeButton.click();
+  assert(closed === closesBeforeExplicitRevocation + 1,
+    "explicit revocation did not close the panel immediately");
+  assert(selectedMode() === null && calls.children.length === 0,
+    "explicit revocation did not clear rendered evidence immediately");
+  assert(hostStatus.textContent === "Revoking local synthetic access…",
+    "explicit revocation did not expose a live transition status");
+  await revokePromise;
+  assert(status.textContent === "Synthetic authority was closed.",
+    "explicit revocation did not leave the panel closed");
+  assert(hostStatus.textContent ===
+    "Local synthetic access revoked; prepared content and evidence cleared.",
+  "explicit revocation did not confirm its local, cleared boundary");
+  assert(buttons.every(button => button.disabled === true) &&
+    switchButton.disabled === true && revokeButton.disabled === true &&
+    resetButton.disabled === false, "explicit revocation left unsafe controls enabled");
+  assert(await mountOptions.getAuthToken() === null,
+    "explicit revocation retained the synthetic token");
+
+  await resetButton.click();
+  await buttons[modes.indexOf("ready")].click();
+  assert(selectedMode() === "ready" && calls.children.length === 3,
+    "four-state exercise did not recover after explicit reset");
 
   assert(mountOptions.sovereignUrl === "http://127.0.0.1:8765" &&
     mountOptions.allowLoopbackHttp === true, "demo mount was not loopback-only");
@@ -435,6 +557,20 @@ async function main() {
     /^demo_run_[0-9a-f]{32}$/.test(
       request.options.headers["X-Cosmaneura-Demo-Run-ID"] || "")),
   "trace requests omitted the opaque server-issued run id");
+  const renderedHostText = [status.textContent, hostStatus.textContent,
+    traceStatus.textContent, calls.innerHTML]
+    .concat(calls.children.map(row => row.textContent)).join("\n");
+  for (const hidden of [
+    "synthetic-session-prep-mount-token",
+    "synthetic_session_prep_record_a",
+    "synthetic_session_prep_record_b",
+    "thread_synthetic_session_prep",
+  ]) {
+    assert(!renderedHostText.includes(hidden), `host UI exposed ${hidden}`);
+    assert(!requests.some(request => String(request.url).includes(hidden) ||
+      String(request.options.body || "").includes(hidden)),
+    `request URL or body exposed ${hidden}`);
+  }
 
   assert(typeof listeners.pagehide === "function", "pagehide teardown was not installed");
   listeners.pagehide();
