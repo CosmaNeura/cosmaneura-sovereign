@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -52,6 +53,10 @@ def _write(path: Path, value: Any) -> None:
         json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     path.chmod(0o600)
+
+
+def _revision(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _complete(path: Path) -> dict[str, Any]:
@@ -125,8 +130,11 @@ def test_runbook_uses_separate_pinned_demo_checkout_without_bulk_pass() -> None:
     runbook = RUNBOOK.read_text(encoding="utf-8")
 
     assert "git worktree add --detach" in runbook
-    assert runbook.count("--demo-repo /absolute/path/to/session-prep-ui-source") == 2
-    assert "Do not bulk-promote checks" in runbook
+    assert runbook.count("--demo-repo /absolute/path/to/session-prep-ui-source") == 4
+    assert "44 sequential single-check" in runbook
+    assert "Never edit" in runbook
+    assert "the worksheet JSON directly" in runbook
+    assert "--expected-worksheet-sha256" in runbook
     assert "must not be copied or edited into one" in runbook
 
 
@@ -178,6 +186,207 @@ def test_init_uses_two_independent_fresh_tokens(
     assert calls == [16, 16]
     assert worksheet["exercise_id"] == "uxrun_" + "1" * 32
     assert worksheet["challenge"] == "uxchallenge_" + "2" * 32
+
+
+def test_status_reports_only_bounded_progress_next_check_and_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _initialize(tmp_path, monkeypatch)
+    before = path.read_bytes()
+
+    summary = exercise.worksheet_status(path, exercise.ROOT)
+
+    assert summary == (
+        f"{exercise.STATUS_PASS_PREFIX} passed=0/44; remaining=44; "
+        f"next={exercise.MANUAL_CHECK_IDS[0]}; revision={_revision(path)}"
+    )
+    assert path.read_bytes() == before
+    assert str(path) not in summary
+    assert EXERCISE_HEX not in summary
+    assert CHALLENGE_HEX not in summary
+    assert "chromium" not in summary
+    assert len(summary) < 256
+
+
+def test_mark_changes_exactly_one_check_and_advances_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _initialize(tmp_path, monkeypatch)
+    before = _load(path)
+    old_revision = _revision(path)
+
+    summary = exercise.mark_check(
+        path,
+        exercise.MANUAL_CHECK_IDS[0],
+        old_revision,
+        exercise.ROOT,
+    )
+
+    after = _load(path)
+    expected = dict(before)
+    expected_checks = dict(before["manual_checks"])
+    expected_checks[exercise.MANUAL_CHECK_IDS[0]] = "pass"
+    expected["manual_checks"] = expected_checks
+    assert after == expected
+    assert _revision(path) != old_revision
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert summary == (
+        f"{exercise.MARK_PASS_PREFIX} {exercise.MANUAL_CHECK_IDS[0]}; progress "
+        f"passed=1/44; remaining=43; next={exercise.MANUAL_CHECK_IDS[1]}; "
+        f"revision={_revision(path)}"
+    )
+
+
+def test_mark_rejects_stale_repeat_unknown_and_malformed_revision_without_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _initialize(tmp_path, monkeypatch)
+    stale_revision = _revision(path)
+    exercise.mark_check(
+        path,
+        exercise.MANUAL_CHECK_IDS[0],
+        stale_revision,
+        exercise.ROOT,
+    )
+    current = path.read_bytes()
+    current_revision = _revision(path)
+
+    attempts = (
+        (exercise.MANUAL_CHECK_IDS[1], stale_revision),
+        (exercise.MANUAL_CHECK_IDS[0], current_revision),
+        (exercise.MANUAL_CHECK_IDS[-1], current_revision),
+        ("states.ready.unknown", current_revision),
+        (exercise.MANUAL_CHECK_IDS[1], "sha256:not-a-digest"),
+    )
+    for check_id, revision in attempts:
+        with pytest.raises(exercise.ExerciseError):
+            exercise.mark_check(path, check_id, revision, exercise.ROOT)
+        assert path.read_bytes() == current
+
+
+def test_status_and_mark_reject_noncontiguous_pass_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _initialize(tmp_path, monkeypatch)
+    worksheet = _load(path)
+    worksheet["manual_checks"][exercise.MANUAL_CHECK_IDS[1]] = "pass"
+    _write(path, worksheet)
+    before = path.read_bytes()
+
+    with pytest.raises(exercise.ExerciseError):
+        exercise.worksheet_status(path, exercise.ROOT)
+    with pytest.raises(exercise.ExerciseError):
+        exercise.mark_check(
+            path,
+            exercise.MANUAL_CHECK_IDS[0],
+            _revision(path),
+            exercise.ROOT,
+        )
+    assert path.read_bytes() == before
+
+
+def test_mark_replace_failure_preserves_original_and_cleans_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _initialize(tmp_path, monkeypatch)
+    before = path.read_bytes()
+
+    def fail_replace(*_args: object, **_kwargs: object) -> None:
+        raise OSError("synthetic replace failure")
+
+    monkeypatch.setattr(exercise.os, "replace", fail_replace)
+    with pytest.raises(exercise.ExerciseError):
+        exercise.mark_check(
+            path,
+            exercise.MANUAL_CHECK_IDS[0],
+            _revision(path),
+            exercise.ROOT,
+        )
+
+    assert path.read_bytes() == before
+    assert list(tmp_path.glob(".session-prep-ui-update-*.tmp")) == []
+
+
+def test_mark_detects_external_byte_change_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _initialize(tmp_path, monkeypatch)
+    revision = _revision(path)
+    calls = 0
+
+    def verify(repo: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            path.write_bytes(b"concurrent change")
+            path.chmod(0o600)
+        return Path(repo).resolve()
+
+    monkeypatch.setattr(exercise, "_verify_demo_checkout", verify)
+    with pytest.raises(exercise.ExerciseError):
+        exercise.mark_check(
+            path,
+            exercise.MANUAL_CHECK_IDS[0],
+            revision,
+            exercise.ROOT,
+        )
+
+    assert path.read_bytes() == b"concurrent change"
+    assert list(tmp_path.glob(".session-prep-ui-update-*.tmp")) == []
+
+
+def test_status_and_mark_reject_nonprivate_or_multiply_linked_worksheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _initialize(tmp_path, monkeypatch)
+    path.chmod(0o640)
+    with pytest.raises(exercise.ExerciseError):
+        exercise.worksheet_status(path, exercise.ROOT)
+    with pytest.raises(exercise.ExerciseError):
+        exercise.mark_check(
+            path,
+            exercise.MANUAL_CHECK_IDS[0],
+            _revision(path),
+            exercise.ROOT,
+        )
+
+    path.chmod(0o600)
+    linked = tmp_path / "worksheet-hardlink.json"
+    os.link(path, linked)
+    with pytest.raises(exercise.ExerciseError):
+        exercise.worksheet_status(path, exercise.ROOT)
+    with pytest.raises(exercise.ExerciseError):
+        exercise.mark_check(
+            path,
+            exercise.MANUAL_CHECK_IDS[0],
+            _revision(path),
+            exercise.ROOT,
+        )
+
+
+def test_44_sequential_marks_still_seal_exact_v1_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _initialize(tmp_path, monkeypatch)
+    for check_id in exercise.MANUAL_CHECK_IDS:
+        exercise.mark_check(path, check_id, _revision(path), exercise.ROOT)
+    assert "passed=44/44; remaining=0; next=complete" in (
+        exercise.worksheet_status(path, exercise.ROOT)
+    )
+
+    receipt = tmp_path / "receipt.json"
+    monkeypatch.setattr(
+        exercise,
+        "_validate_with_pinned_verifier",
+        lambda _verifier_repo, _demo_repo, raw: evidence.validate_receipt(
+            json.loads(raw)
+        ),
+    )
+    exercise.seal(path, receipt, exercise.ROOT)
+    accepted = evidence.load_receipt(receipt)
+    assert all(
+        value is False for value in accepted["evidence"]["readiness_claims"].values()
+    )
 
 
 def test_init_refuses_to_overwrite_existing_file(
@@ -567,6 +776,77 @@ def test_demo_preflight_requires_exact_detached_clean_checkout(tmp_path: Path) -
         REAL_VERIFY_DEMO_CHECKOUT(demo_repo)
 
 
+def test_status_and_mark_recheck_exact_demo_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worksheet = _initialize(tmp_path, monkeypatch)
+    revision = _revision(worksheet)
+    demo_repo = _detached_demo_repo(tmp_path)
+    monkeypatch.setattr(exercise, "_verify_demo_checkout", REAL_VERIFY_DEMO_CHECKOUT)
+
+    assert "passed=0/44" in exercise.worksheet_status(worksheet, demo_repo)
+    (demo_repo / "unexpected-untracked.txt").write_text("drift", encoding="utf-8")
+
+    with pytest.raises(exercise.ExerciseError):
+        exercise.worksheet_status(worksheet, demo_repo)
+    with pytest.raises(exercise.ExerciseError):
+        exercise.mark_check(
+            worksheet,
+            exercise.MANUAL_CHECK_IDS[0],
+            revision,
+            demo_repo,
+        )
+    assert _revision(worksheet) == revision
+
+
+def test_private_read_rejects_parent_swap_during_directory_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requested_parent = tmp_path / "requested"
+    alternate_parent = tmp_path / "alternate"
+    held_parent = tmp_path / "held"
+    requested_parent.mkdir()
+    alternate_parent.mkdir()
+    requested = requested_parent / "worksheet.json"
+    alternate = alternate_parent / "worksheet.json"
+    source = _initialize(tmp_path, monkeypatch)
+    requested.write_bytes(source.read_bytes())
+    alternate.write_bytes(source.read_bytes())
+    requested.chmod(0o600)
+    alternate.chmod(0o600)
+    expected_parent = os.fspath(requested_parent.resolve())
+    original_open = exercise.os.open
+    swapped = False
+
+    def swap_parent_on_open(
+        target: object, flags: int, *args: object, **kwargs: object
+    ) -> int:
+        nonlocal swapped
+        if (
+            not swapped
+            and os.fspath(target) == expected_parent
+            and "dir_fd" not in kwargs
+        ):
+            swapped = True
+            requested_parent.rename(held_parent)
+            alternate_parent.rename(requested_parent)
+            try:
+                return original_open(target, flags, *args, **kwargs)
+            finally:
+                requested_parent.rename(alternate_parent)
+                held_parent.rename(requested_parent)
+        return original_open(target, flags, *args, **kwargs)
+
+    monkeypatch.setattr(exercise.os, "open", swap_parent_on_open)
+
+    with pytest.raises(exercise.ExerciseError):
+        exercise.worksheet_status(requested, exercise.ROOT)
+    assert swapped is True
+    assert _load(requested)["manual_checks"][exercise.MANUAL_CHECK_IDS[0]] == (
+        "not-run"
+    )
+
+
 @pytest.mark.parametrize("index_flag", ["--skip-worktree", "--assume-unchanged"])
 def test_demo_preflight_rejects_hidden_index_flags(
     tmp_path: Path, index_flag: str
@@ -589,6 +869,48 @@ def test_demo_preflight_rejects_hidden_index_flags(
     assert status.stdout == b""
     with pytest.raises(exercise.ExerciseError):
         REAL_VERIFY_DEMO_CHECKOUT(demo_repo)
+
+
+def test_demo_preflight_checks_executable_bit_even_when_git_ignores_it(
+    tmp_path: Path,
+) -> None:
+    demo_repo = _detached_demo_repo(tmp_path)
+    relative = "tools/session_prep_demo.html"
+    target = demo_repo / relative
+    subprocess.run(
+        ["git", "-C", str(demo_repo), "config", "core.fileMode", "false"],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    target.chmod(target.stat().st_mode | stat.S_IXUSR)
+    status_result = subprocess.run(
+        ["git", "-C", str(demo_repo), "status", "--porcelain=v1"],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert status_result.stdout == b""
+    with pytest.raises(exercise.ExerciseError):
+        REAL_VERIFY_DEMO_CHECKOUT(demo_repo)
+
+
+def test_demo_preflight_disables_repository_fsmonitor_command(tmp_path: Path) -> None:
+    demo_repo = _detached_demo_repo(tmp_path)
+    marker = tmp_path / "fsmonitor-ran"
+    command = tmp_path / "fsmonitor-hook"
+    command.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    command.chmod(0o700)
+    subprocess.run(
+        ["git", "-C", str(demo_repo), "config", "core.fsmonitor", str(command)],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert REAL_VERIFY_DEMO_CHECKOUT(demo_repo) == demo_repo.resolve()
+    assert not marker.exists()
 
 
 def test_demo_preflight_byte_compares_when_status_and_index_tag_are_blind(
@@ -698,6 +1020,170 @@ def test_valid_init_cli_creates_only_a_not_run_worksheet(tmp_path: Path) -> None
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
 
 
+def test_status_and_mark_cli_are_revision_bound_and_sanitized(tmp_path: Path) -> None:
+    worksheet = tmp_path / "worksheet.json"
+    demo_repo = _detached_demo_repo(tmp_path)
+    tool = exercise.ROOT / "tools/prepare_session_prep_ui_exercise.py"
+    initialized = subprocess.run(
+        [
+            sys.executable,
+            str(tool),
+            "init",
+            str(worksheet),
+            "--browser-engine",
+            "chromium",
+            "--browser-major",
+            "140",
+            "--screen-reader",
+            "voiceover",
+            "--demo-repo",
+            str(demo_repo),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert initialized.returncode == 0
+    sensitive = _load(worksheet)
+
+    status_result = subprocess.run(
+        [
+            sys.executable,
+            str(tool),
+            "status",
+            str(worksheet),
+            "--demo-repo",
+            str(demo_repo),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert status_result.returncode == 0
+    assert status_result.stderr == ""
+    assert "passed=0/44; remaining=44" in status_result.stdout
+    revision = re.search(r"revision=(sha256:[0-9a-f]{64})", status_result.stdout)
+    assert revision is not None
+    for hidden in (
+        str(worksheet),
+        sensitive["exercise_id"],
+        sensitive["challenge"],
+        "chromium",
+        "voiceover",
+    ):
+        assert hidden not in status_result.stdout
+
+    marked = subprocess.run(
+        [
+            sys.executable,
+            str(tool),
+            "mark",
+            str(worksheet),
+            exercise.MANUAL_CHECK_IDS[0],
+            "--expected-worksheet-sha256",
+            revision.group(1),
+            "--demo-repo",
+            str(demo_repo),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert marked.returncode == 0
+    assert marked.stderr == ""
+    assert "passed=1/44; remaining=43" in marked.stdout
+    assert _load(worksheet)["manual_checks"][exercise.MANUAL_CHECK_IDS[0]] == "pass"
+
+    stale = subprocess.run(
+        [
+            sys.executable,
+            str(tool),
+            "mark",
+            str(worksheet),
+            exercise.MANUAL_CHECK_IDS[1],
+            "--expected-worksheet-sha256",
+            revision.group(1),
+            "--demo-repo",
+            str(demo_repo),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert stale.returncode == 1
+    assert stale.stdout == ""
+    assert stale.stderr.strip() == exercise.FAIL_SUMMARY
+    assert str(worksheet) not in stale.stderr
+
+
+def test_concurrent_mark_cli_allows_only_one_writer_for_one_revision(
+    tmp_path: Path,
+) -> None:
+    worksheet = tmp_path / "worksheet.json"
+    demo_repo = _detached_demo_repo(tmp_path)
+    tool = exercise.ROOT / "tools/prepare_session_prep_ui_exercise.py"
+    initialized = subprocess.run(
+        [
+            sys.executable,
+            str(tool),
+            "init",
+            str(worksheet),
+            "--browser-engine",
+            "chromium",
+            "--browser-major",
+            "140",
+            "--screen-reader",
+            "voiceover",
+            "--demo-repo",
+            str(demo_repo),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert initialized.returncode == 0
+    revision = _revision(worksheet)
+
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(tool),
+                "mark",
+                str(worksheet),
+                check_id,
+                "--expected-worksheet-sha256",
+                revision,
+                "--demo-repo",
+                str(demo_repo),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for check_id in (exercise.MANUAL_CHECK_IDS[0],) * 2
+    ]
+    results = [process.communicate(timeout=30) for process in processes]
+
+    assert sorted(process.returncode for process in processes) == [0, 1]
+    worksheet_value = _load(worksheet)
+    assert (
+        sum(value == "pass" for value in worksheet_value["manual_checks"].values()) == 1
+    )
+    for process, (stdout, stderr) in zip(processes, results, strict=True):
+        if process.returncode == 0:
+            assert stderr == ""
+            assert "passed=1/44; remaining=43" in stdout
+        else:
+            assert stdout == ""
+            assert stderr.strip() == exercise.FAIL_SUMMARY
+
+
 def test_real_seal_runs_pinned_verifier_and_both_offline_harnesses(
     tmp_path: Path,
 ) -> None:
@@ -762,6 +1248,18 @@ def test_real_seal_runs_pinned_verifier_and_both_offline_harnesses(
         [],
         ["init"],
         ["seal", "SENSITIVE_MISSING"],
+        ["status", "SENSITIVE_MISSING"],
+        ["mark", "SENSITIVE_PATH", "SENSITIVE_CHECK"],
+        [
+            "mark",
+            "SENSITIVE_PATH",
+            "states.ready.heading_and_status",
+            "states.ready.bounded_brief_readable",
+            "--expected-worksheet-sha256",
+            "sha256:" + "0" * 64,
+            "--demo-repo",
+            "SENSITIVE_REPO",
+        ],
         ["--SENSITIVE_UNKNOWN_FLAG"],
         [
             "init",

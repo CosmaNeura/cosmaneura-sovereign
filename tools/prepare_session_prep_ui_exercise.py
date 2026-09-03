@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Prepare and seal a closed synthetic Session Prep UI exercise worksheet.
+"""Prepare, checkpoint, and seal a synthetic Session Prep UI exercise.
 
-The two-stage workflow deliberately starts every manual observation at
-``not-run``.  Sealing succeeds only after every closed observation is
-explicitly ``pass`` and the unchanged pinned UI evidence verifier accepts the
-resulting receipt and its exact offline harnesses.
+The workflow deliberately starts every manual observation at ``not-run`` and
+permits only revision-bound, one-check ``not-run`` to ``pass`` updates. Sealing
+succeeds only after every closed observation is explicitly ``pass`` and the
+unchanged pinned UI evidence verifier accepts the resulting receipt and its
+exact offline harnesses.
 
 This tool does not open a browser, contact a service, accept free-form text,
 or prove that a human performed the observations.
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -65,6 +67,7 @@ TIMESTAMP_PATTERN = re.compile(
 )
 EXERCISE_ID_PATTERN = re.compile(r"uxrun_[0-9a-f]{32}\Z")
 CHALLENGE_PATTERN = re.compile(r"uxchallenge_[0-9a-f]{32}\Z")
+SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 BROWSER_ENGINES = frozenset({"chromium", "firefox", "webkit"})
 SCREEN_READERS = frozenset({"jaws", "nvda", "orca", "talkback", "voiceover"})
 
@@ -124,6 +127,8 @@ SEAL_PASS_SUMMARY = (
     "[PASS] synthetic-only Session Prep UI receipt sealed; pinned automated "
     "support validated and the operator attestation remains unproven."
 )
+STATUS_PASS_PREFIX = "[PASS] synthetic-only Session Prep UI worksheet progress"
+MARK_PASS_PREFIX = "[PASS] synthetic-only Session Prep UI check recorded"
 FAIL_SUMMARY = "[FAIL] synthetic-only Session Prep UI worksheet rejected."
 
 
@@ -233,6 +238,48 @@ def _read_bounded_regular(path: Path, maximum: int) -> bytes:
     if len(raw) > maximum:
         _fail("The input exceeds the maximum size")
     return raw
+
+
+def _read_bounded_private_regular(path: Path, maximum: int) -> bytes:
+    parent: Path | None = None
+    directory_descriptor: int | None = None
+    descriptor: int | None = None
+    try:
+        parent, directory_descriptor, parent_identity = _open_bound_parent(path)
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_descriptor,
+        )
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        raw, identity = _read_locked_private(descriptor, maximum)
+        current_path = os.stat(
+            path.name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        if (current_path.st_dev, current_path.st_ino) != identity[:2]:
+            _fail("The private input path changed while it was being read")
+        _assert_bound_parent(parent, directory_descriptor, parent_identity)
+        return raw
+    except ExerciseError:
+        raise
+    except OSError:
+        _fail("The private input could not be read")
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if directory_descriptor is not None:
+            try:
+                os.close(directory_descriptor)
+            except OSError:
+                pass
 
 
 def _parse_closed_json(raw: bytes) -> dict[str, Any]:
@@ -411,8 +458,7 @@ def _validate_started_at(started_at_utc: Any, now: dt.datetime) -> str:
     return started_at_utc
 
 
-def load_completed_worksheet(path: Path, now: dt.datetime) -> dict[str, Any]:
-    raw = _read_bounded_regular(path, MAX_WORKSHEET_BYTES)
+def _validate_open_worksheet(raw: bytes, now: dt.datetime) -> dict[str, Any]:
     worksheet = _parse_closed_json(raw)
     environment = worksheet.get("environment")
     if type(environment) is not dict:
@@ -426,6 +472,20 @@ def load_completed_worksheet(path: Path, now: dt.datetime) -> dict[str, Any]:
         worksheet.get("exercise_id"), worksheet.get("challenge")
     )
     started_at_utc = _validate_started_at(worksheet.get("started_at_utc"), now)
+    manual_checks = worksheet.get("manual_checks")
+    if type(manual_checks) is not dict or set(manual_checks) != set(MANUAL_CHECK_IDS):
+        _fail("The worksheet contains missing or unknown checks")
+    if any(
+        type(value) is not str or value not in {"not-run", "pass"}
+        for value in manual_checks.values()
+    ):
+        _fail("The worksheet contains an unapproved check status")
+    reached_pending = False
+    for check_id in MANUAL_CHECK_IDS:
+        if manual_checks[check_id] == "not-run":
+            reached_pending = True
+        elif reached_pending:
+            _fail("The worksheet checks are not a contiguous completed prefix")
     expected = _expected_worksheet(
         started_at_utc,
         exercise_id,
@@ -433,10 +493,41 @@ def load_completed_worksheet(path: Path, now: dt.datetime) -> dict[str, Any]:
         browser_engine,
         browser_major,
         screen_reader,
-        "pass",
+        "not-run",
     )
+    expected["manual_checks"] = dict(manual_checks)
     _assert_exact(worksheet, expected)
     return worksheet
+
+
+def _load_open_worksheet(path: Path, now: dt.datetime) -> tuple[dict[str, Any], bytes]:
+    raw = _read_bounded_private_regular(path, MAX_WORKSHEET_BYTES)
+    return _validate_open_worksheet(raw, now), raw
+
+
+def load_completed_worksheet(path: Path, now: dt.datetime) -> dict[str, Any]:
+    worksheet, _raw = _load_open_worksheet(path, now)
+    if any(value != "pass" for value in worksheet["manual_checks"].values()):
+        _fail("The worksheet is incomplete")
+    return worksheet
+
+
+def _worksheet_revision(raw: bytes) -> str:
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _progress_summary(worksheet: dict[str, Any], raw: bytes) -> str:
+    checks = worksheet["manual_checks"]
+    passed = sum(checks[check_id] == "pass" for check_id in MANUAL_CHECK_IDS)
+    total = len(MANUAL_CHECK_IDS)
+    next_check = next(
+        (check_id for check_id in MANUAL_CHECK_IDS if checks[check_id] == "not-run"),
+        "complete",
+    )
+    return (
+        f"{STATUS_PASS_PREFIX} passed={passed}/{total}; remaining={total - passed}; "
+        f"next={next_check}; revision={_worksheet_revision(raw)}"
+    )
 
 
 def _manual_observations() -> dict[str, Any]:
@@ -605,7 +696,17 @@ def _git_environment() -> dict[str, str]:
 def _run_git(repo: Path, arguments: Sequence[str], maximum: int) -> bytes:
     try:
         completed = subprocess.run(
-            ["git", "--no-replace-objects", "-C", os.fspath(repo), *arguments],
+            [
+                "git",
+                "--no-replace-objects",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-C",
+                os.fspath(repo),
+                *arguments,
+            ],
             check=False,
             capture_output=True,
             timeout=15,
@@ -613,7 +714,11 @@ def _run_git(repo: Path, arguments: Sequence[str], maximum: int) -> bytes:
         )
     except (OSError, subprocess.SubprocessError):
         _fail("The pinned verifier Git object could not be read")
-    if completed.returncode != 0 or len(completed.stdout) > maximum:
+    if (
+        completed.returncode != 0
+        or len(completed.stdout) > maximum
+        or len(completed.stderr) > maximum
+    ):
         _fail("The pinned verifier Git object could not be read")
     return completed.stdout
 
@@ -694,9 +799,20 @@ def _verify_tracked_worktree(top_level: Path) -> None:
             try:
                 if candidate.resolve(strict=True) != candidate.absolute():
                     _fail("The demo checkout path is not canonical")
+                before = os.stat(candidate, follow_symlinks=False)
             except OSError:
                 _fail("The demo checkout path could not be inspected")
+            if not stat.S_ISREG(before.st_mode) or bool(before.st_mode & 0o111) != (
+                mode == b"100755"
+            ):
+                _fail("The demo checkout mode does not match the pinned tree")
             raw = _read_bounded_regular(candidate, MAX_TRACKED_FILE_BYTES)
+            try:
+                after = os.stat(candidate, follow_symlinks=False)
+            except OSError:
+                _fail("The demo checkout path could not be inspected")
+            if _private_identity(before) != _private_identity(after):
+                _fail("The demo checkout path changed while it was being verified")
         elif mode == b"120000":
             try:
                 if not candidate.is_symlink():
@@ -726,28 +842,305 @@ def _verify_demo_checkout(repo: Path) -> Path:
         _fail("The demo checkout path is not its canonical worktree root")
 
     head = _run_git(top_level, ["rev-parse", "--verify", "HEAD^{commit}"], 128)
+    if head != f"{UI_SOURCE_COMMIT}\n".encode("ascii"):
+        _fail("The demo checkout is not the exact pinned commit")
     tree = _run_git(top_level, ["rev-parse", "--verify", "HEAD^{tree}"], 128)
+    if tree != f"{UI_SOURCE_TREE}\n".encode("ascii"):
+        _fail("The demo checkout is not the exact pinned tree")
     branch = _run_git(top_level, ["rev-parse", "--abbrev-ref", "HEAD"], 128)
+    if branch != b"HEAD\n":
+        _fail("The demo checkout is not detached")
     status_output = _run_git(
         top_level,
         [
             "status",
             "--porcelain=v1",
-            "--untracked-files=all",
+            "--untracked-files=normal",
             "--ignored=matching",
         ],
         4 * 1024,
     )
-    if head != f"{UI_SOURCE_COMMIT}\n".encode("ascii"):
-        _fail("The demo checkout is not the exact pinned commit")
-    if tree != f"{UI_SOURCE_TREE}\n".encode("ascii"):
-        _fail("The demo checkout is not the exact pinned tree")
-    if branch != b"HEAD\n":
-        _fail("The demo checkout is not detached")
     if status_output != b"":
         _fail("The demo checkout is not clean")
     _verify_tracked_worktree(top_level)
     return top_level
+
+
+def _directory_identity(value: os.stat_result) -> tuple[int, int, int]:
+    return value.st_dev, value.st_ino, value.st_mode
+
+
+def _assert_bound_parent(
+    parent: Path,
+    descriptor: int,
+    expected_identity: tuple[int, int, int],
+) -> None:
+    try:
+        opened = os.fstat(descriptor)
+        current = os.stat(parent, follow_symlinks=False)
+    except OSError:
+        _fail("The worksheet parent could not be inspected")
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or _directory_identity(opened) != expected_identity
+        or _directory_identity(current) != expected_identity
+    ):
+        _fail("The worksheet parent changed during the operation")
+
+
+def _open_bound_parent(path: Path) -> tuple[Path, int, tuple[int, int, int]]:
+    if path.name in {"", ".", ".."}:
+        _fail("The worksheet path is invalid")
+    try:
+        parent = path.parent.resolve(strict=True)
+        before = os.stat(parent, follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode):
+            _fail("The worksheet parent is not a directory")
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(parent, flags)
+    except ExerciseError:
+        raise
+    except OSError:
+        _fail("The worksheet parent could not be opened")
+    identity = _directory_identity(before)
+    try:
+        _assert_bound_parent(parent, descriptor, identity)
+    except Exception:
+        os.close(descriptor)
+        raise
+    return parent, descriptor, identity
+
+
+def _private_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _read_locked_private(
+    descriptor: int, maximum: int
+) -> tuple[bytes, tuple[int, ...]]:
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_nlink != 1
+            or before.st_size > maximum
+        ):
+            _fail("The private input has unsafe filesystem metadata")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        chunks: list[bytes] = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
+    except OSError:
+        _fail("The private input could not be read")
+    if (
+        len(raw) > maximum
+        or len(raw) != after.st_size
+        or _private_identity(before) != _private_identity(after)
+    ):
+        _fail("The private input changed while it was being read")
+    return raw, _private_identity(after)
+
+
+def _replace_locked_worksheet(
+    path: Path,
+    check_id: str,
+    expected_revision: str,
+    now: dt.datetime,
+    demo_root: Path,
+) -> bytes:
+    file_flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    file_flags |= getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    parent: Path | None = None
+    directory_descriptor: int | None = None
+    parent_identity: tuple[int, int, int] | None = None
+    worksheet_descriptor: int | None = None
+    temporary_descriptor: int | None = None
+    temporary_name: str | None = None
+    try:
+        parent, directory_descriptor, parent_identity = _open_bound_parent(path)
+        _reject_path_within_demo_repo(parent / path.name, demo_root)
+        worksheet_descriptor = os.open(
+            path.name,
+            file_flags,
+            dir_fd=directory_descriptor,
+        )
+        fcntl.flock(worksheet_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        raw, original_identity = _read_locked_private(
+            worksheet_descriptor, MAX_WORKSHEET_BYTES
+        )
+        current_path = os.stat(
+            path.name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        if (current_path.st_dev, current_path.st_ino) != original_identity[:2]:
+            _fail("The worksheet path changed before it could be updated")
+        _assert_bound_parent(parent, directory_descriptor, parent_identity)
+        if _worksheet_revision(raw) != expected_revision:
+            _fail("The worksheet revision is stale")
+
+        worksheet = _validate_open_worksheet(raw, now)
+        next_check = next(
+            (
+                candidate
+                for candidate in MANUAL_CHECK_IDS
+                if worksheet["manual_checks"][candidate] == "not-run"
+            ),
+            None,
+        )
+        if check_id != next_check:
+            _fail("The worksheet check is not the next approved observation")
+        updated = dict(worksheet)
+        updated_checks = dict(worksheet["manual_checks"])
+        updated_checks[check_id] = "pass"
+        updated["manual_checks"] = updated_checks
+        updated_raw = _json_bytes(updated)
+        if len(updated_raw) > MAX_WORKSHEET_BYTES:
+            _fail("The worksheet output exceeds the maximum size")
+
+        for _attempt in range(4):
+            candidate = f".session-prep-ui-update-{os.urandom(16).hex()}.tmp"
+            try:
+                temporary_descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=directory_descriptor,
+                )
+            except FileExistsError:
+                continue
+            temporary_name = candidate
+            break
+        if temporary_descriptor is None or temporary_name is None:
+            _fail("A private worksheet update could not be created")
+
+        os.fchmod(temporary_descriptor, 0o600)
+        offset = 0
+        while offset < len(updated_raw):
+            written = os.write(temporary_descriptor, updated_raw[offset:])
+            if written <= 0:
+                _fail("The worksheet update could not be written")
+            offset += written
+        os.fsync(temporary_descriptor)
+        completed = os.fstat(temporary_descriptor)
+        if (
+            completed.st_size != len(updated_raw)
+            or stat.S_IMODE(completed.st_mode) != 0o600
+        ):
+            _fail("The worksheet update could not be finalized privately")
+        os.close(temporary_descriptor)
+        temporary_descriptor = None
+
+        _verify_demo_checkout(demo_root)
+        current_raw, current_identity = _read_locked_private(
+            worksheet_descriptor, MAX_WORKSHEET_BYTES
+        )
+        current_path = os.stat(
+            path.name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            current_raw != raw
+            or current_identity != original_identity
+            or (current_path.st_dev, current_path.st_ino) != original_identity[:2]
+        ):
+            _fail("The worksheet changed before it could be updated")
+        _assert_bound_parent(parent, directory_descriptor, parent_identity)
+
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
+        temporary_name = None
+        os.fsync(directory_descriptor)
+        return updated_raw
+    except ExerciseError:
+        raise
+    except (OSError, subprocess.SubprocessError):
+        _fail("The worksheet could not be updated")
+    finally:
+        if temporary_descriptor is not None:
+            try:
+                os.close(temporary_descriptor)
+            except OSError:
+                pass
+        if temporary_name is not None and directory_descriptor is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_descriptor)
+            except OSError:
+                pass
+        if worksheet_descriptor is not None:
+            try:
+                os.close(worksheet_descriptor)
+            except OSError:
+                pass
+        if directory_descriptor is not None:
+            try:
+                os.close(directory_descriptor)
+            except OSError:
+                pass
+
+
+def worksheet_status(path: Path, demo_repo: Path) -> str:
+    demo_root = _verify_demo_checkout(demo_repo)
+    _reject_path_within_demo_repo(path, demo_root)
+    worksheet, raw = _load_open_worksheet(path, _utc_now())
+    return _progress_summary(worksheet, raw)
+
+
+def mark_check(
+    path: Path,
+    check_id: str,
+    expected_revision: str,
+    demo_repo: Path,
+) -> str:
+    if check_id not in MANUAL_CHECK_IDS:
+        _fail("The worksheet check identifier is invalid")
+    if (
+        type(expected_revision) is not str
+        or SHA256_PATTERN.fullmatch(expected_revision) is None
+    ):
+        _fail("The worksheet revision is invalid")
+    demo_root = _verify_demo_checkout(demo_repo)
+    _reject_path_within_demo_repo(path, demo_root)
+    now = _utc_now()
+    updated_raw = _replace_locked_worksheet(
+        path,
+        check_id,
+        expected_revision,
+        now,
+        demo_root,
+    )
+    updated = _validate_open_worksheet(updated_raw, now)
+    return _progress_summary(updated, updated_raw).replace(
+        STATUS_PASS_PREFIX,
+        f"{MARK_PASS_PREFIX} {check_id}; progress",
+        1,
+    )
 
 
 def _pinned_verifier_bytes(repo: Path) -> bytes:
@@ -913,6 +1306,14 @@ def _parser() -> argparse.ArgumentParser:
     seal_parser.add_argument("worksheet", type=Path)
     seal_parser.add_argument("receipt", type=Path)
     seal_parser.add_argument("--demo-repo", required=True, type=Path)
+    status_parser = commands.add_parser("status")
+    status_parser.add_argument("worksheet", type=Path)
+    status_parser.add_argument("--demo-repo", required=True, type=Path)
+    mark_parser = commands.add_parser("mark")
+    mark_parser.add_argument("worksheet", type=Path)
+    mark_parser.add_argument("check_id")
+    mark_parser.add_argument("--expected-worksheet-sha256", required=True)
+    mark_parser.add_argument("--demo-repo", required=True, type=Path)
     return parser
 
 
@@ -928,9 +1329,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 arguments.demo_repo,
             )
             summary = INIT_PASS_SUMMARY
-        else:
+        elif arguments.command == "seal":
             seal(arguments.worksheet, arguments.receipt, arguments.demo_repo)
             summary = SEAL_PASS_SUMMARY
+        elif arguments.command == "status":
+            summary = worksheet_status(arguments.worksheet, arguments.demo_repo)
+        else:
+            summary = mark_check(
+                arguments.worksheet,
+                arguments.check_id,
+                arguments.expected_worksheet_sha256,
+                arguments.demo_repo,
+            )
     except Exception:
         print(FAIL_SUMMARY, file=sys.stderr)
         return 1
