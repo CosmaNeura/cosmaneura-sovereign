@@ -199,8 +199,9 @@ def test_demo_assets_and_controller_are_local_and_non_persistent() -> None:
     assert source.count(CONTROLLER_END_MARKER) == 1
     assert "https://" not in source
     assert "http://" not in source
-    assert 'fetch("/demo/session-prep/state/"+mode,{method:"POST"})' in source
-    assert 'fetch("/demo/session-prep/trace",{cache:"no-store"})' in source
+    assert 'window.fetch("/demo/session-prep/state/"+mode,{method:"POST"})' in source
+    assert 'window.fetch("/demo/session-prep/trace",{cache:"no-store"' in source
+    assert 'options.headers["X-Cosmaneura-Demo-Run-ID"]=activeRunId' in source
     assert "localStorage" not in source
     assert "sessionStorage" not in source
     assert not [
@@ -286,7 +287,7 @@ def test_demo_controller_harness_uses_exact_unambiguous_delimiters(
         assert expected_error in completed.stderr
 
 
-def test_demo_self_test_proves_one_current_canonical_write_per_mode() -> None:
+def test_demo_self_test_proves_correlated_current_evidence_per_mode() -> None:
     completed = subprocess.run(
         [sys.executable, "-m", "tools.run_session_prep_demo", "--self-test"],
         cwd=ROOT,
@@ -305,6 +306,7 @@ def test_demo_self_test_proves_one_current_canonical_write_per_mode() -> None:
     for mode, outcome in expected_outcomes.items():
         writes = evidence["states"][mode]["canonical_writes"]
         assert len(writes) == 1
+        assert re.fullmatch(r"demo_run_[0-9a-f]{32}", writes[0]["run_id"])
         assert writes[0]["state"] == outcome
         assert type(writes[0]["characters"]) is int
         assert writes[0]["characters"] > 0

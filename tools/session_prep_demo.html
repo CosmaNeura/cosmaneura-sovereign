@@ -60,7 +60,18 @@
   "use strict";
   var status=document.getElementById("demo-status"),calls=document.getElementById("calls"),
       traceStatus=document.getElementById("trace-status"),buttons=[].slice.call(document.querySelectorAll(".mode"));
-  var mountToken="synthetic-session-prep-mount-token",recordId="synthetic_session_prep_record",authorityOpen=false,confirmedMode=null;
+  var mountToken="synthetic-session-prep-mount-token",recordId="synthetic_session_prep_record",authorityOpen=false,confirmedMode=null,activeRunId=null;
+  var nativeFetch=window.fetch.bind(window);
+  window.fetch=function(input,options){
+    var target=typeof input==="string"?input:input&&input.url;
+    if(target==="/session-prep"||target===window.location.origin+"/session-prep"){
+      if(!activeRunId)return Promise.reject(new Error("synthetic demo run unavailable"));
+      options=Object.assign({},options||{});
+      options.headers=Object.assign({},options.headers||{});
+      options.headers["X-Cosmaneura-Demo-Run-ID"]=activeRunId;
+    }
+    return nativeFetch(input,options);
+  };
   var panel=window.CosmaNeuraPanel.mount({
     sovereignUrl:window.location.origin,embedVersion:"1.0",allowLoopbackHttp:true,
     getAuthToken:async function(){return mountToken;},
@@ -68,7 +79,7 @@
     loadHistory:async function(){return null;},onHumanContact:async function(){},
     onAccessChange:function(granted){
       authorityOpen=granted===true;
-      if(!authorityOpen){confirmedMode=null;selectMode(null);status.textContent="Synthetic authority was closed.";}
+      if(!authorityOpen){activeRunId=null;confirmedMode=null;selectMode(null);status.textContent="Synthetic authority was closed.";}
       busy(false);
     }
   });
@@ -86,10 +97,12 @@
     var actual=Object.keys(value).sort(),expected=keys.slice().sort();
     return actual.length===expected.length&&actual.every(function(key,index){return key===expected[index];});
   }
-  function verifiedTrace(trace,mode){
+  function validRunId(value){return typeof value==="string"&&/^demo_run_[0-9a-f]{32}$/.test(value);}
+  function verifiedTrace(trace,mode,runId){
     var expected={ready:["pending","refreshing","ready"],refreshing:["refreshing","refreshing","refreshing"],pending:["pending","pending","pending"],unavailable:["unavailable"]}[mode];
     var expectedOutcome=mode==="unavailable"?"unavailable":"completed";
-    if(!expected||!exactKeys(trace,["mode","calls","canonical_writes"])||trace.mode!==mode||
+    if(!expected||!exactKeys(trace,["run_id","mode","calls","canonical_writes"])||trace.run_id!==runId||
+       !validRunId(trace.run_id)||trace.mode!==mode||
        !Array.isArray(trace.calls)||trace.calls.length!==expected.length||
        !Array.isArray(trace.canonical_writes)||trace.canonical_writes.length!==1)return false;
     var callsValid=trace.calls.every(function(call,index){
@@ -100,14 +113,15 @@
         call.same_body===true&&call.new_poll_key===true&&call.authority_headers===true;
     });
     var write=trace.canonical_writes[0];
-    return callsValid&&exactKeys(write,["state","characters"])&&write.state===expectedOutcome&&
+    return callsValid&&exactKeys(write,["run_id","state","characters"])&&write.run_id===runId&&
+      write.state===expectedOutcome&&
       Number.isInteger(write.characters)&&write.characters>0;
   }
-  async function refreshTrace(mode){
-    var response=await fetch("/demo/session-prep/trace",{cache:"no-store"});
+  async function refreshTrace(mode,runId){
+    var response=await window.fetch("/demo/session-prep/trace",{cache:"no-store",headers:{"X-Cosmaneura-Demo-Run-ID":runId}});
     if(!response.ok||response.status!==200)throw new Error("trace unavailable");
     var trace=await response.json();
-    if(!verifiedTrace(trace,mode))throw new Error("trace verification failed");
+    if(!verifiedTrace(trace,mode,runId))throw new Error("trace verification failed");
     calls.innerHTML="";
     trace.calls.forEach(function(call){
       var row=document.createElement("div");row.className="call";row.setAttribute("role","listitem");
@@ -118,18 +132,21 @@
     traceStatus.textContent=trace.calls.length+" verified Core call"+(trace.calls.length===1?"":"s");
   }
   async function run(mode){
+    var runId=null;
     busy(true);status.textContent="Running the "+mode+" fixture through Sovereign…";
     try{
-      var stateResponse=await fetch("/demo/session-prep/state/"+mode,{method:"POST"});
+      var stateResponse=await window.fetch("/demo/session-prep/state/"+mode,{method:"POST"});
       if(!stateResponse.ok||stateResponse.status!==200)throw new Error("state unavailable");
       var selected=await stateResponse.json();
-      if(!exactKeys(selected,["mode"])||selected.mode!==mode)throw new Error("state mismatch");
+      if(!exactKeys(selected,["mode","run_id"])||selected.mode!==mode||!validRunId(selected.run_id))throw new Error("state mismatch");
+      runId=selected.run_id;activeRunId=runId;
       if(!authorityOpen)throw new Error("authority unavailable");
       var action=panel.root.querySelector(".cnp-prep-go");
       if(!action||typeof action.onclick!=="function")throw new Error("action unavailable");
       await action.onclick();
+      if(activeRunId===runId)activeRunId=null;
       if(!authorityOpen)throw new Error("authority unavailable");
-      await refreshTrace(mode);
+      await refreshTrace(mode,runId);
       if(!authorityOpen)throw new Error("authority unavailable");
       confirmedMode=mode;selectMode(confirmedMode);
       status.textContent="Rendered the "+mode+" state through the real vertical slice.";
@@ -137,7 +154,7 @@
       selectMode(confirmedMode);
       if(authorityOpen)status.textContent="The synthetic run failed closed. Check the local terminal.";
     }
-    finally{busy(false);}
+    finally{if(activeRunId===runId)activeRunId=null;busy(false);}
   }
   buttons.forEach(function(button){button.onclick=function(){return run(button.dataset.mode);};});
   busy(true);

@@ -134,10 +134,21 @@ async function main() {
   let traceMutation = null;
   let actionCalls = 0;
   let latestTrace = null;
+  let currentRunId = null;
+  let runCounter = 0;
   const requests = [];
   const listeners = {};
 
-  function traceFor(mode) {
+  function runId(number) {
+    return "demo_run_" + number.toString(16).padStart(32, "0");
+  }
+
+  function nextRunId() {
+    runCounter += 1;
+    return runId(runCounter);
+  }
+
+  function traceFor(mode, runId) {
     const states = {
       ready: ["pending", "refreshing", "ready"],
       refreshing: ["refreshing", "refreshing", "refreshing"],
@@ -145,6 +156,7 @@ async function main() {
       unavailable: ["unavailable"],
     }[mode];
     return {
+      run_id: runId,
       mode,
       calls: states.map((state, index) => ({
         call: index + 1,
@@ -160,6 +172,7 @@ async function main() {
         authority_headers: true,
       })),
       canonical_writes: [{
+        run_id: runId,
         state: mode === "unavailable" ? "unavailable" : "completed",
         characters: 80,
       }],
@@ -175,7 +188,11 @@ async function main() {
       return;
     }
     if (actionBehavior === "noop") return;
-    latestTrace = traceFor(currentMode);
+    await window.fetch(window.location.origin + "/session-prep", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
     if (traceMutation) {
       traceMutation(latestTrace);
       traceMutation = null;
@@ -206,27 +223,39 @@ async function main() {
     },
     addEventListener: (event, handler) => { listeners[event] = handler; },
   };
-  const fetch = async (url, options = {}) => {
+  async function fetch(url, options = {}) {
     requests.push({ url, options });
     if (url.startsWith("/demo/session-prep/state/")) {
       currentMode = url.split("/").pop();
-      latestTrace = { mode: currentMode, calls: [], canonical_writes: [] };
+      currentRunId = nextRunId();
+      latestTrace = {
+        run_id: currentRunId, mode: currentMode, calls: [], canonical_writes: [],
+      };
       if (failNextState) {
         failNextState = false;
         throw new TypeError("synthetic connection failure");
       }
       if (heldState) return heldState.promise;
-      const payload = nextStatePayload || { mode: currentMode };
+      const payload = nextStatePayload || { mode: currentMode, run_id: currentRunId };
       const statusCode = nextStateStatus;
       nextStatePayload = null;
       nextStateStatus = 200;
       return response(payload, statusCode);
     }
+    if (url === window.location.origin + "/session-prep" || url === "/session-prep") {
+      assert(options.headers["X-Cosmaneura-Demo-Run-ID"] === currentRunId,
+        "panel action did not carry the current server-issued run id");
+      latestTrace = traceFor(currentMode, currentRunId);
+      return response({}, 200);
+    }
     assert(url === "/demo/session-prep/trace", "unexpected demo request: " + url);
+    assert(options.headers["X-Cosmaneura-Demo-Run-ID"] === currentRunId,
+      "trace request did not carry the current server-issued run id");
     const statusCode = nextTraceStatus;
     nextTraceStatus = 200;
     return response(latestTrace, statusCode);
-  };
+  }
+  window.fetch = fetch;
 
   vm.runInNewContext(controller, {
     document,
@@ -264,6 +293,7 @@ async function main() {
   assert(calls.children.every(row => row.getAttribute("role") === "listitem"),
     "trace rows were not semantic list items");
   assert(traceStatus.textContent === "3 verified Core calls", "ready trace count was unclear");
+  const initialRunId = currentRunId;
 
   for (const mode of ["refreshing", "unavailable"]) {
     await buttons[modes.indexOf(mode)].click();
@@ -284,7 +314,7 @@ async function main() {
   assert(buttons.every(button => button.disabled === true), "in-flight controls remained enabled");
   assert(selectedMode() === "unavailable",
     "in-flight request replaced the last confirmed mode");
-  heldState.resolve(response({ mode: "pending" }));
+  heldState.resolve(response({ mode: "pending", run_id: currentRunId }));
   heldState = null;
   await pendingRun;
   assert(status.getAttribute("aria-busy") === "false", "completed state remained busy");
@@ -302,17 +332,25 @@ async function main() {
   assert(actionCalls === actionsBeforeRejectedState,
     "non-success state response still invoked the panel action");
 
-  nextStatePayload = { mode: "unavailable" };
+  nextStatePayload = { mode: "unavailable", run_id: runId(runCounter + 1) };
   await buttons[modes.indexOf("ready")].click();
   assertClosedFailure("pending", "mismatched state response");
   assert(actionCalls === actionsBeforeRejectedState,
     "mismatched state response still invoked the panel action");
 
-  nextStatePayload = { mode: "ready", unexpected: true };
+  nextStatePayload = {
+    mode: "ready", run_id: runId(runCounter + 1), unexpected: true,
+  };
   await buttons[modes.indexOf("ready")].click();
   assertClosedFailure("pending", "open state response");
   assert(actionCalls === actionsBeforeRejectedState,
     "open state response still invoked the panel action");
+
+  nextStatePayload = { mode: "ready", run_id: "demo_run_not_a_nonce" };
+  await buttons[modes.indexOf("ready")].click();
+  assertClosedFailure("pending", "malformed server run id");
+  assert(actionCalls === actionsBeforeRejectedState,
+    "malformed server run id still invoked the panel action");
 
   actionBehavior = "noop";
   await buttons[modes.indexOf("ready")].click();
@@ -351,6 +389,17 @@ async function main() {
   await buttons[modes.indexOf("ready")].click();
   assertClosedFailure("pending", "mode-shaped canonical write");
 
+  traceMutation = trace => {
+    trace.run_id = initialRunId;
+    trace.canonical_writes[0].run_id = initialRunId;
+  };
+  await buttons[modes.indexOf("ready")].click();
+  assertClosedFailure("pending", "cross-run trace evidence");
+
+  traceMutation = trace => { trace.canonical_writes[0].run_id = initialRunId; };
+  await buttons[modes.indexOf("ready")].click();
+  assertClosedFailure("pending", "cross-run canonical write evidence");
+
   nextTraceStatus = 503;
   await buttons[modes.indexOf("ready")].click();
   assertClosedFailure("pending", "non-success trace response");
@@ -371,11 +420,21 @@ async function main() {
   const context = await mountOptions.getContext();
   assert(Object.keys(context).sort().join(",") === "care_model,clientId,thread_ref",
     "demo exposed unexpected browser context");
-  assert(requests.every(request => request.url.startsWith("/demo/session-prep/")),
+  assert(requests.every(request => request.url.startsWith("/demo/session-prep/") ||
+    request.url === "http://127.0.0.1:8765/session-prep"),
     "demo made a non-local request");
   assert(requests.filter(request => request.url.includes("/state/")).every(request =>
     request.options.method === "POST" && request.options.body === undefined),
   "state controls sent an unexpected request body");
+  assert(requests.filter(request => request.url.endsWith("/session-prep") &&
+    !request.url.includes("/demo/")).every(request =>
+      /^demo_run_[0-9a-f]{32}$/.test(
+        request.options.headers["X-Cosmaneura-Demo-Run-ID"] || "")),
+  "panel actions omitted the opaque server-issued run id");
+  assert(requests.filter(request => request.url.endsWith("/trace")).every(request =>
+    /^demo_run_[0-9a-f]{32}$/.test(
+      request.options.headers["X-Cosmaneura-Demo-Run-ID"] || "")),
+  "trace requests omitted the opaque server-issued run id");
 
   assert(typeof listeners.pagehide === "function", "pagehide teardown was not installed");
   listeners.pagehide();
