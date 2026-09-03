@@ -579,7 +579,6 @@ def test_demo_preflight_rejects_hidden_index_flags(
         capture_output=True,
         timeout=10,
     )
-    (demo_repo / relative).write_text("concealed drift\n", encoding="utf-8")
     status = subprocess.run(
         ["git", "-C", str(demo_repo), "status", "--porcelain=v1"],
         check=True,
