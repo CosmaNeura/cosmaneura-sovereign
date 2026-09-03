@@ -132,6 +132,18 @@ async function main() {
       randomUUID: () => `00000000-0000-4000-8000-${String(uuidCounter++).padStart(12, "0")}`,
     },
   };
+  let browserPersistenceTouches = 0;
+  ["localStorage", "sessionStorage", "indexedDB", "caches"].forEach(api => {
+    const descriptor = {
+      configurable: true,
+      get: () => {
+        browserPersistenceTouches += 1;
+        throw new Error("browser persistence access: " + api);
+      },
+    };
+    Object.defineProperty(global.window, api, descriptor);
+    Object.defineProperty(global, api, descriptor);
+  });
   Object.defineProperty(global, "navigator", {
     value: { clipboard: { writeText: async () => {} } },
     configurable: true,
@@ -174,6 +186,7 @@ async function main() {
     }
     if (url.endsWith("/session-prep")) {
       sessionPrepRequests.push({
+        url,
         body: options.body,
         authorization: options.headers.authorization,
         turn: options.headers["x-cosmaneura-client-turn-id"],
@@ -219,6 +232,7 @@ async function main() {
     }
     assert(url.endsWith("/chat"), "unexpected URL");
     chatRequests.push({
+      url,
       body: options.body,
       authorization: options.headers.authorization,
       turn: options.headers["x-cosmaneura-client-turn-id"],
@@ -364,7 +378,6 @@ async function main() {
       return {
         clientId: currentRecord,
         thread_ref: `thread_${currentRecord}`,
-        context_snapshot_ref: `snapshot_${currentRecord}`,
       };
     },
     onHumanContact: async action => {
@@ -415,6 +428,19 @@ async function main() {
          "first send included a forbidden top-level field");
   assert(sent.metadata.output_format === "chat",
          "local walkthrough did not send its locked chat format");
+  assert(!("context_snapshot_ref" in sent.metadata),
+         "generic chat metadata received the Session Prep handle");
+  assert(!chatRequests[0].body.includes("snapshot_record_a"),
+         "generic chat body serialized the Session Prep handle");
+  assert(chatRequests[0].url === "http://127.0.0.1:8000/chat" &&
+         !chatRequests[0].url.includes("snapshot_record_a"),
+         "generic chat URL exposed the Session Prep handle");
+  let renderedChatSurface = "";
+  walk(controller.root, node => {
+    renderedChatSurface += " " + node.textContent + " " + node.innerHTML;
+  });
+  assert(!renderedChatSurface.includes("snapshot_record_a"),
+         "generic chat rendered the Session Prep handle into the DOM");
   assert(!("history" in sent) && !("persona" in sent), "first send replayed raw browser state");
   assert(find(controller.root, node => node.innerHTML.includes("Governed answer")),
          "successful governed answer was not rendered");
@@ -473,8 +499,19 @@ async function main() {
   // browser request contains no record, patient, note, source, or artifact data.
   sessionPrepAdvertised = true;
   sessionPrepMode = "ready";
+  chatMode = "success";
   currentRecord = "record_prep_a";
-  let currentContextRef = "context_synthetic_001";
+  const serverOnlyContextRef = "context_synthetic_001";
+  const noteDetailContext = {
+    clientId: currentRecord,
+    thread_ref: `thread_${currentRecord}`,
+    digest_ref: "digest_must_not_cross_prep",
+    terminology: "client",
+    care_model: "must not cross",
+  };
+  assert(!("context_snapshot_ref" in noteDetailContext) &&
+         !JSON.stringify(noteDetailContext).includes(serverOnlyContextRef),
+         "generic NoteDetail context exposed the server-owned Session Prep handle");
   const prepController = window.CosmaNeuraPanel.mount({
     sovereignUrl: "https://sovereign.example",
     embedVersion: "1.0",
@@ -482,14 +519,8 @@ async function main() {
       tokenSequence += 1;
       return `opaque-token-prep-${String(tokenSequence).padStart(2, "0")}-abcdefghijkl`;
     },
-    getContext: async () => ({
-      clientId: currentRecord,
-      thread_ref: `thread_${currentRecord}`,
-      context_snapshot_ref: currentContextRef,
-      digest_ref: "digest_must_not_cross_prep",
-      terminology: "client",
-      care_model: "must not cross",
-    }),
+    getContext: async () => ({ ...noteDetailContext, clientId: currentRecord,
+                               thread_ref: `thread_${currentRecord}` }),
     onHumanContact: async () => {},
     loadHistory: async () => null,
   });
@@ -498,15 +529,27 @@ async function main() {
   const prepView = prepController.root.querySelector(".cnp-prep-view");
   assert(prepController.root.querySelector(".cnp-prep").hidden === false,
          "governed Session Prep path did not reveal the action");
+  const prepChatStart = chatRequests.length;
+  prepController.root.querySelector(".cnp-in").value = "generic chat before Session Prep";
+  await prepController.root.querySelector(".cnp-send").onclick();
+  const prepHostChat = chatRequests[prepChatStart];
+  assert(prepHostChat && prepHostChat.url === "https://sovereign.example/chat",
+         "prep-capable host did not use the exact generic chat URL");
+  assert(!("context_snapshot_ref" in JSON.parse(prepHostChat.body).metadata) &&
+         !prepHostChat.body.includes(serverOnlyContextRef) &&
+         !prepHostChat.url.includes(serverOnlyContextRef),
+         "prep-capable host exposed its Session Prep handle through generic chat");
   await prepGo.onclick();
   const firstPrep = JSON.parse(sessionPrepRequests[0].body);
-  assert(Object.keys(firstPrep).sort().join(",") ===
-         "client_turn_id,context_snapshot_ref",
+  assert(Object.keys(firstPrep).join(",") === "client_turn_id",
          "Session Prep request carried extra browser data");
-  assert(firstPrep.context_snapshot_ref === "context_synthetic_001",
-         "Session Prep request did not use the current comparison handle");
+  assert(!sessionPrepRequests[0].body.includes(serverOnlyContextRef),
+         "Session Prep browser body exposed the server-owned context handle");
+  assert(sessionPrepRequests[0].url === "https://sovereign.example/session-prep" &&
+         !sessionPrepRequests[0].url.includes(serverOnlyContextRef),
+         "Session Prep URL exposed the server-owned context handle");
   const firstPrepWire = sessionPrepRequests[0].body;
-  ["record_prep_a", "digest_must_not_cross_prep", "care model",
+  [serverOnlyContextRef, "record_prep_a", "digest_must_not_cross_prep", "care model",
    "patient", "note", "source_ref", "brief_ref"].forEach(value => {
     assert(!firstPrepWire.includes(value), "Session Prep leaked browser context: " + value);
   });
@@ -520,13 +563,15 @@ async function main() {
   walk(prepController.root, node => {
     renderedPrepSurface += " " + node.textContent + " " + node.innerHTML;
   });
-  ["context_synthetic_001", "record_prep_a", "digest_must_not_cross_prep",
+  [serverOnlyContextRef, "record_prep_a", "digest_must_not_cross_prep",
    "opaque-token-prep", "source_ref", "brief_ref"].forEach(value => {
     assert(!renderedPrepSurface.includes(value), "Session Prep leaked into the DOM: " + value);
   });
   ["localStorage", "sessionStorage", "indexedDB", "caches.open"].forEach(api => {
     assert(!source.includes(api), "Session Prep uses browser persistence: " + api);
   });
+  assert(browserPersistenceTouches === 0,
+         "panel touched a browser-persistence API while a Session Prep handle was installed");
 
   // A pending result replaces the old content rather than retaining it.
   sessionPrepMode = "pending";
@@ -577,7 +622,6 @@ async function main() {
   for (let i = 0; i < 5 && !releaseSessionPrep; i += 1) await Promise.resolve();
   assert(releaseSessionPrep, "late record response was not held");
   currentRecord = "record_prep_b";
-  currentContextRef = "context_synthetic_002";
   const recordSwitch = prepController.setRecord(currentRecord);
   assert(prepView.hidden === true && prepView.children.length === 0,
          "record switch did not synchronously clear Session Prep");
@@ -593,7 +637,8 @@ async function main() {
   sessionPrepMode = "late-ready";
   const lateEncounterResponse = prepGo.onclick();
   for (let i = 0; i < 5 && !releaseSessionPrep; i += 1) await Promise.resolve();
-  currentContextRef = "context_synthetic_003";
+  // The host explicitly advances the same-record generation; no snapshot
+  // handle is exposed to or compared by the browser.
   const encounterSwitch = prepController.setRecord(currentRecord);
   assert(prepView.hidden === true && prepView.children.length === 0,
          "encounter switch did not synchronously clear Session Prep");

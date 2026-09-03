@@ -75,7 +75,6 @@ def test_named_provider_completes_real_mock_orchestrator_walkthrough_offline():
                 "metadata": {
                     "clientId": "synthetic_walkthrough_01",
                     "thread_ref": "thread_synthetic_walkthrough_01",
-                    "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
                     "output_format": "chat",
                     "care_model": "synthetic walkthrough",
                 },
@@ -94,7 +93,6 @@ def test_named_provider_completes_real_mock_orchestrator_walkthrough_offline():
                 "metadata": {
                     "clientId": "synthetic_walkthrough_01",
                     "thread_ref": "thread_synthetic_walkthrough_01",
-                    "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
                     "output_format": "chat",
                     "care_model": "synthetic walkthrough",
                 },
@@ -113,7 +111,6 @@ def test_named_provider_completes_real_mock_orchestrator_walkthrough_offline():
                 "metadata": {
                     "clientId": "synthetic_walkthrough_01",
                     "thread_ref": "thread_synthetic_walkthrough_01",
-                    "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
                     "output_format": "chat",
                     "care_model": "synthetic walkthrough",
                 },
@@ -132,7 +129,6 @@ def test_named_provider_completes_real_mock_orchestrator_walkthrough_offline():
                 "metadata": {
                     "clientId": "synthetic_walkthrough_01",
                     "thread_ref": "thread_synthetic_walkthrough_01",
-                    "context_snapshot_ref": "snapshot_synthetic_walkthrough_01",
                     "output_format": "note",
                     "care_model": "synthetic walkthrough",
                 },

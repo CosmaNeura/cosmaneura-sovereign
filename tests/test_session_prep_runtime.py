@@ -10,7 +10,9 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
+import app.main as main_module
 from app.clients.platform_conversation import (ConversationReceipt,
                                                PlatformConversationClient,
                                                PlatformTurn)
@@ -24,7 +26,8 @@ from app.config import (AuthMode, DeploymentConfigurationError, MountProfile,
                         Settings, validate_deployment_configuration)
 from app.security.mount import (MountContext, MountResolution,
                                 MountResolutionError, MountResolver)
-from app.session_prep import project_session_prep_result, render_session_prep_text
+from app.session_prep import (SessionPrepOutcome, project_session_prep_result,
+                              render_session_prep_text)
 from app.sovereign.orchestrator import Sovereign
 
 FIXTURES = Path(__file__).parents[1] / "contracts/fixtures/provider-session-prep-v1"
@@ -377,8 +380,11 @@ def _sovereign(
     )
     return sovereign, resolver, session, conversation
 
-def test_sovereign_uses_canonical_action_and_never_calls_a_model() -> None:
-    sovereign, _resolver, session, conversation = _sovereign()
+def test_sovereign_derives_core_context_from_settings_and_never_calls_a_model() -> None:
+    server_context_ref = "context_synthetic_server_derived"
+    sovereign, _resolver, session, conversation = _sovereign(
+        settings=_settings(session_prep_synthetic_context_ref=server_context_ref),
+    )
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("Session Prep must not call a model or arbiter")
     sovereign.llm.complete = forbidden
@@ -386,14 +392,13 @@ def test_sovereign_uses_canonical_action_and_never_calls_a_model() -> None:
     sovereign.arbiter.review = forbidden
     outcome = _run(sovereign.read_session_prep(
         client_turn_id=TURN_ID,
-        context_snapshot_ref="context_synthetic_001",
         mount_context_token="mount_context_session_prep_0001",
     ))
     assert outcome.response.state == "ready"
     assert conversation.accepted[0]["action_code"] == "session-prep.open"
     request = session.calls[0]["request"]
     assert request.arguments.source_turn_ref == "turn_session_prep_0001"
-    assert request.arguments.context_snapshot_ref == "context_synthetic_001"
+    assert request.arguments.context_snapshot_ref == server_context_ref
     assert request.arguments.detail.value == "brief"
     assert conversation.final[0]["answer"] == render_session_prep_text(outcome.response)
     unsafe = _envelope("result-ready-brief.json")
@@ -401,11 +406,57 @@ def test_sovereign_uses_canonical_action_and_never_calls_a_model() -> None:
     session.response = SessionPrepContextReadResponse.model_validate(unsafe)
     blocked = _run(sovereign.read_session_prep(
         client_turn_id=TURN_ID,
-        context_snapshot_ref="context_synthetic_001",
         mount_context_token="mount_context_session_prep_0001",
     ))
     assert blocked.response.state == "unavailable"
     assert "Stop taking" not in conversation.final[-1]["answer"]
+
+def test_browser_route_accepts_only_correlation_and_forwards_no_context_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RouteSovereign:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def read_session_prep(self, **kwargs) -> SessionPrepOutcome:
+            self.calls.append(kwargs)
+            return SessionPrepOutcome(
+                response=project_session_prep_result(
+                    parse_session_prep_result(_fixture("result-ready-brief.json")),
+                    client_turn_id=TURN_ID,
+                ),
+                trace_id="trace_session_prep_route_0001",
+            )
+
+    sovereign = _RouteSovereign()
+    monkeypatch.setattr(main_module, "_sovereign", sovereign)
+    headers = {
+        "Authorization": "Bearer mount_context_session_prep_0001",
+        "X-Cosmaneura-Embed-Version": "1.0",
+        "X-Cosmaneura-Client-Turn-ID": str(TURN_ID),
+    }
+    client = TestClient(main_module.app)
+    response = client.post(
+        "/session-prep",
+        headers=headers,
+        json={"client_turn_id": str(TURN_ID)},
+    )
+    assert response.status_code == 200
+    assert sovereign.calls == [{
+        "client_turn_id": TURN_ID,
+        "mount_context_token": "mount_context_session_prep_0001",
+    }]
+
+    rejected = client.post(
+        "/session-prep",
+        headers=headers,
+        json={
+            "client_turn_id": str(TURN_ID),
+            "context_snapshot_ref": "context_synthetic_browser_forbidden",
+        },
+    )
+    assert rejected.status_code == 422
+    assert len(sovereign.calls) == 1
 
 @pytest.mark.parametrize(
     "settings,resolver,error_code",
@@ -422,7 +473,7 @@ def test_sovereign_uses_canonical_action_and_never_calls_a_model() -> None:
         ),
     ],
 )
-def test_disabled_mismatched_or_revoked_context_never_reaches_core(
+def test_disabled_unconfigured_or_revoked_context_never_reaches_core(
     settings: Settings,
     resolver: _Resolver,
     error_code: str,
@@ -436,7 +487,6 @@ def test_disabled_mismatched_or_revoked_context_never_reaches_core(
     with pytest.raises(MountResolutionError) as caught:
         _run(sovereign.read_session_prep(
             client_turn_id=TURN_ID,
-            context_snapshot_ref="context_synthetic_wrong",
             mount_context_token="mount_context_session_prep_0001",
         ))
     assert caught.value.code == error_code
