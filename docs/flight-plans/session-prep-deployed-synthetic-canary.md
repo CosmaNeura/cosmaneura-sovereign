@@ -69,8 +69,11 @@ For both modes, the canary:
 1. Refuses same-host provider and platform origins and follows no redirects.
 2. Requires the provider deployment to report `MOCK_MODE=false`, the
    `provider_assistant` mount, disabled direct auth, and platform authority.
-3. Requires the platform exchange's exact HTTP 201 response and obtains one
-   record-bound opaque mount token.
+3. Requires the platform exchange's exact HTTP 201 response and browser
+   credential contract: a bounded `mctx_` token plus strict RFC3339 issuance,
+   refresh, and expiry timestamps. Issuance may be at most 60 seconds ahead of
+   the canary clock, the timestamps must be strictly ordered, and refresh must
+   still be in the future.
 4. Requires every credential-bearing response—including the platform exchange—
    to echo embed version `1.0` and declare `Cache-Control: no-store`; all read
    bodies must also stay within 64 KiB and contain unambiguous JSON.
@@ -88,10 +91,11 @@ checks its feature gate first.
 one canonical `Open Session Prep` action and that `/session-prep` returns a
 strict, current `SessionPrepResponse` with at least one source and a bounded
 prepared brief. Before Pydantic validation, it applies the browser's closed
-wire checks for UUID, timestamp, number, boolean, list, object, and text types
-and bounds, preventing coercible non-browser values from passing. Unknown
-fields, server-only lineage keys, stale, pending, unavailable, malformed,
-oversized, redirected, or correlation-mismatched responses all fail the canary.
+wire checks for UUID, strict RFC3339 timestamp, number, boolean, list, object,
+and text types and bounds, preventing coercible or browser-incompatible values
+from passing. Unknown fields, server-only lineage keys, stale, pending,
+unavailable, malformed, oversized, redirected, or correlation-mismatched
+responses all fail the canary.
 
 ## Safe operator use
 

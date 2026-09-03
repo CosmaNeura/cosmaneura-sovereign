@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -16,9 +17,10 @@ from tools.deployed_smoke import SmokeFailure
 PROVIDER_URL = "https://provider.test"
 PLATFORM_URL = "https://platform.test"
 PROVIDER_TOKEN = "provider-header.provider-payload.provider-signature"
-MOUNT_TOKEN = "opaque-platform-mount-token-123456"
+MOUNT_TOKEN = f"mctx_{'a' * 48}"
 PLATFORM_RECORD_REF = "record_synthetic_session_prep"
 TRACE_ID = "trace_session_prep_canary"
+CANARY_NOW = datetime(2026, 9, 3, 12, 1, tzinfo=UTC)
 
 
 def _protected_headers(*, trace: bool = False) -> dict[str, str]:
@@ -64,6 +66,18 @@ def _problem_payload() -> dict:
     }
 
 
+def _exchange_payload(**updates: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "context_token": MOUNT_TOKEN,
+        "token_type": "Bearer",
+        "issued_at": "2026-09-03T12:00:00Z",
+        "refresh_after": "2026-09-03T12:04:00Z",
+        "expires_at": "2026-09-03T12:05:00Z",
+    }
+    payload.update(updates)
+    return payload
+
+
 SessionResponse = Callable[[httpx.Request], httpx.Response]
 
 
@@ -74,11 +88,15 @@ class SyntheticDeployment:
         enabled: bool,
         session_response: SessionResponse | None = None,
         exchange_headers: dict[str, str] | None = None,
+        exchange_payload: dict[str, object] | None = None,
         exchange_status: int = 201,
     ) -> None:
         self.enabled = enabled
         self.session_response = session_response
         self.exchange_headers = exchange_headers or _protected_headers()
+        self.exchange_payload = (
+            _exchange_payload() if exchange_payload is None else exchange_payload
+        )
         self.exchange_status = exchange_status
         self.requests: list[httpx.Request] = []
 
@@ -94,13 +112,7 @@ class SyntheticDeployment:
             }
             return httpx.Response(
                 self.exchange_status,
-                json={
-                    "context_token": MOUNT_TOKEN,
-                    "token_type": "Bearer",
-                    "issued_at": "2026-09-03T12:00:00Z",
-                    "refresh_after": "2026-09-03T12:04:00Z",
-                    "expires_at": "2026-09-03T12:05:00Z",
-                },
+                json=self.exchange_payload,
                 headers=self.exchange_headers,
             )
 
@@ -163,6 +175,17 @@ class SyntheticDeployment:
         return [
             request for request in self.requests if request.url.path == "/session-prep"
         ]
+
+
+class OversizedResponseStream(httpx.AsyncByteStream):
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield b"{"
+        yield b"x" * smoke_session_prep.MAX_CANARY_RESPONSE_BYTES
+
+
+@pytest.fixture(autouse=True)
+def _fixed_canary_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(smoke_session_prep, "_utc_now", lambda: CANARY_NOW)
 
 
 def _exercise(
@@ -398,6 +421,23 @@ def test_ready_canary_rejects_pydantic_coercible_wire_types(
         )
 
 
+def test_ready_canary_rejects_browser_incompatible_comma_fraction_timestamp() -> None:
+    def comma_fraction(request: httpx.Request) -> httpx.Response:
+        payload = _ready_payload(json.loads(request.content)["client_turn_id"])
+        payload["current_through"] = "2026-09-03T12:00:00,123Z"
+        return httpx.Response(
+            200,
+            json=payload,
+            headers=_protected_headers(trace=True),
+        )
+
+    with pytest.raises(SmokeFailure, match="invalid browser response"):
+        _exercise(
+            SyntheticDeployment(enabled=True, session_response=comma_fraction),
+            "synthetic-ready",
+        )
+
+
 @pytest.mark.parametrize("coercible_retry", ["5", True])
 def test_canary_rejects_coercible_refresh_retry_type(
     coercible_retry: object,
@@ -470,25 +510,36 @@ def test_canary_rejects_nonstandard_json_numbers() -> None:
         )
 
 
-@pytest.mark.parametrize("failure", ["redirect", "oversized"])
-def test_canary_rejects_redirects_and_oversized_responses(failure: str) -> None:
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("redirect", "returned HTTP 307"),
+        ("oversized", "response exceeds the size limit"),
+    ],
+)
+def test_canary_rejects_redirects_and_oversized_responses(
+    failure: str,
+    message: str,
+) -> None:
     def unsafe(request: httpx.Request) -> httpx.Response:
         if failure == "redirect":
             return httpx.Response(
                 307,
                 headers={"Location": "https://redirect.test/session-prep"},
             )
-        return httpx.Response(
+        response = httpx.Response(
             200,
-            content=b"{" + b"x" * smoke_session_prep.MAX_CANARY_RESPONSE_BYTES,
+            stream=OversizedResponseStream(),
             headers={
                 **_protected_headers(trace=True),
                 "Content-Type": "application/json",
             },
         )
+        assert "Content-Length" not in response.headers
+        return response
 
     deployment = SyntheticDeployment(enabled=True, session_response=unsafe)
-    with pytest.raises(SmokeFailure):
+    with pytest.raises(SmokeFailure, match=message):
         _exercise(deployment, "synthetic-ready")
     assert len(deployment.session_requests) == 1
 
@@ -539,6 +590,48 @@ def test_canary_requires_exact_created_exchange_status() -> None:
         _exercise(deployment, "synthetic-ready")
 
     assert deployment.session_requests == []
+
+
+def test_canary_requires_core_mount_token_prefix() -> None:
+    deployment = SyntheticDeployment(
+        enabled=True,
+        exchange_payload=_exchange_payload(
+            context_token="opaque-platform-mount-token-123456"
+        ),
+    )
+
+    with pytest.raises(SmokeFailure, match="invalid mount token"):
+        _exercise(deployment, "synthetic-ready")
+
+    assert deployment.session_requests == []
+
+
+@pytest.mark.parametrize(
+    ("updates", "reason"),
+    [
+        ({"issued_at": 1_788_436_800}, "wire type"),
+        ({"issued_at": "2026-09-03T12:00:00,123Z"}, "comma fraction"),
+        ({"issued_at": "2026-09-03 12:00:00Z"}, "non-RFC3339 separator"),
+        ({"issued_at": "2026-09-03T12:04:00Z"}, "issuance order"),
+        ({"refresh_after": "2026-09-03T12:05:00Z"}, "expiry order"),
+        ({"issued_at": "2026-09-03T12:02:01Z"}, "future issuance"),
+        ({"refresh_after": "2026-09-03T12:01:00Z"}, "stale credential"),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_canary_rejects_invalid_exchange_timestamps(
+    updates: dict[str, object],
+    reason: str,
+) -> None:
+    deployment = SyntheticDeployment(
+        enabled=True,
+        exchange_payload=_exchange_payload(**updates),
+    )
+
+    with pytest.raises(SmokeFailure, match="invalid credential timestamps"):
+        _exercise(deployment, "synthetic-ready")
+
+    assert deployment.session_requests == [], reason
 
 
 def test_failure_does_not_echo_credentials_record_or_response_body() -> None:

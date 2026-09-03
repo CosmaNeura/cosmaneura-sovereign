@@ -24,7 +24,7 @@ import re
 import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -49,7 +49,11 @@ _TRACE_ID_RE = re.compile(r"^[A-Za-z0-9._~-]{8,160}$")
 _UUID_V4_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
-_OFFSET_SUFFIX_RE = re.compile(r"(?:Z|[+-]\d{2}:\d{2})$")
+_RFC3339_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?"
+    r"(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+)
 _SESSION_PREP_PATH = {
     "label": "Open Session Prep",
     "message": "Open Session Prep",
@@ -249,10 +253,26 @@ async def _exchange_mount_token(
     token = payload.get("context_token")
     if (
         not isinstance(token, str)
+        or not token.startswith("mctx_")
         or not 16 <= len(token) <= 8192
         or any(character.isspace() for character in token)
     ):
         raise SmokeFailure("platform exchange returned an invalid mount token")
+
+    issued_at = _parse_browser_rfc3339(payload.get("issued_at"))
+    refresh_after = _parse_browser_rfc3339(payload.get("refresh_after"))
+    expires_at = _parse_browser_rfc3339(payload.get("expires_at"))
+    now = _utc_now()
+    if (
+        issued_at is None
+        or refresh_after is None
+        or expires_at is None
+        or issued_at > now + timedelta(seconds=60)
+        or issued_at >= refresh_after
+        or refresh_after >= expires_at
+        or now >= refresh_after
+    ):
+        raise SmokeFailure("platform exchange returned invalid credential timestamps")
     return token
 
 
@@ -309,15 +329,26 @@ def _valid_prep_text_list(value: Any, *, minimum: int) -> bool:
     )
 
 
-def _valid_offset_datetime(value: Any) -> bool:
-    if not isinstance(value, str) or _OFFSET_SUFFIX_RE.search(value) is None:
-        return False
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _parse_browser_rfc3339(value: Any) -> datetime | None:
+    """Parse the RFC3339 subset accepted by the browser wire contract."""
+    if not isinstance(value, str) or _RFC3339_RE.fullmatch(value) is None:
+        return None
     normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
-        return False
-    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def _valid_offset_datetime(value: Any) -> bool:
+    return _parse_browser_rfc3339(value) is not None
 
 
 def _assert_browser_session_prep_wire(
