@@ -18,11 +18,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -44,6 +46,10 @@ from tools.deployed_smoke import (
 ExpectedState = Literal["disabled", "synthetic-ready"]
 MAX_CANARY_RESPONSE_BYTES = 64 * 1024
 _TRACE_ID_RE = re.compile(r"^[A-Za-z0-9._~-]{8,160}$")
+_UUID_V4_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+_OFFSET_SUFFIX_RE = re.compile(r"(?:Z|[+-]\d{2}:\d{2})$")
 _SESSION_PREP_PATH = {
     "label": "Open Session Prep",
     "message": "Open Session Prep",
@@ -68,6 +74,26 @@ _SERVER_ONLY_RESPONSE_KEYS = {
     "supporting_context",
     "tool_call_ref",
 }
+_SESSION_PREP_RESPONSE_KEYS = {
+    "client_turn_id",
+    "state",
+    "freshness",
+    "current_through",
+    "source_count",
+    "prepared_brief",
+    "retry_after_seconds",
+    "reason_code",
+}
+_PREPARED_BRIEF_KEYS = {
+    "recap",
+    "trajectory_and_material_changes",
+    "talking_points",
+    "open_threads",
+    "cautions",
+    "suggested_outline",
+    "patient_reported",
+}
+_PATIENT_REPORTED_KEYS = {"label", "summary"}
 
 
 def required_synthetic_confirmation() -> bool:
@@ -91,6 +117,11 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError("duplicate JSON key")
         result[name] = value
     return result
+
+
+def _reject_json_constant(_value: str) -> None:
+    """Reject NaN and infinities, which browser JSON.parse never accepts."""
+    raise ValueError("non-standard JSON constant")
 
 
 def _assert_protected_headers(
@@ -168,7 +199,11 @@ async def _request_json(
         ) from None
 
     try:
-        payload = json.loads(bytes(content), object_pairs_hook=_unique_object)
+        payload = json.loads(
+            bytes(content),
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_json_constant,
+        )
     except (UnicodeError, ValueError):
         raise SmokeFailure(f"{path} did not return unambiguous JSON") from None
     if not isinstance(payload, dict):
@@ -187,7 +222,7 @@ async def _exchange_mount_token(
         "POST",
         platform_url,
         "/embed/v1/context-tokens/exchange",
-        expected_status=200,
+        expected_status=201,
         expected_media_type="application/json",
         headers={
             "Authorization": f"Bearer {provider_token}",
@@ -248,11 +283,158 @@ def _assert_no_server_only_keys(value: Any) -> None:
             _assert_no_server_only_keys(nested)
 
 
+def _browser_integer(value: Any) -> bool:
+    """Match JavaScript Number.isInteger without treating booleans as numbers."""
+    return (
+        type(value) in {int, float}
+        and math.isfinite(value)
+        and value == math.trunc(value)
+    )
+
+
+def _browser_length(value: str) -> int:
+    """Return JavaScript's UTF-16 string length for browser-contract bounds."""
+    return len(value.encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _bounded_browser_text(value: Any, *, minimum: int, maximum: int) -> bool:
+    return isinstance(value, str) and minimum <= _browser_length(value) <= maximum
+
+
+def _valid_prep_text_list(value: Any, *, minimum: int) -> bool:
+    return (
+        isinstance(value, list)
+        and minimum <= len(value) <= 8
+        and all(_bounded_browser_text(item, minimum=1, maximum=1_000) for item in value)
+    )
+
+
+def _valid_offset_datetime(value: Any) -> bool:
+    if not isinstance(value, str) or _OFFSET_SUFFIX_RE.search(value) is None:
+        return False
+    normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def _assert_browser_session_prep_wire(
+    payload: dict[str, Any],
+    *,
+    client_turn_id: uuid.UUID,
+) -> None:
+    """Mirror governedSessionPrep before Pydantic can coerce wire values."""
+    invalid = SmokeFailure("Session Prep returned an invalid browser response")
+    if set(payload) != _SESSION_PREP_RESPONSE_KEYS:
+        raise invalid
+
+    response_turn_id = payload["client_turn_id"]
+    if (
+        not isinstance(response_turn_id, str)
+        or _UUID_V4_RE.fullmatch(response_turn_id) is None
+    ):
+        raise invalid
+    if response_turn_id != str(client_turn_id):
+        raise SmokeFailure("Session Prep response changed client-turn identity")
+
+    state = payload["state"]
+    if state not in {"ready", "refreshing", "pending", "unavailable"}:
+        raise invalid
+    source_count = payload["source_count"]
+    if not _browser_integer(source_count) or source_count < 0 or source_count > 6:
+        raise invalid
+
+    content = state in {"ready", "refreshing"}
+    if not content:
+        if (
+            payload["freshness"] != "none"
+            or payload["current_through"] is not None
+            or source_count != 0
+            or payload["prepared_brief"] is not None
+        ):
+            raise invalid
+        retry_after = payload["retry_after_seconds"]
+        if state == "pending":
+            if (
+                payload["reason_code"] != "generation_pending"
+                or not _browser_integer(retry_after)
+                or retry_after < 1
+                or retry_after > 300
+            ):
+                raise invalid
+        elif retry_after is not None or payload["reason_code"] not in {
+            "no_eligible_sources",
+            "context_not_available",
+        }:
+            raise invalid
+        return
+
+    if not _valid_offset_datetime(payload["current_through"]) or source_count < 1:
+        raise invalid
+    retry_after = payload["retry_after_seconds"]
+    if state == "ready":
+        if (
+            payload["freshness"] != "current"
+            or retry_after is not None
+            or payload["reason_code"] is not None
+        ):
+            raise invalid
+    elif (
+        payload["freshness"] != "stale"
+        or payload["reason_code"] != "refresh_in_progress"
+        or not _browser_integer(retry_after)
+        or retry_after < 1
+        or retry_after > 300
+    ):
+        raise invalid
+
+    brief = payload["prepared_brief"]
+    if (
+        not isinstance(brief, dict)
+        or set(brief) != _PREPARED_BRIEF_KEYS
+        or not _bounded_browser_text(brief["recap"], minimum=1, maximum=4_000)
+        or not _valid_prep_text_list(
+            brief["trajectory_and_material_changes"], minimum=0
+        )
+        or not _valid_prep_text_list(brief["talking_points"], minimum=1)
+        or not _valid_prep_text_list(brief["open_threads"], minimum=0)
+        or not _valid_prep_text_list(brief["cautions"], minimum=0)
+        or not _valid_prep_text_list(brief["suggested_outline"], minimum=1)
+    ):
+        raise invalid
+    patient_reported = brief["patient_reported"]
+    if patient_reported is not None and (
+        not isinstance(patient_reported, dict)
+        or set(patient_reported) != _PATIENT_REPORTED_KEYS
+        or patient_reported["label"] != "Patient-reported Visit Prep"
+        or not _bounded_browser_text(
+            patient_reported["summary"], minimum=1, maximum=2_000
+        )
+    ):
+        raise invalid
+
+
 def _assert_disabled_problem(
     payload: dict[str, Any],
     *,
     trace_id: str | None,
 ) -> None:
+    if (
+        not all(
+            isinstance(payload.get(name), str)
+            for name in ("type", "title", "code", "detail", "trace_id")
+        )
+        or type(payload.get("status")) is not int
+        or type(payload.get("retryable")) is not bool
+        or (
+            "retry_after_seconds" in payload
+            and payload["retry_after_seconds"] is not None
+            and type(payload["retry_after_seconds"]) is not int
+        )
+    ):
+        raise SmokeFailure("disabled Session Prep returned an invalid problem response")
     try:
         problem = SovereignProblemDetails.model_validate(payload)
     except ValidationError:
@@ -285,14 +467,13 @@ def _assert_ready_response(
         value and value in serialized for value in forbidden_values
     ):
         raise SmokeFailure("Session Prep response exposed a sensitive identifier")
+    _assert_browser_session_prep_wire(payload, client_turn_id=client_turn_id)
     try:
         response = SessionPrepResponse.model_validate(payload)
     except ValidationError:
         raise SmokeFailure(
             "Session Prep returned an invalid browser response"
         ) from None
-    if response.client_turn_id != client_turn_id:
-        raise SmokeFailure("Session Prep response changed client-turn identity")
     if response.state != "ready" or response.freshness != "current":
         raise SmokeFailure("synthetic-ready canary did not receive a current brief")
     if response.source_count < 1 or response.prepared_brief is None:

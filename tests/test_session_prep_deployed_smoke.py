@@ -74,10 +74,12 @@ class SyntheticDeployment:
         enabled: bool,
         session_response: SessionResponse | None = None,
         exchange_headers: dict[str, str] | None = None,
+        exchange_status: int = 201,
     ) -> None:
         self.enabled = enabled
         self.session_response = session_response
         self.exchange_headers = exchange_headers or _protected_headers()
+        self.exchange_status = exchange_status
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -91,7 +93,7 @@ class SyntheticDeployment:
                 "record_ref": PLATFORM_RECORD_REF,
             }
             return httpx.Response(
-                200,
+                self.exchange_status,
                 json={
                     "context_token": MOUNT_TOKEN,
                     "token_type": "Bearer",
@@ -345,6 +347,129 @@ def test_ready_canary_rejects_correlation_and_closed_schema_mismatch() -> None:
         )
 
 
+def test_ready_canary_rejects_uppercase_uuid_even_when_semantically_equal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_turn_id = smoke_session_prep.uuid.UUID(
+        "abcdef12-3456-4789-abcd-ef1234567890"
+    )
+    monkeypatch.setattr(smoke_session_prep.uuid, "uuid4", lambda: client_turn_id)
+
+    def uppercase_turn(request: httpx.Request) -> httpx.Response:
+        turn_id = json.loads(request.content)["client_turn_id"]
+        return httpx.Response(
+            200,
+            json=_ready_payload(turn_id.upper()),
+            headers=_protected_headers(trace=True),
+        )
+
+    with pytest.raises(SmokeFailure, match="invalid browser response"):
+        _exercise(
+            SyntheticDeployment(enabled=True, session_response=uppercase_turn),
+            "synthetic-ready",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "coercible_value"),
+    [
+        ("current_through", 1_756_900_800),
+        ("source_count", "1"),
+        ("source_count", True),
+    ],
+)
+def test_ready_canary_rejects_pydantic_coercible_wire_types(
+    field: str,
+    coercible_value: object,
+) -> None:
+    def coercible(request: httpx.Request) -> httpx.Response:
+        payload = _ready_payload(json.loads(request.content)["client_turn_id"])
+        payload[field] = coercible_value
+        return httpx.Response(
+            200,
+            json=payload,
+            headers=_protected_headers(trace=True),
+        )
+
+    with pytest.raises(SmokeFailure, match="invalid browser response"):
+        _exercise(
+            SyntheticDeployment(enabled=True, session_response=coercible),
+            "synthetic-ready",
+        )
+
+
+@pytest.mark.parametrize("coercible_retry", ["5", True])
+def test_canary_rejects_coercible_refresh_retry_type(
+    coercible_retry: object,
+) -> None:
+    def refreshing(request: httpx.Request) -> httpx.Response:
+        payload = _ready_payload(json.loads(request.content)["client_turn_id"])
+        payload.update(
+            state="refreshing",
+            freshness="stale",
+            retry_after_seconds=coercible_retry,
+            reason_code="refresh_in_progress",
+        )
+        return httpx.Response(
+            200,
+            json=payload,
+            headers=_protected_headers(trace=True),
+        )
+
+    with pytest.raises(SmokeFailure, match="invalid browser response"):
+        _exercise(
+            SyntheticDeployment(enabled=True, session_response=refreshing),
+            "synthetic-ready",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "coercible_value"),
+    [("status", "403"), ("retryable", 0)],
+)
+def test_disabled_canary_rejects_coercible_problem_types(
+    field: str,
+    coercible_value: object,
+) -> None:
+    def coercible_problem(_request: httpx.Request) -> httpx.Response:
+        payload = _problem_payload()
+        payload[field] = coercible_value
+        return httpx.Response(
+            403,
+            json=payload,
+            headers={
+                **_protected_headers(trace=True),
+                "Content-Type": "application/problem+json",
+            },
+        )
+
+    with pytest.raises(SmokeFailure, match="invalid problem response"):
+        _exercise(
+            SyntheticDeployment(enabled=False, session_response=coercible_problem),
+            "disabled",
+        )
+
+
+def test_canary_rejects_nonstandard_json_numbers() -> None:
+    def nonstandard_json(request: httpx.Request) -> httpx.Response:
+        payload = _ready_payload(json.loads(request.content)["client_turn_id"])
+        payload["source_count"] = float("nan")
+        return httpx.Response(
+            200,
+            content=json.dumps(payload).encode(),
+            headers={
+                **_protected_headers(trace=True),
+                "Content-Type": "application/json",
+            },
+        )
+
+    with pytest.raises(SmokeFailure, match="unambiguous JSON"):
+        _exercise(
+            SyntheticDeployment(enabled=True, session_response=nonstandard_json),
+            "synthetic-ready",
+        )
+
+
 @pytest.mark.parametrize("failure", ["redirect", "oversized"])
 def test_canary_rejects_redirects_and_oversized_responses(failure: str) -> None:
     def unsafe(request: httpx.Request) -> httpx.Response:
@@ -402,6 +527,15 @@ def test_canary_requires_protected_exchange_headers(headers: dict[str, str]) -> 
     deployment = SyntheticDeployment(enabled=True, exchange_headers=headers)
 
     with pytest.raises(SmokeFailure):
+        _exercise(deployment, "synthetic-ready")
+
+    assert deployment.session_requests == []
+
+
+def test_canary_requires_exact_created_exchange_status() -> None:
+    deployment = SyntheticDeployment(enabled=True, exchange_status=200)
+
+    with pytest.raises(SmokeFailure, match="expected 201"):
         _exercise(deployment, "synthetic-ready")
 
     assert deployment.session_requests == []
