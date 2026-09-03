@@ -13,10 +13,13 @@ import asyncio
 import json
 import os
 import uuid
+from collections import OrderedDict
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+from unittest.mock import patch
 
 # Set a closed synthetic deployment before importing app.main and its singleton.
 os.environ.update({
@@ -46,8 +49,8 @@ for name in (
 
 import httpx
 import uvicorn
-from fastapi import Response
-from fastapi.responses import HTMLResponse
+from fastapi import Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app import main as main_module
 from app.clients.platform_conversation import ConversationReceipt, PlatformTurn
@@ -66,6 +69,10 @@ MOUNT_TOKEN = "synthetic-session-prep-mount-token"
 WORKLOAD_TOKEN = "synthetic-session-prep-workload-token"
 OBSERVED_AT = datetime(2026, 9, 2, 12, 11, tzinfo=UTC)
 DemoMode = Literal["ready", "refreshing", "pending", "unavailable"]
+DEMO_RUN_HEADER = "X-Cosmaneura-Demo-Run-ID"
+_current_demo_run_id: ContextVar[str | None] = ContextVar(
+    "current_demo_run_id", default=None,
+)
 
 
 def _fixture(name: str) -> dict[str, object]:
@@ -103,16 +110,38 @@ class DemoConversation:
     """Synthetic canonical store used to prove the dynamic source-turn fence."""
 
     def __init__(self) -> None:
-        self.accepted: dict[str, PlatformTurn] = {}
-        self.final: list[dict[str, object]] = []
+        self.accepted: dict[str, dict[str, PlatformTurn]] = {}
+        self.final: dict[str, list[dict[str, object]]] = {}
+
+    def start_run(self, run_id: str) -> None:
+        self.accepted[run_id] = {}
+        self.final[run_id] = []
+
+    def discard_run(self, run_id: str) -> None:
+        self.accepted.pop(run_id, None)
+        self.final.pop(run_id, None)
+
+    @staticmethod
+    def _run_id() -> str:
+        run_id = _current_demo_run_id.get()
+        if run_id is None:
+            raise ValueError("missing synthetic demo run")
+        return run_id
+
+    def accepted_for(self, run_id: str) -> dict[str, PlatformTurn]:
+        return self.accepted[run_id]
+
+    def final_for(self, run_id: str) -> list[dict[str, object]]:
+        return self.final[run_id]
 
     async def write_provider_action(
         self, *, turn: PlatformTurn, action_code: str, message: str,
     ) -> ConversationReceipt:
         if (action_code, message) != ("session-prep.open", "Open Session Prep"):
             raise ValueError("unexpected provider action")
+        run_id = self._run_id()
         turn_ref = f"turn_demo_{turn.client_turn_id.hex}"
-        self.accepted[turn_ref] = turn
+        self.accepted_for(run_id)[turn_ref] = turn
         return ConversationReceipt(
             client_turn_id=turn.client_turn_id, turn_ref=turn_ref,
             phase="user_accepted", state="accepted", recorded_at=OBSERVED_AT,
@@ -120,10 +149,12 @@ class DemoConversation:
         )
 
     async def write_final_response(self, **values) -> ConversationReceipt:
+        run_id = self._run_id()
         turn = values["turn"]
-        if values["expected_turn_ref"] not in self.accepted:
+        if values["expected_turn_ref"] not in self.accepted_for(run_id):
             raise ValueError("unknown accepted turn")
-        self.final.append({
+        self.final_for(run_id).append({
+            "run_id": run_id,
             "state": values["outcome"], "characters": len(values["answer"]),
         })
         return ConversationReceipt(
@@ -133,24 +164,48 @@ class DemoConversation:
         )
 
 
+class SyntheticRun:
+    def __init__(self, mode: DemoMode) -> None:
+        self.mode = mode
+        self.events: list[dict[str, object]] = []
+        self.body: bytes | None = None
+        self.keys: set[str] = set()
+
+
 class SyntheticCore:
     """Exact Core v1 HTTP receiver implemented as an in-memory transport."""
 
     def __init__(self, conversation: DemoConversation) -> None:
         self.conversation = conversation
-        self.mode: DemoMode = "ready"
-        self.events: list[dict[str, object]] = []
-        self._body: bytes | None = None
-        self._keys: list[str] = []
+        self.runs: OrderedDict[str, SyntheticRun] = OrderedDict()
 
-    def reset(self, mode: DemoMode) -> None:
-        self.mode = mode
-        self.events.clear()
-        self._body = None
-        self._keys.clear()
+    def start(self, mode: DemoMode) -> str:
+        run_id = f"demo_run_{uuid.uuid4().hex}"
+        self.runs[run_id] = SyntheticRun(mode)
+        self.conversation.start_run(run_id)
+        if len(self.runs) > 32:
+            stale_run_id, _stale = self.runs.popitem(last=False)
+            self.conversation.discard_run(stale_run_id)
+        return run_id
 
-    def _result_name(self, call: int) -> str:
-        if self.mode == "ready":
+    def get(self, run_id: str) -> SyntheticRun:
+        try:
+            return self.runs[run_id]
+        except KeyError:
+            raise ValueError("unknown synthetic demo run") from None
+
+    def snapshot(self, run_id: str) -> dict[str, object]:
+        run = self.get(run_id)
+        return {
+            "run_id": run_id,
+            "mode": run.mode,
+            "calls": deepcopy(run.events),
+            "canonical_writes": deepcopy(self.conversation.final_for(run_id)),
+        }
+
+    @staticmethod
+    def _result_name(mode: DemoMode, call: int) -> str:
+        if mode == "ready":
             return (
                 "result-pending.json", "result-refreshing-brief.json",
                 "result-ready-brief.json",
@@ -159,14 +214,18 @@ class SyntheticCore:
             "refreshing": "result-refreshing-brief.json",
             "pending": "result-pending.json",
             "unavailable": "result-unavailable.json",
-        }[self.mode]
+        }[mode]
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         try:
+            run_id = _current_demo_run_id.get()
+            if run_id is None:
+                raise ValueError("missing synthetic demo run")
+            run = self.get(run_id)
             body = json.loads(request.content)
             arguments = body["arguments"]
             source_turn_ref = arguments["source_turn_ref"]
-            accepted = self.conversation.accepted[source_turn_ref]
+            accepted = self.conversation.accepted_for(run_id)[source_turn_ref]
             expected = {
                 "tool_name": "session-prep.context.read",
                 "tool_version": "1.0.0",
@@ -194,15 +253,15 @@ class SyntheticCore:
             return httpx.Response(422, json={"retryable": False})
 
         key = request.headers["idempotency-key"]
-        call = len(self.events) + 1
-        same_body = self._body is None or self._body == request.content
-        rotated_key = not self._keys or self._keys[-1] != key
-        self._body = request.content
-        self._keys.append(key)
-        result = deepcopy(_fixture(self._result_name(call)))
+        call = len(run.events) + 1
+        same_body = run.body is None or run.body == request.content
+        rotated_key = key not in run.keys
+        run.body = request.content
+        run.keys.add(key)
+        result = deepcopy(_fixture(self._result_name(run.mode, call)))
         if result["state"] in {"pending", "refreshing"}:
             result["retry_after_seconds"] = 1
-        self.events.append({
+        run.events.append({
             "call": call, "core_state": result["state"],
             "method": request.method, "path": request.url.path,
             "tool": body["tool_name"], "version": body["tool_version"],
@@ -210,6 +269,8 @@ class SyntheticCore:
             "same_body": same_body, "new_poll_key": rotated_key,
             "authority_headers": True,
         })
+        if not rotated_key:
+            return httpx.Response(422, json={"retryable": False})
         envelope = {
             "tool_call_ref": f"toolcall_demo_{call:04d}",
             "tool_name": "session-prep.context.read", "tool_version": "1.0.0",
@@ -253,6 +314,34 @@ main_module._sovereign = Sovereign(
 app = main_module.app
 
 
+def _demo_run_id(request: Request) -> str:
+    values = request.headers.getlist(DEMO_RUN_HEADER)
+    if len(values) != 1:
+        raise ValueError("one synthetic demo run header is required")
+    run_id = values[0]
+    core.get(run_id)
+    return run_id
+
+
+@app.middleware("http")
+async def bind_session_prep_demo_run(request: Request, call_next):
+    if request.url.path != "/session-prep":
+        return await call_next(request)
+    try:
+        run_id = _demo_run_id(request)
+    except ValueError:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "synthetic demo run unavailable"},
+            headers={"Cache-Control": "no-store"},
+        )
+    token = _current_demo_run_id.set(run_id)
+    try:
+        return await call_next(request)
+    finally:
+        _current_demo_run_id.reset(token)
+
+
 @app.get("/demo/session-prep", response_class=HTMLResponse)
 async def session_prep_demo() -> str:
     return DEMO_HTML.read_text(encoding="utf-8")
@@ -260,15 +349,22 @@ async def session_prep_demo() -> str:
 
 @app.post("/demo/session-prep/state/{mode}")
 async def session_prep_demo_state(mode: DemoMode) -> dict[str, str]:
-    core.reset(mode)
-    return {"mode": mode}
+    return {"mode": mode, "run_id": core.start(mode)}
 
 
 @app.get("/demo/session-prep/trace")
-async def session_prep_demo_trace(response: Response) -> dict[str, object]:
+async def session_prep_demo_trace(
+    request: Request, response: Response,
+) -> dict[str, object]:
     response.headers["Cache-Control"] = "no-store"
-    return {"mode": core.mode, "calls": core.events,
-            "canonical_writes": conversation.final[-1:]}
+    try:
+        return core.snapshot(_demo_run_id(request))
+    except ValueError:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "synthetic demo run unavailable"},
+            headers={"Cache-Control": "no-store"},
+        )
 
 
 def self_test() -> None:
@@ -280,15 +376,40 @@ def self_test() -> None:
         "pending": ["pending"] * 3,
         "unavailable": ["unavailable"],
     }
-    observed: dict[str, list[dict[str, object]]] = {}
+    expected_outcomes: dict[DemoMode, str] = {
+        "ready": "completed",
+        "refreshing": "completed",
+        "pending": "completed",
+        "unavailable": "unavailable",
+    }
+    observed: dict[str, dict[str, list[dict[str, object]]]] = {}
     with TestClient(app) as client:
         for index, (mode, core_states) in enumerate(expected.items()):
-            core.reset(mode)
+            selected = client.post(f"/demo/session-prep/state/{mode}")
+            assert selected.status_code == 200
+            selected_body = selected.json()
+            assert set(selected_body) == {"mode", "run_id"}
+            assert selected_body["mode"] == mode
+            run_id = selected_body["run_id"]
+            assert run_id.startswith("demo_run_")
+            assert len(run_id) == len("demo_run_") + 32
+            run_headers = {DEMO_RUN_HEADER: run_id}
+            empty_trace = client.get(
+                "/demo/session-prep/trace", headers=run_headers,
+            )
+            assert empty_trace.status_code == 200
+            assert empty_trace.json() == {
+                "run_id": run_id,
+                "mode": mode,
+                "calls": [],
+                "canonical_writes": [],
+            }
             client_turn_id = str(uuid.uuid4())
             headers = {
                 "Authorization": f"Bearer {MOUNT_TOKEN}",
                 "X-Cosmaneura-Embed-Version": "1.0",
                 "X-Cosmaneura-Client-Turn-ID": client_turn_id,
+                DEMO_RUN_HEADER: run_id,
             }
             if index == 0:
                 welcome = client.get("/welcome", headers=headers)
@@ -300,15 +421,106 @@ def self_test() -> None:
             })
             assert response.status_code == 200
             assert response.json()["state"] == mode
-            assert [event["core_state"] for event in core.events] == core_states
+            run = core.get(run_id)
+            assert [event["core_state"] for event in run.events] == core_states
             assert all(event["exact_body"] and event["authority_headers"]
-                       and event["new_poll_key"] for event in core.events)
-            observed[mode] = deepcopy(core.events)
+                       and event["new_poll_key"] for event in run.events)
+            final = conversation.final_for(run_id)
+            assert len(final) == 1
+            assert set(final[0]) == {"run_id", "state", "characters"}
+            assert final[0]["run_id"] == run_id
+            assert final[0]["state"] == expected_outcomes[mode]
+            assert type(final[0]["characters"]) is int
+            assert final[0]["characters"] > 0
+            trace = client.get(
+                "/demo/session-prep/trace", headers=run_headers,
+            )
+            assert trace.status_code == 200
+            assert trace.headers["Cache-Control"] == "no-store"
+            assert trace.json() == core.snapshot(run_id)
+            if mode == "ready":
+                final.append(deepcopy(final[0]))
+                duplicate_trace = client.get(
+                    "/demo/session-prep/trace", headers=run_headers,
+                )
+                assert len(duplicate_trace.json()["canonical_writes"]) == 2
+                final.pop()
+            observed[mode] = {
+                "calls": deepcopy(run.events),
+                "canonical_writes": deepcopy(final),
+            }
+
+        first = client.post("/demo/session-prep/state/ready").json()
+        second = client.post("/demo/session-prep/state/unavailable").json()
+        assert first["run_id"] != second["run_id"]
+        assert client.get("/demo/session-prep/trace").status_code == 409
+        for selected, expected_state, expected_calls in (
+            (first, "ready", 3),
+            (second, "unavailable", 1),
+        ):
+            interleaved_turn_id = str(uuid.uuid4())
+            interleaved_response = client.post("/session-prep", headers={
+                "Authorization": f"Bearer {MOUNT_TOKEN}",
+                "X-Cosmaneura-Embed-Version": "1.0",
+                "X-Cosmaneura-Client-Turn-ID": interleaved_turn_id,
+                DEMO_RUN_HEADER: selected["run_id"],
+            }, json={"client_turn_id": interleaved_turn_id})
+            assert interleaved_response.status_code == 200
+            assert interleaved_response.json()["state"] == expected_state
+            interleaved_trace = client.get(
+                "/demo/session-prep/trace",
+                headers={DEMO_RUN_HEADER: selected["run_id"]},
+            ).json()
+            assert interleaved_trace["run_id"] == selected["run_id"]
+            assert interleaved_trace["mode"] == expected_state
+            assert len(interleaved_trace["calls"]) == expected_calls
+            assert {
+                write["run_id"]
+                for write in interleaved_trace["canonical_writes"]
+            } == {selected["run_id"]}
+
+        missing_run_turn_id = str(uuid.uuid4())
+        assert client.post("/session-prep", headers={
+            "Authorization": f"Bearer {MOUNT_TOKEN}",
+            "X-Cosmaneura-Embed-Version": "1.0",
+            "X-Cosmaneura-Client-Turn-ID": missing_run_turn_id,
+        }, json={"client_turn_id": missing_run_turn_id}).status_code == 409
+
+        reused = client.post("/demo/session-prep/state/ready").json()
+        reused_run_id = reused["run_id"]
+        reused_turn_id = str(uuid.uuid4())
+        reused_headers = {
+            "Authorization": f"Bearer {MOUNT_TOKEN}",
+            "X-Cosmaneura-Embed-Version": "1.0",
+            "X-Cosmaneura-Client-Turn-ID": reused_turn_id,
+            DEMO_RUN_HEADER: reused_run_id,
+        }
+        with patch(
+            "app.clients.session_prep.derive_operation_token",
+            side_effect=("demo_key_a", "demo_key_b", "demo_key_a"),
+        ):
+            reused_response = client.post(
+                "/session-prep",
+                headers=reused_headers,
+                json={"client_turn_id": reused_turn_id},
+            )
+        assert reused_response.status_code == 422
+        reused_trace = client.get(
+            "/demo/session-prep/trace",
+            headers={DEMO_RUN_HEADER: reused_run_id},
+        ).json()
+        assert [event["new_poll_key"] for event in reused_trace["calls"]] == [
+            True, True, False,
+        ]
+        assert reused_trace["canonical_writes"] == []
+
         rejected_turn_id = str(uuid.uuid4())
+        rejected_run = client.post("/demo/session-prep/state/ready").json()
         rejected = client.post("/session-prep", headers={
             "Authorization": f"Bearer {MOUNT_TOKEN}",
             "X-Cosmaneura-Embed-Version": "1.0",
             "X-Cosmaneura-Client-Turn-ID": rejected_turn_id,
+            DEMO_RUN_HEADER: rejected_run["run_id"],
         }, json={
             "client_turn_id": rejected_turn_id,
             "context_snapshot_ref": "context_synthetic_browser_forbidden",
