@@ -5,13 +5,15 @@
 This exercise produces **synthetic UX evidence only** for the local Session
 Prep demo. It does not contact a live service, deploy software, change
 configuration, or authorize staging, Auth/IAM, operational controls, a real
-provider, production, or PHI. The result is a source-bound operator
-attestation, not proof that the human observations occurred.
+provider, production, or PHI. The result is a source-bound, unauthenticated
+operator attestation. It does not prove who performed the exercise or that the
+human observations occurred.
 
 The receipt is closed metadata. It has no field for an observer name, patient
 or provider identifier, record reference, note, clinical text, screenshot,
-URL, credential, free-form comment, or attachment. The only variable strings
-are a canonical UTC timestamp and closed browser/screen-reader enums.
+URL, credential, free-form comment, or attachment. Its variable fields are a
+canonical UTC timestamp, two bounded random exercise tokens, a numeric browser
+major, and closed browser/screen-reader enums.
 
 The v1 verifier pins:
 
@@ -53,6 +55,14 @@ manual check is not `pass`: stop without creating a receipt and record the
 defect in the normal synthetic issue workflow. Never add explanatory text to
 the JSON.
 
+Immediately before starting, generate a fresh `uxrun_` exercise ID and
+`uxchallenge_` challenge, each followed by 32 lowercase hexadecimal
+characters. Keep them only in the local synthetic evidence record. They bind
+the receipt fields to one declared exercise but are not signatures, identity
+proof, or proof that the browser actions occurred. Finish validation within 24
+hours of `observed_at_utc`; future timestamps are rejected without clock-skew
+allowance.
+
 ## Manual observations
 
 Exercise all four fixture controls at 390 x 844 CSS px and 1440 x 900 CSS px,
@@ -74,27 +84,40 @@ both at 100% browser zoom.
   announced state changes, and announced busy state.
 - Visually confirm that the rendered surface contains only the bounded typed
   projection and no raw source or internal reference.
+- At both viewports, use **Switch synthetic record**. Confirm the prior content
+  and trace clear immediately, transition status is announced, unsafe controls
+  stay disabled during the switch, focus is preserved or sensibly rehomed, and
+  only the new record's state can render.
+- At both viewports, use **Revoke synthetic access**. Confirm prepared content
+  and trace clear, the closed status is announced, state and switch controls
+  disable, Reset enables, and focus is preserved or sensibly rehomed.
+- At both viewports, use **Reset synthetic access**. Confirm the status remains
+  explicitly local, content and trace remain clear, state/switch controls are
+  restored, Reset disables, and focus is preserved or sensibly rehomed.
 
-The loopback page exposes the four state controls; it does not expose record
-or encounter switch controls. The receipt therefore records those behaviors
-under `automated_support`, not `manual_observations`. During verification, the
-exact pinned harnesses must prove record and encounter isolation, late-response
-suppression, revocation/reset, request minimization, generic-chat isolation,
-DOM projection, absence of panel persistence calls, and loopback-only demo
-requests. The demo intentionally contains synthetic authority/context values;
-the boundary is that no real credential, provider/patient data, raw note, or
-server-owned Session Prep handle leaks across the tested surfaces.
+During verification, the exact pinned harnesses independently support record
+and encounter isolation, late-response suppression, revocation/reset, request
+minimization, generic-chat isolation, DOM projection, absence of panel
+persistence calls, and loopback-only demo requests. Encounter switching has no
+manual demo control, so it is automated support only. The demo intentionally
+contains synthetic authority/context values; the boundary is that no real
+credential, provider/patient data, raw note, or server-owned Session Prep
+handle leaks across the tested surfaces.
 
 ## Closed receipt format
 
-The JSON below is a non-PHI schema specimen used by the regression suite. It
-is not evidence that an exercise occurred and must not be reused as one.
-Create a new local receipt only after every manual item passes. Replace
-`observed_at_utc`, `browser_engine`, `browser_major`, and `screen_reader` with
-the actual bounded metadata:
+The JSON below is an intentionally non-acceptable, non-PHI schema specimen.
+Its placeholders and zero browser version must fail validation. It is not
+evidence that an exercise occurred and must not be reused as one. Create a new
+local receipt only after every manual item passes. Replace `observed_at_utc`,
+`exercise_id`, `challenge`, `browser_engine`, `browser_major`, and
+`screen_reader` with the actual bounded metadata:
 
 - timestamp: canonical UTC seconds (`YYYY-MM-DDTHH:MM:SSZ`), after the pinned
-  commit and not in the future;
+  commit, no more than 24 hours old, and not even one second in the future;
+- exercise ID: `uxrun_` plus 32 fresh lowercase hexadecimal characters;
+- challenge: `uxchallenge_` plus 32 independently generated lowercase
+  hexadecimal characters;
 - browser engine: `chromium`, `firefox`, or `webkit`;
 - browser major: an integer from 1 through 999;
 - screen reader: `jaws`, `nvda`, `orca`, `talkback`, or `voiceover`.
@@ -106,11 +129,13 @@ readiness, duplicate, or type-coerced values are rejected.
 {
   "evidence": {
     "schema": "cosmaneura.session-prep.synthetic-ui-ux-evidence.v1",
-    "observed_at_utc": "2026-09-03T20:05:00Z",
+    "observed_at_utc": "<YYYY-MM-DDTHH:MM:SSZ>",
+    "exercise_id": "<uxrun_ plus 32 lowercase hex characters>",
+    "challenge": "<uxchallenge_ plus 32 lowercase hex characters>",
     "environment": {
-      "browser_engine": "chromium",
-      "browser_major": 140,
-      "screen_reader": "voiceover"
+      "browser_engine": "<chromium, firefox, or webkit>",
+      "browser_major": 0,
+      "screen_reader": "<jaws, nvda, orca, talkback, or voiceover>"
     },
     "scope": {
       "surface": "bundled-loopback-demo",
@@ -188,6 +213,31 @@ readiness, duplicate, or type-coerced values are rejected.
       "visual_privacy": {
         "bounded_typed_projection_only": "pass",
         "raw_source_and_internal_refs_absent": "pass"
+      },
+      "host_controls": {
+        "viewports": "narrow-and-wide",
+        "record_switch": {
+          "prior_content_cleared": "pass",
+          "prior_trace_cleared": "pass",
+          "transition_status_announced": "pass",
+          "controls_disabled_while_switching": "pass",
+          "focus_preserved_or_rehomed": "pass",
+          "new_record_state_only": "pass"
+        },
+        "revocation": {
+          "content_and_trace_cleared": "pass",
+          "closed_status_announced": "pass",
+          "typed_and_switch_controls_disabled": "pass",
+          "reset_control_enabled": "pass",
+          "focus_preserved_or_rehomed": "pass"
+        },
+        "reset": {
+          "local_only_status_announced": "pass",
+          "content_and_trace_remain_clear": "pass",
+          "typed_and_switch_controls_restored": "pass",
+          "reset_control_disabled": "pass",
+          "focus_preserved_or_rehomed": "pass"
+        }
       }
     },
     "automated_support": {
@@ -221,14 +271,16 @@ readiness, duplicate, or type-coerced values are rejected.
       "phi_ready": false
     }
   },
-  "evidence_sha256": "sha256:628559f3eb2c0645a7ca83ddcc53918d73ec2c825ac9ab4f44cda1767d7a729f"
+  "evidence_sha256": "sha256:<recalculate after replacing placeholders>"
 }
 ```
 
 `evidence_sha256` is the SHA-256 of canonical JSON for the nested `evidence`
 object (`ensure_ascii=true`, keys sorted, and separators `,` and `:` without
-extra whitespace). Recalculate it after setting the four variable metadata
-fields. Do not place the receipt or any value from it on a command line.
+extra whitespace). Recalculate it after setting the six variable metadata
+fields. This self-digest detects accidental mutation; it is not a signature or
+authentication mechanism. Do not place the receipt or any value from it on a
+command line.
 
 Validate from the Sovereign repository:
 
@@ -237,18 +289,22 @@ PYTHONPATH=. python tools/verify_session_prep_ui_evidence.py \
   /absolute/path/to/synthetic-ui-evidence.json
 ```
 
-Success emits one bounded pass line. Failure emits one bounded rejection line
-and exits nonzero. Neither path prints the receipt, its path, Git output,
-harness output, subprocess errors, or supplied values.
+Success emits one bounded line stating only that the receipt structure and
+pinned automated support validated and that the operator attestation remains
+unproven. Failure emits one bounded rejection line and exits nonzero. Invalid
+arguments use the same rejection boundary. No path prints the receipt, its
+path, Git or harness output, subprocess errors, or supplied values.
 
 ## Limitations and deferred gates
 
 The validator proves that the receipt has the exact closed pass-only shape,
-its self-digest is correct, the pinned source objects match, and the exact
-offline harnesses pass. It cannot prove a human performed the observations,
-that the browser was configured as claimed, or that a deployed artifact
-matches this source. Retain an accepted receipt through the normal evidence
-process; never mutate it into a staging or release attestation.
+its self-digest is internally consistent, the pinned source objects match, and
+the exact offline harnesses pass. The operator attestation is unauthenticated
+and unproven: the digest, run ID, challenge, and timestamp cannot prove a human
+performed the observations or that the browser was configured as claimed. It
+also cannot prove that a deployed artifact matches this source. Retain an
+accepted receipt through the normal evidence process; never mutate it into a
+staging or release attestation.
 
 This evidence does not establish staging deployment, Auth/IAM readiness,
 durable operational controls, real-provider readiness, production readiness,

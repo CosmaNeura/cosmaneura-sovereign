@@ -27,6 +27,7 @@ from typing import Any, NoReturn, Sequence
 ROOT = Path(__file__).resolve().parents[1]
 MAX_RECEIPT_BYTES = 16 * 1024
 MAX_JSON_DEPTH = 12
+MAX_RECEIPT_AGE = dt.timedelta(hours=24)
 SCHEMA = "cosmaneura.session-prep.synthetic-ui-ux-evidence.v1"
 SOVEREIGN_COMMIT = "e0736289f36b200a3daee59db3732482bab6fc5d"
 SOVEREIGN_TREE = "3391bc15f8a110ccac55d39668ba9f6c4eb9c175"
@@ -58,17 +59,21 @@ SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 TIMESTAMP_PATTERN = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z"
 )
+EXERCISE_ID_PATTERN = re.compile(r"uxrun_[0-9a-f]{32}\Z")
+CHALLENGE_PATTERN = re.compile(r"uxchallenge_[0-9a-f]{32}\Z")
 BROWSER_ENGINES = frozenset({"chromium", "firefox", "webkit"})
 SCREEN_READERS = frozenset({"jaws", "nvda", "orca", "talkback", "voiceover"})
 PASS_SUMMARY = (
-    "[PASS] synthetic-only Session Prep UI/UX evidence verified: "
-    "4 states, 2 viewports, accessibility, transitions, and privacy."
+    "[PASS] receipt structure and pinned automated support validated; "
+    "the synthetic UI operator attestation remains unproven."
 )
 FAIL_SUMMARY = "[FAIL] synthetic-only Session Prep UI/UX evidence rejected."
 
 
 def _expected_evidence(
     observed_at_utc: str,
+    exercise_id: str,
+    challenge: str,
     browser_engine: str,
     browser_major: int,
     screen_reader: str,
@@ -76,6 +81,8 @@ def _expected_evidence(
     return {
         "schema": SCHEMA,
         "observed_at_utc": observed_at_utc,
+        "exercise_id": exercise_id,
+        "challenge": challenge,
         "environment": {
             "browser_engine": browser_engine,
             "browser_major": browser_major,
@@ -157,6 +164,31 @@ def _expected_evidence(
             "visual_privacy": {
                 "bounded_typed_projection_only": "pass",
                 "raw_source_and_internal_refs_absent": "pass",
+            },
+            "host_controls": {
+                "viewports": "narrow-and-wide",
+                "record_switch": {
+                    "prior_content_cleared": "pass",
+                    "prior_trace_cleared": "pass",
+                    "transition_status_announced": "pass",
+                    "controls_disabled_while_switching": "pass",
+                    "focus_preserved_or_rehomed": "pass",
+                    "new_record_state_only": "pass",
+                },
+                "revocation": {
+                    "content_and_trace_cleared": "pass",
+                    "closed_status_announced": "pass",
+                    "typed_and_switch_controls_disabled": "pass",
+                    "reset_control_enabled": "pass",
+                    "focus_preserved_or_rehomed": "pass",
+                },
+                "reset": {
+                    "local_only_status_announced": "pass",
+                    "content_and_trace_remain_clear": "pass",
+                    "typed_and_switch_controls_restored": "pass",
+                    "reset_control_disabled": "pass",
+                    "focus_preserved_or_rehomed": "pass",
+                },
             },
         },
         "automated_support": {
@@ -359,8 +391,21 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
         _fail("The observation timestamp is invalid")
     if observed_at < SOURCE_COMMIT_TIME:
         _fail("The observation predates the pinned source")
-    if observed_at > _utc_now() + dt.timedelta(minutes=5):
+    now = _utc_now()
+    if observed_at > now:
         _fail("The observation timestamp is in the future")
+    if now - observed_at > MAX_RECEIPT_AGE:
+        _fail("The observation receipt is stale")
+
+    exercise_id = document.get("exercise_id")
+    challenge = document.get("challenge")
+    if (
+        type(exercise_id) is not str
+        or EXERCISE_ID_PATTERN.fullmatch(exercise_id) is None
+    ):
+        _fail("The exercise identifier is invalid")
+    if type(challenge) is not str or CHALLENGE_PATTERN.fullmatch(challenge) is None:
+        _fail("The exercise challenge is invalid")
 
     environment = document.get("environment")
     if type(environment) is not dict:
@@ -377,6 +422,8 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
 
     expected = _expected_evidence(
         observed_at_utc,
+        exercise_id,
+        challenge,
         browser_engine,
         browser_major,
         screen_reader,
@@ -508,8 +555,13 @@ def verify(receipt_path: Path, sovereign_repo: Path) -> None:
     verify_automated_support(assets)
 
 
+class _SanitizedArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> NoReturn:
+        _fail("The command invocation is invalid")
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _SanitizedArgumentParser(
         description="Validate metadata-only synthetic Session Prep UI/UX evidence."
     )
     parser.add_argument("receipt", type=Path, help="path to the local JSON receipt")
@@ -523,8 +575,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
     try:
+        args = _parser().parse_args(argv)
         verify(args.receipt, args.sovereign_repo)
     except Exception:
         print(FAIL_SUMMARY, file=sys.stderr)

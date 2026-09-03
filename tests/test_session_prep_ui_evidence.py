@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,12 +20,16 @@ from tools import verify_session_prep_ui_evidence as evidence
 
 
 OBSERVED_AT = "2026-09-03T20:05:00Z"
+EXERCISE_ID = "uxrun_0123456789abcdef0123456789abcdef"
+CHALLENGE = "uxchallenge_fedcba9876543210fedcba9876543210"
 RUNBOOK = evidence.ROOT / "docs/flight-plans/session-prep-synthetic-ui-ux-exercise.md"
 
 
 def _receipt() -> dict[str, Any]:
     document = evidence._expected_evidence(
         OBSERVED_AT,
+        EXERCISE_ID,
+        CHALLENGE,
         "chromium",
         140,
         "voiceover",
@@ -119,14 +124,21 @@ def test_valid_receipt_is_a_closed_source_bound_operator_attestation(
         "late_response_suppression",
         "revocation_and_reset",
     }
+    assert set(document["manual_observations"]["host_controls"]) == {
+        "viewports",
+        "record_switch",
+        "revocation",
+        "reset",
+    }
 
 
-def test_runbook_json_example_round_trips_through_the_validator() -> None:
+def test_runbook_json_specimen_is_intentionally_rejected() -> None:
     runbook = RUNBOOK.read_text(encoding="utf-8")
     matches = re.findall(r"```json\n(.*?)\n```", runbook, flags=re.DOTALL)
     assert len(matches) == 1
     receipt = json.loads(matches[0])
-    evidence.validate_receipt(receipt)
+    with pytest.raises(evidence.EvidenceError):
+        evidence.validate_receipt(receipt)
 
 
 @pytest.mark.parametrize(
@@ -220,6 +232,27 @@ def test_unknown_or_free_form_fields_are_rejected(
         ),
         (
             "evidence",
+            "manual_observations",
+            "host_controls",
+            "record_switch",
+            "prior_trace_cleared",
+        ),
+        (
+            "evidence",
+            "manual_observations",
+            "host_controls",
+            "revocation",
+            "content_and_trace_cleared",
+        ),
+        (
+            "evidence",
+            "manual_observations",
+            "host_controls",
+            "reset",
+            "typed_and_switch_controls_restored",
+        ),
+        (
+            "evidence",
             "automated_support",
             "transitions",
             "record_switch_clear_and_isolation",
@@ -310,6 +343,28 @@ def test_canonical_digest_detects_permitted_metadata_mutation() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("exercise_id", "uxrun_" + "A" * 32),
+        ("exercise_id", "uxrun_" + "1" * 31),
+        ("exercise_id", "record_synthetic_patient"),
+        ("challenge", "uxchallenge_" + "A" * 32),
+        ("challenge", "uxchallenge_" + "1" * 33),
+        ("challenge", "free-form challenge"),
+    ],
+)
+def test_run_identity_and_challenge_are_closed_bounded_hex(
+    field: str, value: str
+) -> None:
+    receipt = _receipt()
+    receipt["evidence"][field] = value
+    _reseal(receipt)
+
+    with pytest.raises(evidence.EvidenceError):
+        evidence.validate_receipt(receipt)
+
+
+@pytest.mark.parametrize(
     ("path", "value"),
     [
         (("evidence", "source", "sovereign_commit"), "A" * 40),
@@ -374,10 +429,11 @@ def test_json_scalar_types_cannot_smuggle_equivalent_values(
         ("2026-09-03T16:05:00-04:00", "2026-09-03T20:06:00Z"),
         ("2026-09-03 20:05:00Z", "2026-09-03T20:06:00Z"),
         ("2026-09-03T20:03:12Z", "2026-09-03T20:06:00Z"),
-        ("2026-09-03T20:12:00Z", "2026-09-03T20:06:00Z"),
+        ("2026-09-03T20:06:01Z", "2026-09-03T20:06:00Z"),
+        ("2026-09-03T20:05:00Z", "2026-09-04T20:05:01Z"),
     ],
 )
-def test_timestamp_must_be_canonical_post_source_and_not_future(
+def test_timestamp_must_be_canonical_post_source_fresh_and_not_future(
     observed_at: str,
     now: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -389,6 +445,18 @@ def test_timestamp_must_be_canonical_post_source_and_not_future(
     monkeypatch.setattr(evidence, "_utc_now", lambda: parsed_now)
 
     with pytest.raises(evidence.EvidenceError):
+        evidence.validate_receipt(receipt)
+
+
+def test_timestamp_accepts_exact_now_and_exact_max_age(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for now in (
+        dt.datetime(2026, 9, 3, 20, 5, tzinfo=dt.UTC),
+        dt.datetime(2026, 9, 4, 20, 5, tzinfo=dt.UTC),
+    ):
+        receipt = _receipt()
+        monkeypatch.setattr(evidence, "_utc_now", lambda now=now: now)
         evidence.validate_receipt(receipt)
 
 
@@ -551,6 +619,55 @@ def test_invalid_receipt_stops_before_git_and_output_is_sanitized(
     assert sentinel not in captured.err
     assert str(path) not in captured.err
     assert len(captured.err) < 160
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        [],
+        ["receipt.json", "SENSITIVE_EXTRA_ARGUMENT"],
+        ["--SENSITIVE_UNKNOWN_FLAG", "receipt.json"],
+    ],
+)
+def test_invalid_cli_invocation_has_one_sanitized_bounded_failure(
+    arguments: list[str],
+) -> None:
+    tool = evidence.ROOT / "tools/verify_session_prep_ui_evidence.py"
+    completed = subprocess.run(
+        [sys.executable, str(tool), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == evidence.FAIL_SUMMARY
+    assert "SENSITIVE" not in completed.stderr
+    assert len(completed.stderr) < 160
+
+
+def test_invalid_input_subprocess_never_echoes_content_or_path(tmp_path: Path) -> None:
+    sentinel = "SENSITIVE_INPUT_SENTINEL"
+    path = tmp_path / f"{sentinel}.json"
+    path.write_text(json.dumps({"clinical_note": sentinel}), encoding="utf-8")
+    tool = evidence.ROOT / "tools/verify_session_prep_ui_evidence.py"
+
+    completed = subprocess.run(
+        [sys.executable, str(tool), str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == evidence.FAIL_SUMMARY
+    assert sentinel not in completed.stderr
+    assert str(path) not in completed.stderr
+    assert len(completed.stderr) < 160
 
 
 def test_success_output_is_one_bounded_summary(
