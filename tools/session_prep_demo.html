@@ -5,16 +5,17 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Session Prep synthetic vertical slice</title>
 <style>
-  :root{--ink:#132238;--muted:#637187;--line:#d8e1eb;--navy:#152744;--blue:#245c86;--gold:#bd923b;--paper:#fff;--wash:#edf3f7;--ok:#18754a}
+  :root{--ink:#132238;--muted:#59687c;--line:#d8e1eb;--navy:#152744;--blue:#245c86;--gold:#bd923b;--eyebrow:#895f10;--paper:#fff;--wash:#edf3f7;--ok:#18754a}
   *{box-sizing:border-box}body{margin:0;min-height:100vh;background:linear-gradient(135deg,#f7fafc 0,#e8f0f5 62%,#e7edf3 100%);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   header{height:70px;padding:0 30px;background:var(--navy);color:#fff;display:flex;align-items:center;gap:13px;box-shadow:0 5px 20px #1527442a}.mark{width:38px;height:38px;border-radius:10px;background:var(--gold);display:grid;place-items:center;color:#1c170d;font-weight:900}.sub{color:#b9c9dc;font-size:12px}
-  main{max-width:1050px;margin:auto;padding:38px 330px 70px 28px}.eyebrow{text-transform:uppercase;letter-spacing:.13em;color:#99701f;font-size:11px;font-weight:900}h1{font-size:clamp(30px,5vw,48px);line-height:1.08;margin:8px 0 12px;max-width:700px}p{color:var(--muted)}
+  main{max-width:1050px;margin:auto;padding:38px 330px 70px 28px}.eyebrow{text-transform:uppercase;letter-spacing:.13em;color:var(--eyebrow);font-size:11px;font-weight:900}h1{font-size:clamp(30px,5vw,48px);line-height:1.08;margin:8px 0 12px;max-width:700px}p{color:var(--muted)}
   .safe{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;background:#e2f4e9;color:var(--ok);font-size:11px;font-weight:850}.safe:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok)}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:26px}.card{background:var(--paper);border:1px solid var(--line);border-radius:15px;padding:20px;box-shadow:0 10px 30px #17304b0d}.card h2{font-size:16px;margin:0 0 6px}.modes{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:15px}button{border:0;border-radius:9px;padding:10px 12px;background:var(--navy);color:#fff;font-weight:800;cursor:pointer}button:hover{background:var(--blue)}button:disabled{opacity:.55;cursor:wait}.mode.refreshing{background:#795f20}.mode.pending{background:#59687b}.mode.unavailable{background:#7a4250}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:26px}.card{background:var(--paper);border:1px solid var(--line);border-radius:15px;padding:20px;box-shadow:0 10px 30px #17304b0d}.card h2{font-size:16px;margin:0 0 6px}.modes{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:15px}button{border:0;border-radius:9px;padding:10px 12px;background:var(--navy);color:#fff;font-weight:800;cursor:pointer}button:hover{background:var(--blue)}button:focus-visible{outline:3px solid var(--blue);outline-offset:3px}button:disabled{opacity:.55;cursor:wait}.mode[aria-pressed="true"]{box-shadow:inset 0 0 0 2px #fff}.mode.refreshing{background:#795f20}.mode.pending{background:#59687b}.mode.unavailable{background:#7a4250}
   .path{display:grid;gap:8px;margin-top:12px}.step{display:grid;grid-template-columns:26px 1fr;gap:8px;align-items:start;color:var(--muted);font-size:13px}.number{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#e7eef5;color:var(--blue);font-size:11px;font-weight:900}
   .trace{grid-column:1/-1}.trace-head{display:flex;align-items:center;justify-content:space-between}.trace-status{font-size:12px;color:var(--ok);font-weight:800}.calls{display:grid;gap:7px;margin-top:12px}.call{border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:#f8fafc;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}.call b{color:var(--blue)}.empty{font-size:13px;color:var(--muted)}
   .boundary{margin-top:16px;padding:12px;border-left:3px solid var(--gold);background:#fff8e9;color:#6a5425;font-size:12px}.legend{display:flex;gap:7px;flex-wrap:wrap;margin-top:14px}.pill{font-size:10px;font-weight:800;border:1px solid var(--line);border-radius:999px;padding:4px 8px;background:#fff;color:#4e6279}
   @media(max-width:850px){main{padding-right:28px;padding-bottom:550px}.grid{grid-template-columns:1fr}.trace{grid-column:auto}}
+  @media(prefers-reduced-motion:reduce){.cnp-root .cnp-typing span{animation:none}}
 </style>
 </head>
 <body>
@@ -27,15 +28,15 @@
   <div class="legend"><span class="pill">Default-off feature gate</span><span class="pill">Exact synthetic context</span><span class="pill">3 calls / 10 seconds</span><span class="pill">No second model rewrite</span></div>
   <div class="grid">
     <section class="card">
-      <h2>Exercise each typed state</h2>
+      <h2 id="state-controls-title">Exercise each typed state</h2>
       <p>Select a fixture state. The action still travels through the panel and real Sovereign runtime.</p>
-      <div class="modes">
-        <button class="mode" data-mode="ready">Ready</button>
-        <button class="mode refreshing" data-mode="refreshing">Refreshing</button>
-        <button class="mode pending" data-mode="pending">Pending</button>
-        <button class="mode unavailable" data-mode="unavailable">Unavailable</button>
+      <div class="modes" role="group" aria-labelledby="state-controls-title">
+        <button type="button" class="mode" data-mode="ready" aria-pressed="false">Ready</button>
+        <button type="button" class="mode refreshing" data-mode="refreshing" aria-pressed="false">Refreshing</button>
+        <button type="button" class="mode pending" data-mode="pending" aria-pressed="false">Pending</button>
+        <button type="button" class="mode unavailable" data-mode="unavailable" aria-pressed="false">Unavailable</button>
       </div>
-      <div id="demo-status" class="boundary" role="status">Opening the synthetic record…</div>
+      <div id="demo-status" class="boundary" role="status" aria-live="polite" aria-atomic="true" aria-busy="true">Opening the synthetic record…</div>
     </section>
     <section class="card">
       <h2>Runtime path</h2>
@@ -46,9 +47,9 @@
         <div class="step"><span class="number">4</span><span>Validated text reaches the dedicated panel renderer without LLM or Magisterium rewriting.</span></div>
       </div>
     </section>
-    <section class="card trace">
-      <div class="trace-head"><h2>Sanitized Core wire trace</h2><span class="trace-status" id="trace-status">Waiting</span></div>
-      <div id="calls" class="calls"><div class="empty">No Core calls yet.</div></div>
+    <section class="card trace" aria-labelledby="trace-title">
+      <div class="trace-head"><h2 id="trace-title">Sanitized Core wire trace</h2><span class="trace-status" id="trace-status" role="status" aria-live="polite" aria-atomic="true">Waiting</span></div>
+      <div id="calls" class="calls" role="list" aria-label="Sanitized Core calls"><div class="empty" role="listitem">No Core calls yet.</div></div>
     </section>
   </div>
 </main>
@@ -58,28 +59,40 @@
   "use strict";
   var status=document.getElementById("demo-status"),calls=document.getElementById("calls"),
       traceStatus=document.getElementById("trace-status"),buttons=[].slice.call(document.querySelectorAll(".mode"));
-  var mountToken="synthetic-session-prep-mount-token",recordId="synthetic_session_prep_record";
+  var mountToken="synthetic-session-prep-mount-token",recordId="synthetic_session_prep_record",authorityOpen=false;
   var panel=window.CosmaNeuraPanel.mount({
     sovereignUrl:window.location.origin,embedVersion:"1.0",allowLoopbackHttp:true,
     getAuthToken:async function(){return mountToken;},
     getContext:async function(){return{clientId:recordId,thread_ref:"thread_synthetic_session_prep",care_model:"synthetic-only"};},
     loadHistory:async function(){return null;},onHumanContact:async function(){},
-    onAccessChange:function(granted){if(!granted)status.textContent="Synthetic authority was closed.";}
+    onAccessChange:function(granted){
+      authorityOpen=granted===true;
+      if(!authorityOpen)status.textContent="Synthetic authority was closed.";
+      busy(false);
+    }
   });
-  function busy(value){buttons.forEach(function(button){button.disabled=value;});}
+  function busy(value){
+    status.setAttribute("aria-busy",value?"true":"false");
+    buttons.forEach(function(button){button.disabled=value||!authorityOpen;});
+  }
+  function selectMode(mode){
+    buttons.forEach(function(button){
+      button.setAttribute("aria-pressed",button.dataset.mode===mode?"true":"false");
+    });
+  }
   async function refreshTrace(){
     var trace=await fetch("/demo/session-prep/trace",{cache:"no-store"}).then(function(response){return response.json();});
     calls.innerHTML="";
     trace.calls.forEach(function(call){
-      var row=document.createElement("div");row.className="call";
+      var row=document.createElement("div");row.className="call";row.setAttribute("role","listitem");
       row.textContent="#"+call.call+"  "+call.method+" "+call.path+"  →  "+call.core_state+"  · exact body "+call.exact_body+"  · authority headers "+call.authority_headers+"  · new poll key "+call.new_poll_key;
       calls.appendChild(row);
     });
-    if(!trace.calls.length)calls.innerHTML='<div class="empty">No Core calls yet.</div>';
+    if(!trace.calls.length)calls.innerHTML='<div class="empty" role="listitem">No Core calls yet.</div>';
     traceStatus.textContent=trace.calls.length+" verified Core call"+(trace.calls.length===1?"":"s");
   }
   async function run(mode){
-    busy(true);status.textContent="Running the "+mode+" fixture through Sovereign…";
+    selectMode(mode);busy(true);status.textContent="Running the "+mode+" fixture through Sovereign…";
     try{
       await fetch("/demo/session-prep/state/"+mode,{method:"POST"});
       var action=panel.root.querySelector(".cnp-prep-go");
@@ -90,12 +103,13 @@
     finally{busy(false);}
   }
   buttons.forEach(function(button){button.onclick=function(){return run(button.dataset.mode);};});
+  busy(true);
   (async function(){
     var ready=await panel.setRecord(recordId);
     if(ready===null)throw new Error("synthetic record unavailable");
     panel.open();
     await run("ready");
-  })().catch(function(){status.textContent="Could not initialize the synthetic demo.";busy(false);});
+  })().catch(function(){authorityOpen=false;status.textContent="Could not initialize the synthetic demo.";busy(false);});
   window.addEventListener("pagehide",function(){panel.destroy();});
 })();
 </script>
