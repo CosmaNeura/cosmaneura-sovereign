@@ -106,6 +106,10 @@ class DemoConversation:
         self.accepted: dict[str, PlatformTurn] = {}
         self.final: list[dict[str, object]] = []
 
+    def reset(self) -> None:
+        self.accepted.clear()
+        self.final.clear()
+
     async def write_provider_action(
         self, *, turn: PlatformTurn, action_code: str, message: str,
     ) -> ConversationReceipt:
@@ -146,6 +150,7 @@ class SyntheticCore:
     def reset(self, mode: DemoMode) -> None:
         self.mode = mode
         self.events.clear()
+        self.conversation.reset()
         self._body = None
         self._keys.clear()
 
@@ -268,7 +273,7 @@ async def session_prep_demo_state(mode: DemoMode) -> dict[str, str]:
 async def session_prep_demo_trace(response: Response) -> dict[str, object]:
     response.headers["Cache-Control"] = "no-store"
     return {"mode": core.mode, "calls": core.events,
-            "canonical_writes": conversation.final[-1:]}
+            "canonical_writes": conversation.final}
 
 
 def self_test() -> None:
@@ -280,10 +285,25 @@ def self_test() -> None:
         "pending": ["pending"] * 3,
         "unavailable": ["unavailable"],
     }
-    observed: dict[str, list[dict[str, object]]] = {}
+    expected_outcomes: dict[DemoMode, str] = {
+        "ready": "completed",
+        "refreshing": "completed",
+        "pending": "completed",
+        "unavailable": "unavailable",
+    }
+    observed: dict[str, dict[str, list[dict[str, object]]]] = {}
     with TestClient(app) as client:
         for index, (mode, core_states) in enumerate(expected.items()):
-            core.reset(mode)
+            selected = client.post(f"/demo/session-prep/state/{mode}")
+            assert selected.status_code == 200
+            assert selected.json() == {"mode": mode}
+            empty_trace = client.get("/demo/session-prep/trace")
+            assert empty_trace.status_code == 200
+            assert empty_trace.json() == {
+                "mode": mode,
+                "calls": [],
+                "canonical_writes": [],
+            }
             client_turn_id = str(uuid.uuid4())
             headers = {
                 "Authorization": f"Bearer {MOUNT_TOKEN}",
@@ -303,7 +323,28 @@ def self_test() -> None:
             assert [event["core_state"] for event in core.events] == core_states
             assert all(event["exact_body"] and event["authority_headers"]
                        and event["new_poll_key"] for event in core.events)
-            observed[mode] = deepcopy(core.events)
+            assert len(conversation.final) == 1
+            assert set(conversation.final[0]) == {"state", "characters"}
+            assert conversation.final[0]["state"] == expected_outcomes[mode]
+            assert type(conversation.final[0]["characters"]) is int
+            assert conversation.final[0]["characters"] > 0
+            trace = client.get("/demo/session-prep/trace")
+            assert trace.status_code == 200
+            assert trace.headers["Cache-Control"] == "no-store"
+            assert trace.json() == {
+                "mode": mode,
+                "calls": core.events,
+                "canonical_writes": conversation.final,
+            }
+            if mode == "ready":
+                conversation.final.append(deepcopy(conversation.final[0]))
+                duplicate_trace = client.get("/demo/session-prep/trace")
+                assert len(duplicate_trace.json()["canonical_writes"]) == 2
+                conversation.final.pop()
+            observed[mode] = {
+                "calls": deepcopy(core.events),
+                "canonical_writes": deepcopy(conversation.final),
+            }
         rejected_turn_id = str(uuid.uuid4())
         rejected = client.post("/session-prep", headers={
             "Authorization": f"Bearer {MOUNT_TOKEN}",

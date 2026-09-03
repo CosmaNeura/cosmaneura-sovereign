@@ -55,6 +55,7 @@
 </main>
 <script src="/embed/v1/panel.js"></script>
 <script>
+/* SESSION_PREP_DEMO_CONTROLLER_START */
 (function(){
   "use strict";
   var status=document.getElementById("demo-status"),calls=document.getElementById("calls"),
@@ -87,6 +88,7 @@
   }
   function verifiedTrace(trace,mode){
     var expected={ready:["pending","refreshing","ready"],refreshing:["refreshing","refreshing","refreshing"],pending:["pending","pending","pending"],unavailable:["unavailable"]}[mode];
+    var expectedOutcome=mode==="unavailable"?"unavailable":"completed";
     if(!expected||!exactKeys(trace,["mode","calls","canonical_writes"])||trace.mode!==mode||
        !Array.isArray(trace.calls)||trace.calls.length!==expected.length||
        !Array.isArray(trace.canonical_writes)||trace.canonical_writes.length!==1)return false;
@@ -98,7 +100,7 @@
         call.same_body===true&&call.new_poll_key===true&&call.authority_headers===true;
     });
     var write=trace.canonical_writes[0];
-    return callsValid&&exactKeys(write,["state","characters"])&&write.state===mode&&
+    return callsValid&&exactKeys(write,["state","characters"])&&write.state===expectedOutcome&&
       Number.isInteger(write.characters)&&write.characters>0;
   }
   async function refreshTrace(mode){
@@ -147,6 +149,7 @@
   })().catch(function(){authorityOpen=false;status.textContent="Could not initialize the synthetic demo.";busy(false);});
   window.addEventListener("pagehide",function(){panel.destroy();});
 })();
+/* SESSION_PREP_DEMO_CONTROLLER_END */
 </script>
 </body>
 </html>

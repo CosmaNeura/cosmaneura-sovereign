@@ -75,14 +75,31 @@ async function until(predicate, message) {
   throw new Error(message);
 }
 
+const CONTROLLER_START_MARKER = "/* SESSION_PREP_DEMO_CONTROLLER_START */";
+const CONTROLLER_END_MARKER = "/* SESSION_PREP_DEMO_CONTROLLER_END */";
+
+function uniqueMarkerIndex(source, marker, label) {
+  const first = source.indexOf(marker);
+  assert(first !== -1, `missing ${label} marker`);
+  assert(source.indexOf(marker, first + marker.length) === -1,
+    `duplicate ${label} marker`);
+  return first;
+}
+
+function extractController(source) {
+  const start = uniqueMarkerIndex(source, CONTROLLER_START_MARKER, "controller start");
+  const end = uniqueMarkerIndex(source, CONTROLLER_END_MARKER, "controller end");
+  assert(end > start, "controller markers are out of order");
+  return source.slice(start + CONTROLLER_START_MARKER.length, end);
+}
+
 async function main() {
   const htmlPath = process.argv[2];
   assert(htmlPath, "demo HTML path is required");
   const html = fs.readFileSync(htmlPath, "utf8");
-  const scripts = Array.from(html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi))
-    .map(match => match[1])
-    .filter(source => source.includes("CosmaNeuraPanel.mount"));
-  assert(scripts.length === 1, "expected one inline Session Prep controller");
+  const controller = extractController(html);
+  assert(controller.includes("CosmaNeuraPanel.mount"),
+    "expected the marked Session Prep controller");
 
   const status = new FakeElement("div", { "aria-busy": "true" });
   status.textContent = "Opening the synthetic record…";
@@ -142,7 +159,10 @@ async function main() {
         new_poll_key: true,
         authority_headers: true,
       })),
-      canonical_writes: [{ state: mode, characters: 80 }],
+      canonical_writes: [{
+        state: mode === "unavailable" ? "unavailable" : "completed",
+        characters: 80,
+      }],
     };
   }
 
@@ -208,7 +228,7 @@ async function main() {
     return response(latestTrace, statusCode);
   };
 
-  vm.runInNewContext(scripts[0], {
+  vm.runInNewContext(controller, {
     document,
     window,
     fetch,
@@ -253,6 +273,10 @@ async function main() {
   }
   assert(traceStatus.textContent === "1 verified Core call",
     "single-call trace count used incorrect grammar");
+
+  traceMutation = trace => { trace.canonical_writes[0].state = "completed"; };
+  await buttons[modes.indexOf("unavailable")].click();
+  assertClosedFailure("unavailable", "wrong unavailable canonical outcome");
 
   heldState = deferred();
   const pendingRun = buttons[modes.indexOf("pending")].click();
@@ -305,6 +329,16 @@ async function main() {
     assertClosedFailure("pending", `false ${invariant} trace invariant`);
   }
 
+  traceMutation = trace => { trace.canonical_writes = []; };
+  await buttons[modes.indexOf("ready")].click();
+  assertClosedFailure("pending", "missing current canonical write");
+
+  traceMutation = trace => {
+    trace.canonical_writes.push({ ...trace.canonical_writes[0] });
+  };
+  await buttons[modes.indexOf("ready")].click();
+  assertClosedFailure("pending", "duplicate current canonical write");
+
   traceMutation = trace => { trace.calls[2].core_state = "pending"; };
   await buttons[modes.indexOf("ready")].click();
   assertClosedFailure("pending", "invalid trace sequence");
@@ -313,9 +347,9 @@ async function main() {
   await buttons[modes.indexOf("ready")].click();
   assertClosedFailure("pending", "mismatched trace mode");
 
-  traceMutation = trace => { trace.canonical_writes[0].state = "refreshing"; };
+  traceMutation = trace => { trace.canonical_writes[0].state = "ready"; };
   await buttons[modes.indexOf("ready")].click();
-  assertClosedFailure("pending", "mismatched canonical write");
+  assertClosedFailure("pending", "mode-shaped canonical write");
 
   nextTraceStatus = 503;
   await buttons[modes.indexOf("ready")].click();

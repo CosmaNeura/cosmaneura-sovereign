@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from html.parser import HTMLParser
+import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -14,6 +16,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DEMO_PATH = ROOT / "tools" / "session_prep_demo.html"
 HARNESS_PATH = ROOT / "tests" / "session_prep_demo_ui_harness.js"
+CONTROLLER_START_MARKER = "/* SESSION_PREP_DEMO_CONTROLLER_START */"
+CONTROLLER_END_MARKER = "/* SESSION_PREP_DEMO_CONTROLLER_END */"
 
 
 class _Node:
@@ -191,6 +195,8 @@ def test_demo_assets_and_controller_are_local_and_non_persistent() -> None:
         if node.attrs.get(name)
     ]
     assert resource_urls == ["/embed/v1/panel.js"]
+    assert source.count(CONTROLLER_START_MARKER) == 1
+    assert source.count(CONTROLLER_END_MARKER) == 1
     assert "https://" not in source
     assert "http://" not in source
     assert 'fetch("/demo/session-prep/state/"+mode,{method:"POST"})' in source
@@ -212,3 +218,93 @@ def test_demo_controller_runtime_accessibility_and_failure_behavior() -> None:
         capture_output=True,
         text=True,
     )
+
+
+def test_demo_controller_harness_uses_exact_unambiguous_delimiters(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable")
+    source = DEMO_PATH.read_text(encoding="utf-8")
+    spaced_end_tag = source.replace("\n</script>\n", "\n</script >\n", 1)
+    assert spaced_end_tag != source
+    spaced_path = tmp_path / "spaced-end-tag.html"
+    spaced_path.write_text(spaced_end_tag, encoding="utf-8")
+    subprocess.run(
+        [node, str(HARNESS_PATH), str(spaced_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    temporary = "SESSION_PREP_DEMO_CONTROLLER_TEMP"
+    variants = {
+        "duplicate-start": (
+            source.replace(
+                CONTROLLER_START_MARKER,
+                f"{CONTROLLER_START_MARKER}\n{CONTROLLER_START_MARKER}",
+                1,
+            ),
+            "duplicate controller start marker",
+        ),
+        "duplicate-end": (
+            source.replace(
+                CONTROLLER_END_MARKER,
+                f"{CONTROLLER_END_MARKER}\n{CONTROLLER_END_MARKER}",
+                1,
+            ),
+            "duplicate controller end marker",
+        ),
+        "missing-start": (
+            source.replace(CONTROLLER_START_MARKER, "", 1),
+            "missing controller start marker",
+        ),
+        "missing-end": (
+            source.replace(CONTROLLER_END_MARKER, "", 1),
+            "missing controller end marker",
+        ),
+        "reversed": (
+            source.replace(CONTROLLER_START_MARKER, temporary, 1)
+            .replace(CONTROLLER_END_MARKER, CONTROLLER_START_MARKER, 1)
+            .replace(temporary, CONTROLLER_END_MARKER, 1),
+            "controller markers are out of order",
+        ),
+    }
+    assert all(variant != source for variant, _error in variants.values())
+
+    for name, (variant, expected_error) in variants.items():
+        path = tmp_path / f"{name}.html"
+        path.write_text(variant, encoding="utf-8")
+        completed = subprocess.run(
+            [node, str(HARNESS_PATH), str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode != 0, f"{name} delimiter was accepted"
+        assert expected_error in completed.stderr
+
+
+def test_demo_self_test_proves_one_current_canonical_write_per_mode() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "tools.run_session_prep_demo", "--self-test"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    evidence = json.loads(completed.stdout)
+    expected_outcomes = {
+        "ready": "completed",
+        "refreshing": "completed",
+        "pending": "completed",
+        "unavailable": "unavailable",
+    }
+    assert set(evidence["states"]) == set(expected_outcomes)
+    for mode, outcome in expected_outcomes.items():
+        writes = evidence["states"][mode]["canonical_writes"]
+        assert len(writes) == 1
+        assert writes[0]["state"] == outcome
+        assert type(writes[0]["characters"]) is int
+        assert writes[0]["characters"] > 0
