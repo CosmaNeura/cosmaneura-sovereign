@@ -297,7 +297,6 @@ def self_test() -> None:
                            for path in welcome.json()["paths"])
             response = client.post("/session-prep", headers=headers, json={
                 "client_turn_id": client_turn_id,
-                "context_snapshot_ref": "context_synthetic_001",
             })
             assert response.status_code == 200
             assert response.json()["state"] == mode
@@ -305,6 +304,16 @@ def self_test() -> None:
             assert all(event["exact_body"] and event["authority_headers"]
                        and event["new_poll_key"] for event in core.events)
             observed[mode] = deepcopy(core.events)
+        rejected_turn_id = str(uuid.uuid4())
+        rejected = client.post("/session-prep", headers={
+            "Authorization": f"Bearer {MOUNT_TOKEN}",
+            "X-Cosmaneura-Embed-Version": "1.0",
+            "X-Cosmaneura-Client-Turn-ID": rejected_turn_id,
+        }, json={
+            "client_turn_id": rejected_turn_id,
+            "context_snapshot_ref": "context_synthetic_browser_forbidden",
+        })
+        assert rejected.status_code == 422
     sanitized_trace = json.dumps(observed)
     assert MOUNT_TOKEN not in sanitized_trace
     assert "context_synthetic_001" not in sanitized_trace
