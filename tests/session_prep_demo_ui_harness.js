@@ -276,7 +276,11 @@ async function main() {
       assert(options.headers["X-Cosmaneura-Demo-Run-ID"] === currentRunId,
         "panel action did not carry the current server-issued run id");
       latestTrace = traceFor(currentMode, currentRunId);
-      if (heldAction) await heldAction.promise;
+      if (heldAction) {
+        const pendingAction = heldAction;
+        heldAction = null;
+        await pendingAction.promise;
+      }
       return response({}, 200);
     }
     assert(url === "/demo/session-prep/trace", "unexpected demo request: " + url);
@@ -326,7 +330,8 @@ async function main() {
   assert(traceStatus.textContent === "3 verified Core calls", "ready trace count was unclear");
   const initialRunId = currentRunId;
 
-  heldAction = deferred();
+  const heldRecordAAction = deferred();
+  heldAction = heldRecordAAction;
   const actionsBeforeStaleRun = actionCalls;
   const traceRequestsBeforeStaleRun = requests.filter(request =>
     request.url.endsWith("/trace")).length;
@@ -357,21 +362,25 @@ async function main() {
   assert(switchButton.disabled === false && revokeButton.disabled === false &&
     resetButton.disabled === true, "record switch left incorrect host controls enabled");
 
-  heldAction.resolve();
-  heldAction = null;
-  await staleRun;
-  assert(status.textContent === "Synthetic record B is open. Choose a typed state.",
-    "late record A action repainted record B status");
-  assert(selectedMode() === null, "late record A action selected a state on record B");
-  assert(calls.children.length === 0,
-    "late record A action repainted record B trace evidence");
-  assert(requests.filter(request => request.url.endsWith("/trace")).length ===
-    traceRequestsBeforeStaleRun, "late record A action requested stale trace evidence");
-
   await buttons[modes.indexOf("ready")].click();
   assert(status.textContent === "Rendered the ready state through the real vertical slice.",
-    "ready did not work after record switching");
-  assert(selectedMode() === "ready", "ready was not selected after record switching");
+    "ready did not work on record B while record A remained held");
+  assert(selectedMode() === "ready", "ready was not selected on record B");
+  assert(calls.children.length === 3, "record B ready trace did not render");
+  const traceRequestsAfterRecordB = requests.filter(request =>
+    request.url.endsWith("/trace")).length;
+  assert(traceRequestsAfterRecordB === traceRequestsBeforeStaleRun + 1,
+    "record B did not produce exactly one current trace request");
+
+  heldRecordAAction.resolve();
+  await staleRun;
+  assert(status.textContent === "Rendered the ready state through the real vertical slice.",
+    "late record A action repainted record B status");
+  assert(selectedMode() === "ready", "late record A action changed record B state");
+  assert(calls.children.length === 3,
+    "late record A action repainted record B trace evidence");
+  assert(requests.filter(request => request.url.endsWith("/trace")).length ===
+    traceRequestsAfterRecordB, "late record A action requested stale trace evidence");
 
   for (const mode of ["refreshing", "unavailable"]) {
     await buttons[modes.indexOf(mode)].click();
