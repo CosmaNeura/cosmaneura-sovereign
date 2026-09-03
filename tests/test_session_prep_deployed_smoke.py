@@ -614,6 +614,13 @@ def test_canary_requires_core_mount_token_prefix() -> None:
         ({"issued_at": "2026-09-03 12:00:00Z"}, "non-RFC3339 separator"),
         ({"issued_at": "2026-09-03T12:04:00Z"}, "issuance order"),
         ({"refresh_after": "2026-09-03T12:05:00Z"}, "expiry order"),
+        (
+            {
+                "refresh_after": "2026-09-03T12:04:00.0001Z",
+                "expires_at": "2026-09-03T12:04:00.0009Z",
+            },
+            "browser-millisecond expiry order",
+        ),
         ({"issued_at": "2026-09-03T12:02:01Z"}, "future issuance"),
         ({"refresh_after": "2026-09-03T12:01:00Z"}, "stale credential"),
     ],

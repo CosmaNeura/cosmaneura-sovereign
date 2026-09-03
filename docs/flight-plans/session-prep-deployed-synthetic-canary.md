@@ -72,8 +72,8 @@ For both modes, the canary:
 3. Requires the platform exchange's exact HTTP 201 response and browser
    credential contract: a bounded `mctx_` token plus strict RFC3339 issuance,
    refresh, and expiry timestamps. Issuance may be at most 60 seconds ahead of
-   the canary clock, the timestamps must be strictly ordered, and refresh must
-   still be in the future.
+   the canary clock, the timestamps must be strictly ordered at browser
+   millisecond precision, and refresh must still be in the future.
 4. Requires every credential-bearing response—including the platform exchange—
    to echo embed version `1.0` and declare `Cache-Control: no-store`; all read
    bodies must also stay within 64 KiB and contain unambiguous JSON.

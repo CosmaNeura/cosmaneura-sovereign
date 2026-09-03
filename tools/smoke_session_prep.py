@@ -24,7 +24,7 @@ import re
 import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -54,6 +54,7 @@ _RFC3339_RE = re.compile(
     r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?"
     r"(?:Z|[+-][0-9]{2}:[0-9]{2})$"
 )
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _SESSION_PREP_PATH = {
     "label": "Open Session Prep",
     "message": "Open Session Prep",
@@ -262,15 +263,17 @@ async def _exchange_mount_token(
     issued_at = _parse_browser_rfc3339(payload.get("issued_at"))
     refresh_after = _parse_browser_rfc3339(payload.get("refresh_after"))
     expires_at = _parse_browser_rfc3339(payload.get("expires_at"))
-    now = _utc_now()
+    if issued_at is None or refresh_after is None or expires_at is None:
+        raise SmokeFailure("platform exchange returned invalid credential timestamps")
+    issued_at_ms = _browser_epoch_milliseconds(issued_at)
+    refresh_after_ms = _browser_epoch_milliseconds(refresh_after)
+    expires_at_ms = _browser_epoch_milliseconds(expires_at)
+    now_ms = _browser_epoch_milliseconds(_utc_now())
     if (
-        issued_at is None
-        or refresh_after is None
-        or expires_at is None
-        or issued_at > now + timedelta(seconds=60)
-        or issued_at >= refresh_after
-        or refresh_after >= expires_at
-        or now >= refresh_after
+        issued_at_ms > now_ms + 60_000
+        or issued_at_ms >= refresh_after_ms
+        or refresh_after_ms >= expires_at_ms
+        or now_ms >= refresh_after_ms
     ):
         raise SmokeFailure("platform exchange returned invalid credential timestamps")
     return token
@@ -331,6 +334,14 @@ def _valid_prep_text_list(value: Any, *, minimum: int) -> bool:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _browser_epoch_milliseconds(value: datetime) -> int:
+    """Match the millisecond precision used by JavaScript Date.parse/Date.now."""
+    delta = value.astimezone(UTC) - _UNIX_EPOCH
+    return ((delta.days * 86_400 + delta.seconds) * 1_000) + (
+        delta.microseconds // 1_000
+    )
 
 
 def _parse_browser_rfc3339(value: Any) -> datetime | None:
