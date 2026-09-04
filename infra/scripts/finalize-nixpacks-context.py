@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate and normalize a Nixpacks Dockerfile context for remote ACR build."""
+
 from __future__ import annotations
 
 import os
@@ -21,6 +22,7 @@ EXPECTED_BUILD_ARGS = {
     "PYTHONUNBUFFERED": "1",
 }
 EXPECTED_BASE_IMAGE = "ghcr.io/railwayapp/nixpacks:ubuntu-1745885067"
+SESSION_PREP_ADMISSION_LABEL = "org.cosmaneura.session-prep.build-admission"
 PINNED_BASE_IMAGE = (
     EXPECTED_BASE_IMAGE
     + "@sha256:d45c89d80e13d7ad0fd555b5130f22a866d9dd10e861f589932303ef2314c7de"
@@ -34,8 +36,7 @@ EXPECTED_INSTALL = (
 
 def _normalize_pip_install(lines: list[str], revision: str) -> None:
     mount_prefix = (
-        f"RUN --mount=type=cache,id={revision}-/root/cache/pip,"
-        "target=/root/.cache/pip "
+        f"RUN --mount=type=cache,id={revision}-/root/cache/pip,target=/root/.cache/pip "
     )
     mounted_install = f"{mount_prefix}{EXPECTED_INSTALL}"
     mount_lines = [line for line in lines if "--mount" in line]
@@ -43,7 +44,7 @@ def _normalize_pip_install(lines: list[str], revision: str) -> None:
     if mount_lines != [mounted_install] or pip_install_lines != [mounted_install]:
         raise ValueError("generated Dockerfile pip cache mount or command drifted")
     index = lines.index(mounted_install)
-    lines[index] = "RUN " + lines[index][len(mount_prefix):]
+    lines[index] = "RUN " + lines[index][len(mount_prefix) :]
 
 
 def _parse_build_script(
@@ -51,6 +52,7 @@ def _parse_build_script(
     script: Path,
     expected_image: str,
     revision: str,
+    admission_digest: str | None,
 ) -> None:
     tokens = shlex.split(script.read_text())
     if len(tokens) < 3 or tokens[:2] != ["docker", "build"]:
@@ -87,25 +89,47 @@ def _parse_build_script(
             platform = value
 
     expected_dockerfile = source / ".nixpacks" / "Dockerfile"
-    if dockerfile is None or Path(dockerfile).resolve() != expected_dockerfile.resolve():
+    if (
+        dockerfile is None
+        or Path(dockerfile).resolve() != expected_dockerfile.resolve()
+    ):
         raise ValueError("Nixpacks selected an unexpected Dockerfile")
     if image != expected_image or platform != "linux/amd64":
         raise ValueError("Nixpacks image name or platform drifted")
-    if labels != [f"org.opencontainers.image.revision={revision}"]:
-        raise ValueError("Nixpacks revision label drifted")
+    expected_labels = [f"org.opencontainers.image.revision={revision}"]
+    if admission_digest is not None:
+        expected_labels.append(f"{SESSION_PREP_ADMISSION_LABEL}={admission_digest}")
+    if labels != expected_labels:
+        raise ValueError("Nixpacks provenance labels drifted")
     if build_args != EXPECTED_BUILD_ARGS:
         raise ValueError("Nixpacks build arguments drifted")
 
 
-def finalize(source: Path, expected_image: str, revision: str, epoch: int) -> None:
+def finalize(
+    source: Path,
+    expected_image: str,
+    revision: str,
+    epoch: int,
+    admission_digest: str | None = None,
+) -> None:
     if not re.fullmatch(r"[0-9a-f]{40,64}", revision):
         raise ValueError("revision must be a full lowercase Git object ID")
+    if admission_digest is not None and not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", admission_digest
+    ):
+        raise ValueError("admission digest must be an exact lowercase SHA-256 digest")
     nixpacks = source / ".nixpacks"
     dockerfile = nixpacks / "Dockerfile"
     build_script = nixpacks / "build.sh"
     if not dockerfile.is_file() or not build_script.is_file():
         raise ValueError("Nixpacks output is incomplete")
-    _parse_build_script(source, build_script, expected_image, revision)
+    _parse_build_script(
+        source,
+        build_script,
+        expected_image,
+        revision,
+        admission_digest,
+    )
 
     content = dockerfile.read_text()
     lines = content.splitlines()
@@ -128,9 +152,12 @@ def finalize(source: Path, expected_image: str, revision: str, epoch: int) -> No
         or "requirements.txt" in content
     ):
         raise ValueError("normalized Dockerfile install command is unsafe")
-    content = content.rstrip() + (
-        f'\n\nLABEL org.opencontainers.image.revision="{revision}"\n'
-    )
+    provenance_labels = [f'LABEL org.opencontainers.image.revision="{revision}"']
+    if admission_digest is not None:
+        provenance_labels.append(
+            f'LABEL {SESSION_PREP_ADMISSION_LABEL}="{admission_digest}"'
+        )
+    content = content.rstrip() + "\n\n" + "\n".join(provenance_labels) + "\n"
     dockerfile.write_text(content)
 
     # build.sh embeds a random tag and absolute temporary paths. It is not used
@@ -144,14 +171,22 @@ def finalize(source: Path, expected_image: str, revision: str, epoch: int) -> No
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 5:
+    if len(argv) not in {5, 6}:
         print(
-            "usage: finalize-nixpacks-context.py <source> <image:tag> <revision> <epoch>",
+            "usage: finalize-nixpacks-context.py <source> <image:tag> "
+            "<revision> <epoch> [session-prep-admission-digest]",
             file=sys.stderr,
         )
         return 2
     try:
-        finalize(Path(argv[1]), argv[2], argv[3], int(argv[4]))
+        admission_digest = argv[5] if len(argv) == 6 else None
+        finalize(
+            Path(argv[1]),
+            argv[2],
+            argv[3],
+            int(argv[4]),
+            admission_digest,
+        )
     except (OSError, ValueError) as error:
         print(f"invalid Nixpacks context: {error}", file=sys.stderr)
         return 1

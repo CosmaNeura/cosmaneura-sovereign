@@ -674,7 +674,7 @@ def test_bootstrap_build_emits_only_an_immutable_digest() -> None:
     assert "Nixpacks release checksum mismatch" in script
     assert "194bcad8c379f78a309eee1a88b2e6b2" in script
     assert "0c6799690ad0b7328691fe3e457ec93d" in script
-    assert "archive --format=tar HEAD" in script
+    assert 'archive --format=tar "$sha"' in script
     assert '"$nixpacks_bin" build "$source_dir"' in script
     assert '--out "$source_dir"' in script
     assert '--cache-key "$sha"' in script
@@ -696,6 +696,8 @@ def test_bootstrap_build_resolves_dockerfile_from_generated_context(
     epoch = 1_700_000_000
     digest = "sha256:" + "b" * 64
     acr_log = tmp_path / "acr-build.json"
+    fake_objects = tmp_path / "objects"
+    fake_objects.mkdir()
 
     nixpacks_payload = tmp_path / "nixpacks"
     _make_executable(
@@ -755,25 +757,33 @@ command.extend([
     _make_executable(
         bin_dir / "git",
         f"#!{sys.executable}\n"
-        + """import io
-import os
+        + f"""import io
+import pathlib
 import sys
 import tarfile
 
 args = sys.argv[1:]
+if args[:1] == ["--no-replace-objects"]:
+    args = args[1:]
+while args[:1] == ["-c"]:
+    args = args[2:]
 if args[:1] == ["-C"]:
     args = args[2:]
 if args == ["status", "--porcelain", "--untracked-files=all"]:
     pass
-elif args == ["rev-parse", "HEAD"]:
-    print(os.environ["SOURCE_COMMIT"])
-elif args == ["show", "-s", "--format=%ct", "HEAD"]:
-    print(os.environ["SOURCE_EPOCH"])
-elif args == ["archive", "--format=tar", "HEAD"]:
+elif args == ["rev-parse", "--verify", "HEAD^{{commit}}"]:
+    print({revision!r})
+elif args == ["show", "-s", "--format=%ct", {revision!r}]:
+    print({str(epoch)!r})
+elif args == ["rev-parse", "--path-format=absolute", "--git-path", "objects"]:
+    print({str(fake_objects)!r})
+elif args[:3] == ["init", "--bare", "--quiet"]:
+    pathlib.Path(args[-1]).mkdir(parents=True, exist_ok=True)
+elif "archive" in args and args[-2:] == ["--format=tar", {revision!r}]:
     payload = b"placeholder lock for generated Dockerfile context\\n"
     info = tarfile.TarInfo("requirements.lock")
     info.size = len(payload)
-    info.mtime = int(os.environ["SOURCE_EPOCH"])
+    info.mtime = {epoch!r}
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
         archive.addfile(info, io.BytesIO(payload))
 else:
@@ -850,8 +860,8 @@ else:
     env = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        "DEPLOYMENT_ENVIRONMENT": "staging",
-        "REGISTRY": "cosmaneurasovereignstagingregistry.azurecr.io",
+        "DEPLOYMENT_ENVIRONMENT": "prod",
+        "REGISTRY": "cosmaneurasovereignprodregistry.azurecr.io",
         "IMAGE_REPO": "cosmaneura/sovereign",
         "SOURCE_COMMIT": revision,
         "SOURCE_EPOCH": str(epoch),
@@ -870,7 +880,7 @@ else:
     )
 
     assert result.stdout.strip() == (
-        "cosmaneurasovereignstagingregistry.azurecr.io/"
+        "cosmaneurasovereignprodregistry.azurecr.io/"
         f"cosmaneura/sovereign@{digest}"
     )
     invocation = json.loads(acr_log.read_text())
