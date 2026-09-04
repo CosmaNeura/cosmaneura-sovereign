@@ -78,6 +78,21 @@ evidence creation cannot dirty the observed source tree. The run ID and
 challenge bind the later receipt to one declared exercise but are not
 signatures, identity proof, or proof that the browser actions occurred.
 
+Read the initial checkpoint from the newer helper checkout:
+
+```bash
+PYTHONPATH=. python tools/prepare_session_prep_ui_exercise.py status \
+  /absolute/path/to/session-prep-ui-worksheet.json \
+  --demo-repo /absolute/path/to/session-prep-ui-source
+```
+
+`status` revalidates the exact clean detached demo checkout and the closed,
+fresh worksheet. Its bounded output contains only the passed and remaining
+counts, the next approved manual-check ID, and an opaque
+`sha256:<64 lowercase hexadecimal characters>` worksheet revision. It does
+not print the worksheet path, run ID, challenge, browser metadata, or content.
+Keep the returned revision for the next single-check update.
+
 Then, from the detached source checkout, run the existing offline checks and
 start the loopback demo:
 
@@ -137,11 +152,34 @@ contains synthetic authority/context values; the boundary is that no real
 credential, provider/patient data, raw note, or server-owned Session Prep
 handle leaks across the tested surfaces.
 
-Immediately after each successful manual observation, change only its exact
-worksheet status from `not-run` to `pass`. Do not bulk-promote checks. If any
-observation fails, is partial, ambiguous, or was not performed, leave it
-`not-run`, do not seal a receipt, and use the normal synthetic defect workflow.
-Do not add a note or explanation to the worksheet.
+Immediately after completing the single observation named by `status`, use
+`mark` with that exact approved check ID and the revision returned by the most
+recent `status` call:
+
+```bash
+PYTHONPATH=. python tools/prepare_session_prep_ui_exercise.py mark \
+  /absolute/path/to/session-prep-ui-worksheet.json \
+  states.ready.heading_and_status \
+  --expected-worksheet-sha256 sha256:<revision-from-status> \
+  --demo-repo /absolute/path/to/session-prep-ui-source
+```
+
+The check ID above is an example; use exactly the next approved ID reported
+for the current worksheet. `mark` accepts only one known check and only one
+`not-run` to `pass` transition. It has no bulk-pass, reset, free-form note, or
+arbitrary-value path. It revalidates the exact demo provenance and refuses a
+stale revision or a worksheet changed by another writer. A successful update
+is written to a same-directory private temporary file, finalized as mode
+`0600`, and atomically replaces the unchanged worksheet.
+
+After every successful `mark`, rerun `status` to obtain the new counts, next
+approved check ID, and fresh revision before performing the next observation.
+If `mark` is rejected or the command sequence is interrupted, rerun `status`;
+never guess or reuse a stale revision. Complete 44 sequential single-check
+`mark` calls, one immediately after each successful observation. Never edit
+the worksheet JSON directly. If any observation fails, is partial, ambiguous,
+or was not performed, leave it `not-run`, do not call `mark` for it, do not
+seal a receipt, and use the normal synthetic defect workflow.
 
 After all 44 observations pass, return to the newer helper checkout and seal
 to a new path:
@@ -153,16 +191,18 @@ PYTHONPATH=. python tools/prepare_session_prep_ui_exercise.py seal \
   --demo-repo /absolute/path/to/session-prep-ui-source
 ```
 
-Sealing single-reads a bounded regular worksheet, rejects links, special
-files, stale or future starts, unknown fields, type coercion, live/PHI scope,
-and every non-`pass` status. Both initialization and sealing require the demo
-checkout to remain at the exact detached commit/tree with no tracked or
-untracked changes. Sealing sets `observed_at_utc`, forces every readiness claim
-false, calculates the receipt digest, and runs the unchanged committed
-verifier plus its exact offline harnesses before publishing a new mode-`0600`
-receipt. It does not overwrite a file. Success still establishes only an
-unauthenticated, unproven operator attestation. Finish sealing within 24 hours
-of initialization.
+Sealing single-reads a bounded private regular worksheet, rejects links,
+multiple hard links, non-`0600` mode, special files, stale or future starts,
+unknown fields, type coercion, live/PHI scope, and every non-`pass` status. Both
+initialization and sealing require the demo checkout to remain at the exact
+detached commit/tree with no tracked or untracked changes. Sealing sets
+`observed_at_utc`, forces every readiness claim false, calculates the receipt
+digest, and runs the unchanged committed verifier plus its exact offline
+harnesses before publishing a new mode-`0600` receipt. It does not overwrite a
+file. Success still establishes only an unauthenticated, unproven operator
+attestation. Finish sealing within 24 hours of initialization. The `status`
+and `mark` checkpoint workflow does not change the receipt schema, its verifier,
+or any readiness claim.
 
 ## Closed receipt format
 
@@ -364,6 +404,12 @@ performed the observations or that the browser was configured as claimed. It
 also cannot prove that a deployed artifact matches this source. Retain an
 accepted receipt through the normal evidence process; never mutate it into a
 staging or release attestation.
+
+The checkpoint revision and advisory file lock prevent stale or concurrent
+invocations of this helper from silently losing an update. They are not a
+sandbox against another process that already has write authority to the
+worksheet or its parent directory; keep both in an operator-controlled private
+directory and rerun `status` after any rejected or interrupted update.
 
 This evidence does not establish staging deployment, Auth/IAM readiness,
 durable operational controls, real-provider readiness, production readiness,
