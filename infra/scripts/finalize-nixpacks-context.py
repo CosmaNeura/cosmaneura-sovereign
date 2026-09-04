@@ -134,7 +134,9 @@ def finalize(
     content = dockerfile.read_text()
     lines = content.splitlines()
     from_indexes = [
-        index for index, line in enumerate(lines) if line.startswith("FROM ")
+        index
+        for index, line in enumerate(lines)
+        if re.match(r"^\s*FROM(?:\s+|$)", line, flags=re.IGNORECASE)
     ]
     if (
         len(from_indexes) != 1

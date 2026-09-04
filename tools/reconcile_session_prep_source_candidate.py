@@ -706,6 +706,9 @@ def _run_existing_ui_verifier(
             result = subprocess.run(
                 [
                     sys.executable,
+                    "-I",
+                    "-B",
+                    "-S",
                     os.fspath(verifier_path),
                     os.fspath(receipt_path),
                     "--sovereign-repo",

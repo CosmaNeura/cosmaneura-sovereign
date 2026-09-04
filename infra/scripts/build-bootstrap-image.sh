@@ -22,12 +22,31 @@ run_closed_git() {
     git --no-replace-objects "$@"
 }
 
+run_isolated_python() {
+  python3 -I -B -S "$@"
+}
+
+run_closed_tar() {
+  env -i LC_ALL=C PATH="$PATH" tar "$@"
+}
+
 for command in az curl git python3 tar wc; do
   command -v "$command" >/dev/null || {
     echo "$command is required" >&2
     exit 1
   }
 done
+if run_closed_git -c core.fsmonitor=false -C "$ROOT" \
+  config --includes --get-regexp '^filter\.' >/dev/null 2>&1; then
+  echo "refusing to build with repository-local Git content filters" >&2
+  exit 2
+else
+  filter_status="$?"
+  if [[ "$filter_status" -ne 1 ]]; then
+    echo "unable to verify repository-local Git filter configuration" >&2
+    exit 1
+  fi
+fi
 if ! worktree_status="$(
   run_closed_git -c core.fsmonitor=false -C "$ROOT" \
     status --porcelain --untracked-files=all
@@ -81,7 +100,7 @@ trap cleanup EXIT
 # its existing clean-HEAD behavior and cannot consume the staging admission.
 if [[ "$DEPLOYMENT_ENVIRONMENT" == "staging" ]]; then
   admission_output="$tmp_dir/staging-build-admission.fields"
-  if ! PYTHONPATH="$ROOT" python3 \
+  if ! run_isolated_python \
     "$ROOT/tools/admit_session_prep_staging_build.py" \
       --core-repo "$SESSION_PREP_CORE_REPO" \
       --sovereign-repo "$ROOT" \
@@ -183,7 +202,7 @@ nixpacks_archive="$tmp_dir/$nixpacks_asset"
 curl --fail --location --silent --show-error \
   --output "$nixpacks_archive" \
   "https://github.com/railwayapp/nixpacks/releases/download/v1.41.0/$nixpacks_asset"
-python3 - "$nixpacks_archive" "$nixpacks_sha256" <<'PY'
+run_isolated_python - "$nixpacks_archive" "$nixpacks_sha256" <<'PY'
 import hashlib
 import pathlib
 import sys
@@ -196,13 +215,20 @@ if actual != expected:
 PY
 nixpacks_dir="$tmp_dir/nixpacks"
 mkdir -p "$nixpacks_dir"
-tar -xzf "$nixpacks_archive" -C "$nixpacks_dir"
+run_closed_tar -xzf "$nixpacks_archive" -C "$nixpacks_dir"
 nixpacks_bin="$nixpacks_dir/nixpacks"
 [[ -x "$nixpacks_bin" ]] || {
   echo "verified Nixpacks archive did not contain an executable" >&2
   exit 2
 }
-nixpacks_version="$($nixpacks_bin --version)"
+run_closed_nixpacks() (
+  local variable
+  while IFS= read -r variable; do
+    unset "$variable"
+  done < <(compgen -A variable NIXPACKS_)
+  "$nixpacks_bin" "$@"
+)
+nixpacks_version="$(run_closed_nixpacks --version)"
 if [[ ! "$nixpacks_version" =~ (^|[[:space:]])1\.41\.0($|[[:space:]]) ]]; then
   echo "verified artifact did not report Nixpacks 1.41.0" >&2
   exit 2
@@ -218,25 +244,25 @@ env -i \
   PATH="$PATH" \
   git --no-replace-objects --git-dir="$archive_git_dir" \
     -c core.attributesFile=/dev/null \
-    archive --format=tar "$sha" | tar -xf - -C "$source_dir"
+    archive --format=tar "$sha" | run_closed_tar -xf - -C "$source_dir"
 if [[ "$DEPLOYMENT_ENVIRONMENT" == "staging" ]]; then
-  "$nixpacks_bin" build "$source_dir" \
+  run_closed_nixpacks build "$source_dir" \
     --name "$image:$sha" \
     --out "$source_dir" \
     --cache-key "$sha" \
     --platform linux/amd64 \
     --label "org.opencontainers.image.revision=$sha" \
     --label "org.cosmaneura.session-prep.build-admission=$admission_digest" >&2
-  python3 "$ROOT/infra/scripts/finalize-nixpacks-context.py" \
+  run_isolated_python "$ROOT/infra/scripts/finalize-nixpacks-context.py" \
     "$source_dir" "$image:$sha" "$sha" "$commit_epoch" "$admission_digest"
 else
-  "$nixpacks_bin" build "$source_dir" \
+  run_closed_nixpacks build "$source_dir" \
     --name "$image:$sha" \
     --out "$source_dir" \
     --cache-key "$sha" \
     --platform linux/amd64 \
     --label "org.opencontainers.image.revision=$sha" >&2
-  python3 "$ROOT/infra/scripts/finalize-nixpacks-context.py" \
+  run_isolated_python "$ROOT/infra/scripts/finalize-nixpacks-context.py" \
     "$source_dir" "$image:$sha" "$sha" "$commit_epoch"
 fi
 

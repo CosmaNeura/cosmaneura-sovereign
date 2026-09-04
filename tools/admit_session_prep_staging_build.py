@@ -14,10 +14,36 @@ import json
 import os
 import re
 import sys
+from types import ModuleType
 from pathlib import Path
 from typing import Any, NoReturn, Sequence
 
-from tools import reconcile_session_prep_source_candidate as source_candidate
+
+def _load_source_candidate() -> ModuleType:
+    """Load the adjacent reviewed source directly, never through import search."""
+    path = (
+        Path(__file__).resolve().with_name("reconcile_session_prep_source_candidate.py")
+    )
+    try:
+        source = path.read_bytes()
+        code = compile(
+            source,
+            os.fspath(path),
+            "exec",
+            flags=0,
+            dont_inherit=True,
+            optimize=0,
+        )
+    except (OSError, SyntaxError, ValueError) as error:
+        raise RuntimeError("The source-pair reconciler could not be loaded") from error
+    module = ModuleType("_session_prep_source_candidate")
+    module.__file__ = os.fspath(path)
+    module.__package__ = ""
+    exec(code, module.__dict__)
+    return module
+
+
+source_candidate = _load_source_candidate()
 
 
 SCHEMA = "cosmaneura.session-prep.staging-build-admission.v1"

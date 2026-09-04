@@ -21,6 +21,7 @@ from tools import admit_session_prep_staging_build as admission
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = ROOT / "infra/scripts/build-bootstrap-image.sh"
 FINALIZE_SCRIPT = ROOT / "infra/scripts/finalize-nixpacks-context.py"
+ADMISSION_SCRIPT = ROOT / "tools/admit_session_prep_staging_build.py"
 
 
 def _source_packet() -> dict[str, Any]:
@@ -106,6 +107,8 @@ def _pre_network_environment(
     tmp_path: Path,
     *,
     fail_git_status: bool = False,
+    fail_git_filter_check: bool = False,
+    local_git_filter: bool = False,
 ) -> tuple[dict[str, str], Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -124,6 +127,13 @@ while args[:1] == ["-c"]:
     args = args[2:]
 if args[:1] == ["-C"]:
     args = args[2:]
+if args == ["config", "--includes", "--get-regexp", "^filter\\."]:
+    if {fail_git_filter_check!r}:
+        raise SystemExit(90)
+    if {local_git_filter!r}:
+        print("filter.synthetic.clean /private/not-emitted")
+        raise SystemExit(0)
+    raise SystemExit(1)
 if args == ["status", "--porcelain", "--untracked-files=all"]:
     if {fail_git_status!r}:
         raise SystemExit(90)
@@ -147,7 +157,12 @@ import os
 import pathlib
 import sys
 
-pathlib.Path({str(call_log)!r}).open("a").write("python3 " + " ".join(sys.argv[1:2]) + "\\n")
+raw_args = sys.argv[1:]
+if raw_args[:3] != ["-I", "-B", "-S"]:
+    pathlib.Path({str(call_log)!r}).open("a").write("python3-unisolated\\n")
+    raise SystemExit(94)
+args = raw_args[3:]
+pathlib.Path({str(call_log)!r}).open("a").write("python3 " + " ".join(args[:1]) + "\\n")
 if "FAKE_ADMISSION_OUTPUT" in os.environ:
     sys.stdout.write(os.environ["FAKE_ADMISSION_OUTPUT"])
     raise SystemExit(0)
@@ -296,8 +311,10 @@ def test_source_packet_requires_all_byte_compatibility_claims(
         admission._validate_source_packet(packet)
 
 
-def test_cli_failure_is_constant_and_does_not_echo_paths(
+def test_python_entrypoints_are_isolated_and_cli_failures_are_sanitized(
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     secret = "/private/provider_identifier_receipt.json"
 
@@ -309,6 +326,60 @@ def test_cli_failure_is_constant_and_does_not_echo_paths(
     assert captured.err == admission.FAIL_SUMMARY + "\n"
     assert secret not in captured.err
     assert "provider_identifier" not in captured.err
+
+    poison = tmp_path / "poison" / "tools"
+    poison.mkdir(parents=True)
+    (poison / "__init__.py").write_text(
+        "raise SystemExit('loaded inherited PYTHONPATH')\n",
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(poison.parent),
+        "PYTHONWARNINGS": "error",
+    }
+    isolated = subprocess.run(
+        [sys.executable, "-I", "-B", "-S", ADMISSION_SCRIPT, "--unknown", secret],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert isolated.returncode == 1
+    assert isolated.stdout == ""
+    assert isolated.stderr == admission.FAIL_SUMMARY + "\n"
+    assert secret not in isolated.stderr
+
+    observed: dict[str, object] = {}
+
+    def accept_verifier(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess:
+        observed["command"] = command
+        observed["environment"] = kwargs["env"]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=admission.source_candidate.UI_VERIFIER_PASS_OUTPUT,
+            stderr=b"",
+        )
+
+    monkeypatch.setenv("PYTHONINSPECT", "1")
+    monkeypatch.setattr(admission.source_candidate.subprocess, "run", accept_verifier)
+    admission.source_candidate._run_existing_ui_verifier(
+        tmp_path,
+        b"pass\n",
+        b"{}",
+    )
+    command = observed["command"]
+    verifier_environment = observed["environment"]
+    assert isinstance(command, list)
+    assert isinstance(verifier_environment, dict)
+    assert command[1:4] == ["-I", "-B", "-S"]
+    assert verifier_environment["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert verifier_environment["PYTHONPATH"] == ""
+    assert "PYTHONINSPECT" not in verifier_environment
+    assert "PYTHONWARNINGS" not in verifier_environment
 
 
 def test_staging_builder_requires_admission_before_any_network_or_build_action(
@@ -328,24 +399,37 @@ def test_staging_builder_requires_admission_before_any_network_or_build_action(
     assert not call_log.exists()
 
 
-def test_staging_builder_fails_closed_when_cleanliness_cannot_be_verified(
+def test_staging_builder_rejects_unverifiable_or_filtered_repository_before_network(
     tmp_path: Path,
 ) -> None:
-    environment, call_log = _pre_network_environment(
-        tmp_path,
-        fail_git_status=True,
+    cases = (
+        ("unverifiable", {"fail_git_status": True}, "unable to verify"),
+        (
+            "filtered",
+            {"local_git_filter": True},
+            "repository-local Git content filters",
+        ),
+        (
+            "filter-check-failed",
+            {"fail_git_filter_check": True},
+            "unable to verify repository-local Git filter configuration",
+        ),
     )
+    for name, options, expected_error in cases:
+        case_dir = tmp_path / name
+        case_dir.mkdir()
+        environment, call_log = _pre_network_environment(case_dir, **options)
 
-    result = subprocess.run(
-        [BUILD_SCRIPT],
-        env=environment,
-        text=True,
-        capture_output=True,
-    )
+        result = subprocess.run(
+            [BUILD_SCRIPT],
+            env=environment,
+            text=True,
+            capture_output=True,
+        )
 
-    assert result.returncode != 0
-    assert "unable to verify" in result.stderr
-    assert not call_log.exists()
+        assert result.returncode != 0
+        assert expected_error in result.stderr
+        assert not call_log.exists()
 
 
 def test_staging_builder_stops_on_rejected_admission_before_network(
@@ -514,10 +598,32 @@ def test_staging_builder_preserves_exact_archive_and_admission_labels(
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    system_tar = shutil.which("tar")
+    assert system_tar is not None
     nixpacks_payload = tmp_path / "nixpacks"
     nixpacks_log = tmp_path / "nixpacks.log"
     acr_log = tmp_path / "acr.log"
     call_log = tmp_path / "call-order.log"
+    _make_executable(
+        bin_dir / "tar",
+        f"#!{sys.executable}\n"
+        + f"""import os
+import pathlib
+import sys
+
+if any(name in os.environ for name in ("TAR_OPTIONS", "TAPE", "FAKE_TAR_CONFIG")):
+    raise SystemExit("tar inherited operator configuration")
+args = sys.argv[1:]
+if args[:1] == ["-xzf"]:
+    marker = "tar-release"
+elif args[:2] == ["-xf", "-"]:
+    marker = "tar-source"
+else:
+    raise SystemExit("unexpected tar invocation")
+pathlib.Path({str(call_log)!r}).open("a").write(marker + "\\n")
+os.execv({system_tar!r}, [{system_tar!r}, *args])
+""",
+    )
     _make_executable(
         nixpacks_payload,
         f"#!{sys.executable}\n"
@@ -529,6 +635,9 @@ import sys
 def log(value):
     pathlib.Path(os.environ["CALL_LOG"]).open("a").write(value + "\\n")
 
+inherited = sorted(name for name in os.environ if name.startswith("NIXPACKS_"))
+if inherited:
+    raise SystemExit("inherited Nixpacks configuration: " + ",".join(inherited))
 args = sys.argv[1:]
 if args == ["--version"]:
     log("nixpacks-version")
@@ -578,7 +687,7 @@ for label in labels:
     command.extend(("--label", label))
 command.extend(("--platform", "linux/amd64"))
 (generated / "build.sh").write_text(shlex.join(command))
-pathlib.Path(os.environ["NIXPACKS_LOG"]).write_text("archive-and-labels-accepted\\n")
+pathlib.Path(os.environ["FAKE_NIXPACKS_LOG"]).write_text("archive-and-labels-accepted\\n")
 """,
     )
     _make_executable(
@@ -603,16 +712,20 @@ with tarfile.open(output, "w:gz") as archive:
 import pathlib
 import sys
 
-if sys.argv[1:2] == ["-"]:
+raw_args = sys.argv[1:]
+if raw_args[:3] != ["-I", "-B", "-S"]:
+    raise SystemExit("python was not isolated")
+args = raw_args[3:]
+if args[:1] == ["-"]:
     pathlib.Path(os.environ["CALL_LOG"]).open("a").write("checksum\\n")
     raise SystemExit(0)
-if pathlib.Path(sys.argv[1]).name == "admit_session_prep_staging_build.py":
+if pathlib.Path(args[0]).name == "admit_session_prep_staging_build.py":
     pathlib.Path(os.environ["CALL_LOG"]).open("a").write("admission\\n")
     print(os.environ["ADMISSION_FIELDS"])
     raise SystemExit(0)
-if pathlib.Path(sys.argv[1]).name == "finalize-nixpacks-context.py":
+if pathlib.Path(args[0]).name == "finalize-nixpacks-context.py":
     pathlib.Path(os.environ["CALL_LOG"]).open("a").write("finalizer\\n")
-os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
+os.execv({sys.executable!r}, [{sys.executable!r}, *args])
 """,
     )
     _make_executable(
@@ -668,7 +781,12 @@ else:
         "ADMISSION_DIGEST": admission_digest,
         "SOURCE_COMMIT": revision,
         "FAKE_NIXPACKS": str(nixpacks_payload),
-        "NIXPACKS_LOG": str(nixpacks_log),
+        "FAKE_NIXPACKS_LOG": str(nixpacks_log),
+        "NIXPACKS_CONFIG_FILE": "/private/not-emitted/nixpacks.toml",
+        "NIXPACKS_LOG": "/private/not-emitted/nixpacks.log",
+        "TAR_OPTIONS": "--help",
+        "TAPE": "/private/not-emitted/tape",
+        "FAKE_TAR_CONFIG": "must-not-reach-tar",
         "ACR_LOG": str(acr_log),
         "IMAGE_DIGEST": image_digest,
         "XDG_CONFIG_HOME": str(xdg_config_home),
@@ -691,7 +809,9 @@ else:
         "admission",
         "curl",
         "checksum",
+        "tar-release",
         "nixpacks-version",
+        "tar-source",
         "nixpacks-build",
         "finalizer",
         "acr-build",
@@ -707,7 +827,7 @@ def test_builder_archives_and_labels_the_admitted_commit_not_head() -> None:
     source = BUILD_SCRIPT.read_text(encoding="utf-8")
     admission_call = source.index("tools/admit_session_prep_staging_build.py")
     first_network = source.index("curl --fail")
-    first_build = source.index('"$nixpacks_bin" build')
+    first_build = source.index("run_closed_nixpacks build")
     cleanliness_check = source.index("status --porcelain --untracked-files=all")
     deployment_context = source.index('source "$HERE/deployment-context.sh"')
 

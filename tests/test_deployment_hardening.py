@@ -675,7 +675,15 @@ def test_bootstrap_build_emits_only_an_immutable_digest() -> None:
     assert "194bcad8c379f78a309eee1a88b2e6b2" in script
     assert "0c6799690ad0b7328691fe3e457ec93d" in script
     assert 'archive --format=tar "$sha"' in script
-    assert '"$nixpacks_bin" build "$source_dir"' in script
+    assert script.count('run_closed_nixpacks build "$source_dir"') == 2
+    assert script.count("run_closed_tar -x") == 2
+    assert 'python3 -I -B -S "$@"' in script
+    assert (
+        script.count(
+            'run_isolated_python "$ROOT/infra/scripts/finalize-nixpacks-context.py"'
+        )
+        == 2
+    )
     assert '--out "$source_dir"' in script
     assert '--cache-key "$sha"' in script
     assert '--label "org.opencontainers.image.revision=$sha" >&2' in script
@@ -703,10 +711,13 @@ def test_bootstrap_build_resolves_dockerfile_from_generated_context(
     _make_executable(
         nixpacks_payload,
         f"#!{sys.executable}\n"
-        + """import pathlib
+        + """import os
+import pathlib
 import shlex
 import sys
 
+if any(name.startswith("NIXPACKS_") for name in os.environ):
+    raise SystemExit("Nixpacks inherited operator configuration")
 args = sys.argv[1:]
 if args == ["--version"]:
     print("nixpacks 1.41.0")
@@ -769,6 +780,8 @@ while args[:1] == ["-c"]:
     args = args[2:]
 if args[:1] == ["-C"]:
     args = args[2:]
+if args == ["config", "--includes", "--get-regexp", "^filter\\."]:
+    raise SystemExit(1)
 if args == ["status", "--porcelain", "--untracked-files=all"]:
     pass
 elif args == ["rev-parse", "--verify", "HEAD^{{commit}}"]:
@@ -810,9 +823,13 @@ with tarfile.open(output, "w:gz") as archive:
         + f"""import os
 import sys
 
-if sys.argv[1:2] == ["-"]:
+raw_args = sys.argv[1:]
+if raw_args[:3] != ["-I", "-B", "-S"]:
+    raise SystemExit("python was not isolated")
+args = raw_args[3:]
+if args[:1] == ["-"]:
     raise SystemExit(0)
-os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
+os.execv({sys.executable!r}, [{sys.executable!r}, *args])
 """,
     )
     _make_executable(
@@ -866,6 +883,8 @@ else:
         "SOURCE_COMMIT": revision,
         "SOURCE_EPOCH": str(epoch),
         "FAKE_NIXPACKS": str(nixpacks_payload),
+        "NIXPACKS_CONFIG_FILE": "/private/not-emitted/nixpacks.toml",
+        "NIXPACKS_LOG": "/private/not-emitted/nixpacks.log",
         "FAKE_ACR_LOG": str(acr_log),
         "OPERATOR_CWD": str(operator_dir),
         "IMAGE_DIGEST": digest,
@@ -1184,6 +1203,22 @@ def test_nixpacks_remote_context_is_validated_and_normalized(tmp_path: Path) -> 
     )
     assert rejected.returncode == 1
     assert "base image drifted" in rejected.stderr
+    dockerfile.write_text(original_dockerfile)
+
+    for extra_from in (
+        "from busybox:latest\n",
+        "  FrOm\tbusybox:latest AS extra\n",
+        "\tFROM    busybox:latest\n",
+        "\N{NO-BREAK SPACE}fRoM busybox:latest\n",
+    ):
+        dockerfile.write_text(original_dockerfile + extra_from)
+        rejected = subprocess.run(
+            [sys.executable, helper, source, image, revision, "1700000000"],
+            text=True,
+            capture_output=True,
+        )
+        assert rejected.returncode == 1
+        assert "base image drifted" in rejected.stderr
     dockerfile.write_text(original_dockerfile)
 
     dockerfile.write_text(

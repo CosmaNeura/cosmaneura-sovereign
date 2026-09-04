@@ -1345,7 +1345,7 @@ def test_prohibited_files_remain_at_exact_merged_hashes() -> None:
             "ce4088c9917ffae9a12f347bb8e81902a694c3040ae836f8d49894e69fd69d46"
         ),
         "tools/reconcile_session_prep_source_candidate.py": (
-            "19d280e59f7c32fab1b4a9a0a7f9e5193d0e5dbf05171dbd07cc28b198a448a8"
+            "11d9ad92344c2bf25c519009e1184ec59ff64f63e6967b9a2d01f90bac491d51"
         ),
         "tests/test_session_prep_source_candidate.py": (
             "20a0abb0353a695f706ea265a6da0ee8f46b7048e52a0cc054da0dbb9bb9a4d7"
