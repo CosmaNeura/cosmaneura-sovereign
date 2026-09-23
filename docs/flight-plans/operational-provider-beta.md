@@ -66,8 +66,8 @@ deployable or oversized merge PR. Each individual PR meets the change budget.
 
 The combined candidate passed 1,513 application tests, 131 authority-kernel
 tests, four independent-connection concurrency tests, and 324 frontend component
-tests. TypeScript, API generation, and the frontend build passed. Existing
-external-service tests account for 32 application skips; one optional historical
+tests. TypeScript, API generation, and the frontend build passed. There are 32
+existing external-service/optional application skips; one optional historical
 migration test is also skipped. Sovereign passed 864 tests. Registry dependency
 scans report zero known advisories across 129 backend runtime packages and 646
 frontend production packages; the pinned activemodel Git source is outside
