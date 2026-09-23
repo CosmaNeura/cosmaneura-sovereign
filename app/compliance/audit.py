@@ -81,7 +81,8 @@ class AuditLogger:
         # Legacy offline/dev sink. The lock preserves continuity only within
         # this process; restarts and replicas begin independent chains, so this
         # has no production integrity claim.
-        assert hasattr(self, "_lock") and hasattr(self, "_prev_chain")
+        if not hasattr(self, "_lock") or not hasattr(self, "_prev_chain"):
+            raise RuntimeError("Audit sink configuration changed after initialization")
         with self._lock:
             entry["prev_chain"] = self._prev_chain
             body = json.dumps(entry, ensure_ascii=False, sort_keys=True)

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 import re
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr
@@ -114,6 +114,16 @@ DEPLOYMENT_MOUNTS: dict[MountProfile, DeploymentMount] = {
         ),
     ),
 }
+
+
+# The operational provider beta can only narrow platform-issued authority.
+# Expanding the platform grant cannot silently enable an unlaunched workflow.
+PROVIDER_BETA_CAPABILITIES = frozenset({
+    "education:answer",
+    "ethics:consult",
+    "visit-prep:run",
+    "session-prep:read",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +288,7 @@ class Settings(BaseSettings):
     # off by default and has no real-PHI mode; broader activation requires a
     # later reviewed control change.
     feature_session_prep: bool = False
+    session_prep_context_source: Literal["synthetic", "platform"] = "synthetic"
     session_prep_synthetic_context_ref: Optional[str] = None
 
     # Anonymous public traffic is limited in-process before any model call.
@@ -482,6 +493,8 @@ def validate_deployment_configuration(settings: Settings) -> None:
             forbidden.append("PLATFORM_AGENT_API_ENABLED")
         if settings.feature_session_prep:
             forbidden.append("FEATURE_SESSION_PREP")
+        if settings.session_prep_context_source != "synthetic":
+            forbidden.append("SESSION_PREP_CONTEXT_SOURCE")
         if _has_value(settings.session_prep_synthetic_context_ref):
             forbidden.append("SESSION_PREP_SYNTHETIC_CONTEXT_REF")
         for name, value in (
@@ -519,13 +532,22 @@ def validate_deployment_configuration(settings: Settings) -> None:
             raise DeploymentConfigurationError(
                 "FEATURE_SESSION_PREP requires platform Agent API authority."
             )
-        if not re.fullmatch(
+        if settings.session_prep_context_source == "platform":
+            if _has_value(settings.session_prep_synthetic_context_ref):
+                raise DeploymentConfigurationError(
+                    "Platform Session Prep cannot use a fixed synthetic context."
+                )
+        elif not re.fullmatch(
             r"context_synthetic_[A-Za-z0-9._~-]{1,142}", context_ref,
         ):
             raise DeploymentConfigurationError(
                 "FEATURE_SESSION_PREP requires one exact synthetic staging "
                 "SESSION_PREP_SYNTHETIC_CONTEXT_REF."
             )
+    elif settings.session_prep_context_source != "synthetic":
+        raise DeploymentConfigurationError(
+            "SESSION_PREP_CONTEXT_SOURCE=platform requires FEATURE_SESSION_PREP=true."
+        )
     elif _has_value(settings.session_prep_synthetic_context_ref):
         raise DeploymentConfigurationError(
             "SESSION_PREP_SYNTHETIC_CONTEXT_REF requires FEATURE_SESSION_PREP=true."

@@ -591,7 +591,7 @@ def test_platform_chat_requires_exact_header_body_turn_and_echoes_it():
     assert len(sovereign.calls) == 1
 
 
-def test_platform_welcome_uses_sole_bearer_resolution_and_hard_hides_labs():
+def test_platform_welcome_uses_sole_bearer_and_hides_unlaunched_beta_workflows():
     from fastapi.testclient import TestClient
 
     from app import main as main_module
@@ -617,7 +617,10 @@ def test_platform_welcome_uses_sole_bearer_resolution_and_hard_hides_labs():
                 context=MountContext(
                     surface="provider_assistant",
                     auth_tier="provider",
-                    capabilities=("visit-prep:run", "ehr:labs:read"),
+                    capabilities=(
+                        "visit-prep:run", "ehr:labs:read", "referrals:search",
+                        "plan-workbench:run", "journey-digest:write",
+                    ),
                     tenant_id="tenant_test",
                     actor_id="authority_actor_123456",
                 ),
@@ -644,6 +647,7 @@ def test_platform_welcome_uses_sole_bearer_resolution_and_hard_hides_labs():
     }
     assert "labs_tier" not in response.json()
     assert "labs_label" not in response.json()
+    assert "specialist" not in response.json()["greeting"].lower()
     assert response.headers["x-cosmaneura-embed-version"] == "1.0"
     assert len(sovereign.calls) == 1
     assert set(sovereign.calls[0]) == {"mount_context_token"}
@@ -1055,7 +1059,14 @@ def test_exact_top_level_retry_never_reruns_model_or_tool_work():
     assert caught.value.retryable is False
 
 
-def test_initial_platform_activation_hard_disables_labs_despite_capability():
+@pytest.mark.parametrize(("intent", "capability"), [
+    (Intent.LAB_REVIEW, "ehr:labs:read"),
+    (Intent.REFERRAL, "referrals:search"),
+    (Intent.PLAN_WORKBENCH, "plan-workbench:run"),
+])
+def test_provider_beta_refuses_unlaunched_workflows_despite_platform_grant(
+    intent, capability,
+):
     turn_id = uuid.uuid4()
 
     class Resolver(MountResolver):
@@ -1064,7 +1075,7 @@ def test_initial_platform_activation_hard_disables_labs_despite_capability():
                 context=MountContext(
                     surface="provider_assistant",
                     auth_tier="provider",
-                    capabilities=("education:answer", "ehr:labs:read"),
+                    capabilities=("education:answer", capability),
                     tenant_id="tenant_test",
                     actor_id="authority_actor_123456",
                 ),
@@ -1110,9 +1121,9 @@ def test_initial_platform_activation_hard_disables_labs_despite_capability():
         async def report(self, **_kwargs):
             raise AssertionError("no model call may occur in this test")
 
-    class LabsMustNotRun:
+    class UnlaunchedAgentMustNotRun:
         async def run(self, *_args, **_kwargs):
-            raise AssertionError("initial activation must never enter labs")
+            raise AssertionError("provider beta must never enter an unlaunched agent")
 
     settings = Settings(
         mount_profile=MountProfile.PROVIDER_ASSISTANT,
@@ -1133,19 +1144,19 @@ def test_initial_platform_activation_hard_disables_labs_despite_capability():
         platform_conversation_client=conversation,  # type: ignore[arg-type]
         platform_usage_client=UsageMustNotRun(),  # type: ignore[arg-type]
     )
-    sov.agents[Intent.LAB_REVIEW] = LabsMustNotRun()
+    sov.agents[intent] = UnlaunchedAgentMustNotRun()
 
     async def route(_request):
-        return Intent.LAB_REVIEW, DoctrinalSensitivity.LOW, "fixed"
+        return intent, DoctrinalSensitivity.LOW, "fixed"
 
     sov.router.route = route
     response = _run(sov.handle(
-        ChatRequest(persona=Persona.PROVIDER, message="review the synthetic labs"),
+        ChatRequest(persona=Persona.PROVIDER, message="perform the requested synthetic workflow"),
         mount_context_token="mount-context-token-123456",
         client_turn_id=turn_id,
     ))
 
-    assert response.intent == Intent.LAB_REVIEW
+    assert response.intent == intent
     assert response.safety_notice == "capability_denied"
     assert len(conversation.final_calls) == 1
     assert conversation.final_calls[0]["outcome"] == "refused"
