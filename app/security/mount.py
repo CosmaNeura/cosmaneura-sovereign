@@ -127,6 +127,7 @@ class MountResolution:
     trace_id: str
     interaction_ref: Optional[str] = None
     interaction_reused: bool = False
+    session_prep_context_ref: Optional[str] = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -378,6 +379,17 @@ class PlatformResolver(MountResolver, MountBootstrapper):
                 raise ValueError
             if not _TRACE_ID_PATTERN.fullmatch(returned_trace):
                 raise ValueError
+            context_headers = response.headers.get_list("X-Cosmaneura-Session-Prep-Context")
+            if len(context_headers) > 1:
+                raise ValueError
+            session_prep_context_ref = context_headers[0] if context_headers else None
+            if session_prep_context_ref is not None and (
+                re.fullmatch(r"context_prep_[a-f0-9]{32}", session_prep_context_ref) is None
+                or context.surface != "provider_assistant"
+                or "session-prep:read" not in context.capabilities
+                or returned_trace != request.trace_id
+            ):
+                raise ValueError
         except (KeyError, TypeError, ValueError, ValidationError):
             raise MountResolutionError(
                 status_code=503, code="MOUNT_RESOLUTION_INVALID", retryable=False,
@@ -388,6 +400,7 @@ class PlatformResolver(MountResolver, MountBootstrapper):
             trace_id=returned_trace,
             interaction_ref=interaction_ref,
             interaction_reused=reused_text == "true",
+            session_prep_context_ref=session_prep_context_ref,
         )
 
     async def bootstrap(self, request: MountBootstrapRequest) -> MountBootstrap:

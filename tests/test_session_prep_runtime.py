@@ -300,7 +300,8 @@ def _settings(**updates: object) -> Settings:
     return Settings(**values)
 
 class _Resolver(MountResolver):
-    def __init__(self, *, capability: bool = True, error: Exception | None = None):
+    def __init__(self, *, capability: bool = True, error: Exception | None = None, context_ref: str | None = None):
+        self.context_ref = context_ref
         self.capability = capability
         self.error = error
         self.calls = 0
@@ -320,6 +321,7 @@ class _Resolver(MountResolver):
             client_turn_id=request.client_turn_id,
             trace_id=request.trace_id,
             interaction_ref="interaction_session_prep_0001",
+            session_prep_context_ref=self.context_ref,
         )
 
 class _Conversation:
@@ -549,3 +551,34 @@ def test_provider_action_uses_the_ratified_action_ingress_shape() -> None:
         "action_code": "session-prep.open",
         "message": {"content_type": "text/plain", "content": "Open Session Prep"},
     }
+
+
+def test_platform_mode_uses_only_current_core_record_handle() -> None:
+    handle = "context_prep_" + "a" * 32
+    sovereign, resolver, session, _conversation = _sovereign(
+        settings=_settings(session_prep_context_source="platform", session_prep_synthetic_context_ref=None),
+        resolver=_Resolver(context_ref=handle),
+    )
+    _run(sovereign.read_session_prep(client_turn_id=TURN_ID, mount_context_token="mount_context_session_prep_0001"))
+    assert session.calls[0]["request"].arguments.context_snapshot_ref == handle
+    resolver.context_ref = "context_prep_" + "b" * 32
+    _run(sovereign.read_session_prep(client_turn_id=uuid.uuid4(), mount_context_token="mount_context_session_prep_0002"))
+    assert session.calls[1]["request"].arguments.context_snapshot_ref == resolver.context_ref
+
+
+def test_platform_mode_missing_record_handle_fails_before_any_write() -> None:
+    sovereign, _resolver, session, conversation = _sovereign(
+        settings=_settings(session_prep_context_source="platform", session_prep_synthetic_context_ref=None),
+    )
+    with pytest.raises(MountResolutionError) as caught:
+        _run(sovereign.read_session_prep(client_turn_id=TURN_ID, mount_context_token="mount_context_session_prep_0001"))
+    assert caught.value.code == "RECORD_CONTEXT_MISMATCH"
+    assert not session.calls and not conversation.accepted
+
+
+def test_platform_context_configuration_cannot_mix_fixed_synthetic_record() -> None:
+    validate_deployment_configuration(_settings(session_prep_context_source="platform", session_prep_synthetic_context_ref=None))
+    with pytest.raises(DeploymentConfigurationError):
+        validate_deployment_configuration(_settings(session_prep_context_source="platform"))
+    with pytest.raises(DeploymentConfigurationError):
+        validate_deployment_configuration(_settings(session_prep_context_source="platform", feature_session_prep=False, session_prep_synthetic_context_ref=None))

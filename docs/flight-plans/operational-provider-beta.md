@@ -41,3 +41,18 @@ Ship separately reviewable increments. Receiver changes precede sender changes.
 Reverting the capability increment restores its previous source behavior; no
 schema or external state changes are involved. Record actual test and deployment
 results as they occur. A planned check is never evidence that it passed.
+
+## Record-specific sender validation
+
+Core draft increments: source review #456, provider-record authority #457, and
+PostgreSQL worker/artifacts/receipts #458. The sender supports explicit
+`SESSION_PREP_CONTEXT_SOURCE=platform` with `FEATURE_SESSION_PREP=true` and no
+fixed synthetic context. It consumes only the authenticated Core resolve header,
+requires provider capability and matching request correlation, and keeps the
+handle out of public mount JSON and repr/log output. A missing handle fails
+before canonical writes or tool access. Synthetic mode remains the default.
+
+Local final Sovereign suite: 864 tests passed (six existing warnings). Ruff passes
+on changed code. No rollout or cohort activation has occurred. Receiver schema
+and application must land before enabling platform context mode; rollback uses
+the previous image and configuration, leaving Core's additive structures dormant.

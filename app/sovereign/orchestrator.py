@@ -392,7 +392,7 @@ class Sovereign:
         client_turn_id: uuid.UUID,
         mount_context_token: Optional[str],
     ) -> SessionPrepOutcome:
-        """Read and directly project the Core-owned synthetic prepared brief."""
+        """Read and directly project the brief selected by server-side authority."""
         deactivate_usage_context()
         trace_id = uuid.uuid4().hex
         if (
@@ -432,7 +432,11 @@ class Sovereign:
                 code="CAPABILITY_DENIED",
                 retryable=False,
             )
-        context_snapshot_ref = self.s.session_prep_synthetic_context_ref
+        context_snapshot_ref = (
+            resolution.session_prep_context_ref
+            if self.s.session_prep_context_source == "platform"
+            else self.s.session_prep_synthetic_context_ref
+        )
         if context_snapshot_ref is None:
             raise MountResolutionError(
                 status_code=409,
