@@ -48,11 +48,13 @@ Core draft increments: source review #456, provider-record authority #457, and
 PostgreSQL worker/artifacts/receipts #458. The sender supports explicit
 `SESSION_PREP_CONTEXT_SOURCE=platform` with `FEATURE_SESSION_PREP=true` and no
 fixed synthetic context. It consumes only the authenticated Core resolve header,
-requires provider capability and matching request correlation, and keeps the
+requires provider capability and the exact client-turn echo, adopts Core's valid
+trace ID under the existing resolve contract, and keeps the
 handle out of public mount JSON and repr/log output. A missing handle fails
-before canonical writes or tool access. Synthetic mode remains the default.
+before canonical conversation writes or tool access. Core resolve may already
+have opened its interaction record; this is not a zero-write preflight. Synthetic mode remains the default.
 
-Local final Sovereign suite: 864 tests passed (six existing warnings). Ruff passes
+Local final Sovereign suite: 867 tests passed (six existing warnings). Ruff passes
 on changed code. No rollout or cohort activation has occurred. Receiver schema
 and application must land before enabling platform context mode; rollback uses
 the previous image and configuration, leaving Core's additive structures dormant.
@@ -85,8 +87,8 @@ rehearsal substituted local Clerk/Entra principals and a deterministic generator
 live identity, Azure model, deployed UI, and deployment rollback remain unproven.
 
 The adjacent `operational-provider-beta-evidence-20260923.json` records exact
-source commits, PR sizes, rehearsal results, and local report hashes. Independent
-review remains pending: Cursor CLI is signed out and the Mac is locked. This
+source commits, PR sizes, rehearsal results, and local report hashes. Initial independent Cursor reviews are complete. Review findings are being
+fixed and the final substantive commits require follow-up Cursor review. This
 evidence does not substitute for the required non-implementer review.
 
 ## Remaining technical release sequence

@@ -387,7 +387,6 @@ class PlatformResolver(MountResolver, MountBootstrapper):
                 re.fullmatch(r"context_prep_[a-f0-9]{32}", session_prep_context_ref) is None
                 or context.surface != "provider_assistant"
                 or "session-prep:read" not in context.capabilities
-                or returned_trace != request.trace_id
             ):
                 raise ValueError
         except (KeyError, TypeError, ValueError, ValidationError):
