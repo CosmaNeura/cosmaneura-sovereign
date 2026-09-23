@@ -1,6 +1,31 @@
 {
   "observed_at": "2026-09-23T14:00:00Z",
   "status": "locally_verified_not_deployed",
+  "staging_web_oci_observation": {
+    "manifest_digest": "sha256:2fd9ebb808b2f420fdfd7ef88bc4874e607f733ed456bea3915e8c67f78241a5",
+    "manifest_digest_verified": true,
+    "config_digest": "sha256:09b53df62c84201ff83fc4398ba4956a50ed4bca051a71212fd1ca3e21b8ed85",
+    "config_digest_verified": true,
+    "config_size": 11246,
+    "label_keys": [
+      "org.cosmaneura.scribe.base-manifest-digest",
+      "org.cosmaneura.scribe.base-source-content-sha256",
+      "org.cosmaneura.scribe.core-caller-patch-sha256",
+      "org.cosmaneura.scribe.public-config-sha256",
+      "org.cosmaneura.scribe.source-content-sha256",
+      "org.opencontainers.image.ref.name",
+      "org.opencontainers.image.revision",
+      "org.opencontainers.image.version"
+    ],
+    "source_labels": {
+      "org.opencontainers.image.revision": "scribe-local-e083dbb4d6df8a1a-dirty",
+      "org.opencontainers.image.version": "24.04"
+    },
+    "runtime_architecture": "amd64",
+    "runtime_os": "linux",
+    "created": "2026-09-23T06:43:35.539806547-04:00",
+    "reviewed_source_commit_established": false
+  },
   "core_candidate": "3956614abc2a3704924b67f2524272c10562dc89",
   "sovereign_runtime_candidate": "311d4301ed5144836ad7c4a0ad7ea5165b0a8e8d",
   "core_pull_requests": [
@@ -182,4 +207,3 @@
     }
   }
 }
-

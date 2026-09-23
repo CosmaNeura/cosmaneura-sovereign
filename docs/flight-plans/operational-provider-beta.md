@@ -107,3 +107,14 @@ evidence does not substitute for the required non-implementer review.
    and rehearse application rollback with the additive schema left dormant.
 
 No live migration, cloud mutation, deployment, or cohort activation has occurred.
+
+Read-only registry follow-up verified the staging web manifest bytes against
+`sha256:2fd9ebb808b2f420fdfd7ef88bc4874e607f733ed456bea3915e8c67f78241a5`
+and its 11,246-byte OCI configuration against
+`sha256:09b53df62c84201ff83fc4398ba4956a50ed4bca051a71212fd1ca3e21b8ed85`.
+The image revision label is `scribe-local-e083dbb4d6df8a1a-dirty`; its frontend
+advertises `scribe-local-2ef8c2de69d0d9ed-dirty`. The image also names source-content,
+base-manifest, and caller-patch hash labels. These observations establish the
+deployed artifact's byte identity but do not establish a reviewed Git commit or
+make it safe to overwrite with the beta candidate. Registry access was read-only.
+The saved observation contains hashes, source labels, and platform metadata.
