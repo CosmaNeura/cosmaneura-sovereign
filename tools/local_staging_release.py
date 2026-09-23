@@ -355,23 +355,30 @@ def build(plan, plan_digest, output):
     )
     verify_source(plan)
     token = az("acr", "login", "--name", REGISTRY, "--expose-token")
-    command(
-        [
-            "docker",
-            "login",
-            REGISTRY + ".azurecr.io",
-            "--username",
-            "00000000-0000-0000-0000-000000000000",
-            "--password-stdin",
-        ],
-        env=environment,
-        data=token["accessToken"].encode(),
-    )
+    # An auth entry prevents Docker's automatic native credential-store
+    # discovery. Use only this private file, never the user's macOS keychain.
+    credential_file = docker_config / "config.json"
+    credential_file.write_text(json.dumps({"auths": {REGISTRY + ".azurecr.io": {}}}))
+    credential_file.chmod(0o600)
     try:
+        command(
+            [
+                "docker",
+                "login",
+                REGISTRY + ".azurecr.io",
+                "--username",
+                "00000000-0000-0000-0000-000000000000",
+                "--password-stdin",
+            ],
+            env=environment,
+            data=token["accessToken"].encode(),
+        )
         subprocess.run(["docker", "push", image], env=environment, check=True)
     finally:
-        command(["docker", "logout", REGISTRY + ".azurecr.io"], env=environment)
-        (docker_config / "config.json").unlink(missing_ok=True)
+        try:
+            command(["docker", "logout", REGISTRY + ".azurecr.io"], env=environment)
+        finally:
+            credential_file.unlink(missing_ok=True)
     manifest = az(
         "acr",
         "manifest",
