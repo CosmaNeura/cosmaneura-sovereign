@@ -12,4 +12,12 @@ The observed provider baseline is revision `cosmaneura-sovereign-staging-app--gp
 
 Initial cohort is the two existing staging testing provider subjects verified in Core, with no clinical data. Core's provider allowlist remains authoritative. Owner: JohnClem; review by September 30, 2026. Keep labs disabled and the partner directory unconfigured. Preserve Scribe's separate service/native revisions, and verify note review, later Prep, corrections, background work and refresh/restart persistence through the provider dashboard. Actual microphone/device actions remain separate evidence.
 
+Exact recovery for the recorded baseline (first verify the retained revision still has the image above and the current provider image is the published candidate):
+
+```sh
+az containerapp revision copy --subscription bab2a709-1fcb-4c87-a9fc-802f7477ec13 --resource-group cosmaneura-sovereign-staging --name cosmaneura-sovereign-staging-app --from-revision cosmaneura-sovereign-staging-app--gpt41-20260825 --revision-suffix recover-20260923
+```
+
+This copies the old template, including its original Session Prep configuration, into a new revision; it does not merely replace the image while retaining new flags. Before execution, verify the founder user with the same identity check as the release tool and ensure the recovery suffix is unused. After execution, require the new recovery revision to be Healthy/Provisioned and latest-ready, serving 100% traffic, and verify the public mount remains unchanged. Preserve the failed candidate and receipt for diagnosis. If a different release has changed the current provider, stop and reconcile its recovery baseline first.
+
 Validation: focused no-provider tests for exact merged/reviewed source, expiry, fixed staging targets, recovery drift refusal and public-mount preservation; the full Sovereign suite and pinned Ruff; independent Cursor review after the final substantive push. No tests or this document claim cloud deployment has already occurred.

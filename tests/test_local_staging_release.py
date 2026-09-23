@@ -81,6 +81,7 @@ def reviews():
             "head": {"sha": chosen["reviewed_head"]},
         },
         "ref": {"object": {"sha": chosen["sha"]}},
+        "commit": {"tree": {"sha": "e" * 40}},
         "review": {
             "body": body,
             "user": {"login": "JohnClem", "type": "User"},
@@ -99,6 +100,8 @@ def test_current_merged_source_requires_exact_post_push_cursor_review(monkeypatc
             if "/pulls/" in endpoint
             else "ref"
             if "/git/ref/" in endpoint
+            else "commit"
+            if "/git/commits/" in endpoint
             else "review"
         ]
 
@@ -117,6 +120,57 @@ def test_current_merged_source_requires_exact_post_push_cursor_review(monkeypatc
     data["ref"]["object"]["sha"] = "0" * 40
     with pytest.raises(ValueError):
         m.verify_pair("cosmaneura-sovereign", chosen)
+
+
+def test_source_rejects_unreviewed_merge_tree(monkeypatch):
+    chosen, data = reviews()
+
+    def gh(endpoint):
+        if "/git/commits/" in endpoint:
+            return {
+                "tree": {
+                    "sha": "0" * 40 if endpoint.endswith(chosen["sha"]) else "1" * 40
+                }
+            }
+        return data["pull" if "/pulls/" in endpoint else "ref"]
+
+    monkeypatch.setattr(m, "gh", gh)
+    with pytest.raises(ValueError):
+        m.verify_pair("cosmaneura-sovereign", chosen)
+
+
+def test_state_requires_healthy_single_revision_serving_all_traffic(monkeypatch):
+    properties = {
+        "latestRevisionName": m.APP + "--old",
+        "latestReadyRevisionName": m.APP + "--old",
+        "template": {"containers": [{"image": "synthetic"}]},
+        "configuration": {
+            "activeRevisionsMode": "Single",
+            "ingress": {"traffic": [{"latestRevision": True, "weight": 100}]},
+        },
+    }
+    observed = {
+        "healthState": "Healthy",
+        "provisioningState": "Provisioned",
+        "template": properties["template"],
+    }
+    monkeypatch.setattr(
+        m,
+        "az",
+        lambda *args: {
+            "properties": observed
+            if args[:3] == ("containerapp", "revision", "show")
+            else properties
+        },
+    )
+    assert m.state(m.APP)["revision"] == m.APP + "--old"
+    observed["healthState"] = "Unhealthy"
+    with pytest.raises(ValueError):
+        m.state(m.APP)
+    observed["healthState"] = "Healthy"
+    properties["configuration"]["ingress"]["traffic"][0]["weight"] = 50
+    with pytest.raises(ValueError):
+        m.state(m.APP)
 
 
 def test_deployment_preserves_public_mount_and_rejects_drift_before_update(monkeypatch):

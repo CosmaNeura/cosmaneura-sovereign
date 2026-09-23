@@ -108,6 +108,9 @@ def verify_pair(repo, selected):
         gh(f"repos/CosmaNeura/{repo}/git/ref/heads/{branch}")["object"]["sha"]
         == selected["sha"]
     )
+    merged = gh(f"repos/CosmaNeura/{repo}/git/commits/{selected['sha']}")
+    reviewed = gh(f"repos/CosmaNeura/{repo}/git/commits/{selected['reviewed_head']}")
+    require(merged["tree"]["sha"] == reviewed["tree"]["sha"])
     review = gh(f"repos/CosmaNeura/{repo}/issues/comments/{selected['review_comment']}")
     require(review["user"]["login"] == "JohnClem" and review["user"]["type"] == "User")
     require(
@@ -196,6 +199,30 @@ def state(name):
         len(containers) == 1
         and properties["latestRevisionName"] == properties["latestReadyRevisionName"]
     )
+    configuration = properties["configuration"]
+    require(configuration["activeRevisionsMode"] == "Single")
+    traffic = configuration["ingress"]["traffic"]
+    require(len(traffic) == 1 and traffic[0]["weight"] == 100)
+    require(
+        traffic[0].get("latestRevision") is True
+        or traffic[0].get("revisionName") == properties["latestReadyRevisionName"]
+    )
+    observed = az(
+        "containerapp",
+        "revision",
+        "show",
+        "-g",
+        GROUP,
+        "-n",
+        name,
+        "--revision",
+        properties["latestReadyRevisionName"],
+    )["properties"]
+    require(
+        observed["healthState"] == "Healthy"
+        and observed["provisioningState"] == "Provisioned"
+    )
+    require(observed["template"]["containers"] == containers)
     return {
         "image": containers[0]["image"],
         "revision": properties["latestReadyRevisionName"],
