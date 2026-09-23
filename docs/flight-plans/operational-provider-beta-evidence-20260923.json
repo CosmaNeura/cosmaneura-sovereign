@@ -1,0 +1,185 @@
+{
+  "observed_at": "2026-09-23T14:00:00Z",
+  "status": "locally_verified_not_deployed",
+  "core_candidate": "3956614abc2a3704924b67f2524272c10562dc89",
+  "sovereign_runtime_candidate": "311d4301ed5144836ad7c4a0ad7ea5165b0a8e8d",
+  "core_pull_requests": [
+    {
+      "number": 456,
+      "head": "baae2c8c5449249d231a9a552a7cf26023143c91",
+      "changed_lines": 1314,
+      "changed_files": 15
+    },
+    {
+      "number": 457,
+      "head": "971b24835f5e02175b1044a4e311a7e8fadf07a4",
+      "changed_lines": 870,
+      "changed_files": 11
+    },
+    {
+      "number": 458,
+      "head": "271879ed926bb79f1122991efe57e27868e9b124",
+      "changed_lines": 1601,
+      "changed_files": 15
+    },
+    {
+      "number": 461,
+      "head": "e8ac1b5be331f8e11123b19687b3ca67d292a099",
+      "changed_lines": 232,
+      "changed_files": 5
+    },
+    {
+      "number": 462,
+      "head": "6a33fd8f6addf87babc06831b5e29b6b4b660f57",
+      "changed_lines": 973,
+      "changed_files": 16
+    },
+    {
+      "number": 463,
+      "head": "db611ff6a149d1efb0065508e2f522b8f05c0886",
+      "changed_lines": 1373,
+      "changed_files": 2
+    },
+    {
+      "number": 464,
+      "head": "d8d49d4eefa5f53cf54d18095567c9fa9e1766f5",
+      "changed_lines": 1357,
+      "changed_files": 2
+    },
+    {
+      "number": 465,
+      "head": "f4ef62e3a1f3cd30c16e8d83427c2fed7e3d8858",
+      "changed_lines": 572,
+      "changed_files": 3
+    }
+  ],
+  "sovereign_pull_request": 50,
+  "results": {
+    "core_application_passed": 1513,
+    "core_application_skipped": 32,
+    "core_authority_passed": 131,
+    "core_authority_skipped": 1,
+    "core_concurrency_passed": 4,
+    "frontend_components_passed": 324,
+    "frontend_typecheck": "passed",
+    "frontend_build": "passed",
+    "sovereign_passed": 864,
+    "backend_audited_registry_packages": 129,
+    "backend_known_advisories": 0,
+    "frontend_production_packages": 646,
+    "frontend_known_advisories": 0,
+    "core_changed_file_bandit_medium_high": 0,
+    "core_changed_file_bandit_low": 12,
+    "sovereign_bandit_findings": 0
+  },
+  "pair_rehearsal": {
+    "initial": {
+      "pending": true,
+      "ready": true,
+      "durable_replay": true,
+      "browser_context_injection_denied": true,
+      "private_lineage_removed": true,
+      "metadata": {
+        "artifacts": 1,
+        "read_receipts": 2,
+        "conversation_turns": 2,
+        "final_phases": 2,
+        "read_audit_events": 2
+      }
+    },
+    "recovery": {
+      "receiver_restart_preserves_replay": true,
+      "unreviewed_correction_suppresses_old_brief": true,
+      "reviewed_correction_regenerates": true,
+      "revocation_denies_without_new_writes": true,
+      "metadata": {
+        "artifacts": 2,
+        "read_receipts": 5,
+        "conversation_turns": 5,
+        "final_phases": 5,
+        "read_audit_events": 5
+      }
+    },
+    "limits": [
+      "Synthetic records only",
+      "Local workload principal replaces live Entra verification",
+      "Synthetic provider identity replaces live Clerk verification",
+      "Core worker generator uses a deterministic local fake",
+      "No live deployment or live model call"
+    ]
+  },
+  "scan_notes": [
+    "The activemodel pinned Git dependency is outside registry advisory coverage.",
+    "Eleven Core Bandit low-severity assert findings are unchanged pre-existing internal-route code; one is a gzip encoding-token false positive.",
+    "Skipped application tests retain their existing external-service/optional exclusions; the authority skip requires a separate historical-migration database."
+  ],
+  "deployment_notes": [
+    "No cloud mutation, live migration, deployment, or provider cohort activation.",
+    "Core staging web and worker/scheduler images differ.",
+    "The web public build label is scribe-local-2ef8c2de69d0d9ed-dirty; this does not establish reviewed source provenance.",
+    "Independent review of every final PR head remains pending."
+  ],
+  "local_reports": {
+    "cosmaneura-beta-integrated-application-tests.txt": {
+      "local_path": "/private/tmp/cosmaneura-beta-integrated-application-tests.txt",
+      "sha256": "f82f8c86cd6e1c2efb56227a186242c8e96dc1b466e3027cc87520188e44e328"
+    },
+    "cosmaneura-beta-integrated-authority-tests.txt": {
+      "local_path": "/private/tmp/cosmaneura-beta-integrated-authority-tests.txt",
+      "sha256": "9bee4c39aa33fbdb4664e9929f1c4b90cf295d383d2288e6398dbbf8594959a3"
+    },
+    "cosmaneura-beta-integrated-race-tests.txt": {
+      "local_path": "/private/tmp/cosmaneura-beta-integrated-race-tests.txt",
+      "sha256": "2a5ef0d8834b174d6bb666cda41673448e88dbe1c51534241cea9ce277ed9e3f"
+    },
+    "cosmaneura-beta-integrated-browser-tests.txt": {
+      "local_path": "/private/tmp/cosmaneura-beta-integrated-browser-tests.txt",
+      "sha256": "39f7f81e203b083409d569e12016fb5bb27f16cc05600cd48dad34e19454aca3"
+    },
+    "cosmaneura-beta-integrated-browser-types.txt": {
+      "local_path": "/private/tmp/cosmaneura-beta-integrated-browser-types.txt",
+      "sha256": "85aabd40fa66a237d265358d1bdc37cb51e81283a8a2eed56a7332b0ac13a772"
+    },
+    "cosmaneura-beta-integrated-browser-build.txt": {
+      "local_path": "/private/tmp/cosmaneura-beta-integrated-browser-build.txt",
+      "sha256": "bc288deb8940fde24a0502f9f938b5f84fba311eca418c25aad4ac55dd6e6e0e"
+    },
+    "cosmaneura-beta-integrated-bandit.json": {
+      "local_path": "/private/tmp/cosmaneura-beta-integrated-bandit.json",
+      "sha256": "070da9840282c7e611798bd3ef9c39715d07c80de9d8b5cb72a36618770ca09a"
+    },
+    "cosmaneura-beta-patched-core-audit.json": {
+      "local_path": "/private/tmp/cosmaneura-beta-patched-core-audit.json",
+      "sha256": "e99283cb2a58474a482423de6df8696eca78d72e7f5b7f5c1b3b900501d7e3c1"
+    },
+    "cosmaneura-beta-browser-step3-audit.json": {
+      "local_path": "/private/tmp/cosmaneura-beta-browser-step3-audit.json",
+      "sha256": "e38a9b3717bf4edb1eca5b3505554ef2fae12e41ba814526fd5e718ce6065db5"
+    },
+    "cosmaneura-beta-sovereign-final-tests.txt": {
+      "local_path": "/private/tmp/cosmaneura-beta-sovereign-final-tests.txt",
+      "sha256": "be631ce11bd04e82d502aa8a5021e2ada9b8806990b9d1fae797591b1be54c99"
+    },
+    "cosmaneura-beta-sovereign-final-bandit.json": {
+      "local_path": "/private/tmp/cosmaneura-beta-sovereign-final-bandit.json",
+      "sha256": "3ce34fd53a20f0be66d569081e991f6b0ffb997e5c3d29d00216fdedd992bacb"
+    },
+    "cosmaneura-beta-pair-initial.txt": {
+      "local_path": "/private/tmp/cosmaneura-beta-pair-initial.txt",
+      "sha256": "7533677b3ebefc7de332f838050c8961438d03ae2e095d2585867c998862d1cc"
+    },
+    "cosmaneura-beta-pair-recovery.txt": {
+      "local_path": "/private/tmp/cosmaneura-beta-pair-recovery.txt",
+      "sha256": "62c242ab80bb2c1857feabc391e1a42e68c8ba648f362a54c3fd01a3f1506c14"
+    },
+    "cosmaneura-beta-pair-core.py": {
+      "local_path": "/private/tmp/cosmaneura-beta-pair-core.py",
+      "sha256": "51cc2b38c833754edd372b5cfbf769096e1ab8360823b80b2170bf5583f22e0c"
+    },
+    "cosmaneura-beta-pair-sender.py": {
+      "local_path": "/private/tmp/cosmaneura-beta-pair-sender.py",
+      "sha256": "e746348137378e31ed4300a691762f572a6e7b3991e3b5be403ea49384cf0ba0"
+    }
+  }
+}
+

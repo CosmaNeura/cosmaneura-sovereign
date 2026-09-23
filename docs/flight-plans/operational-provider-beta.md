@@ -56,3 +56,54 @@ Local final Sovereign suite: 864 tests passed (six existing warnings). Ruff pass
 on changed code. No rollout or cohort activation has occurred. Receiver schema
 and application must land before enabling platform context mode; rollback uses
 the previous image and configuration, leaving Core's additive structures dormant.
+
+## Combined local acceptance — 2026-09-23
+
+Core candidate `3956614abc2a3704924b67f2524272c10562dc89` combines the feature
+stack (#456 → #457 → #458 → #461), backend dependency patch #462, and frontend
+dependency stack (#463 → #464 → #465). This local verification branch is not a
+deployable or oversized merge PR. Each individual PR meets the change budget.
+
+The combined candidate passed 1,513 application tests, 131 authority-kernel
+tests, four independent-connection concurrency tests, and 324 frontend component
+tests. TypeScript, API generation, and the frontend build passed. Existing
+external-service tests account for 32 application skips; one optional historical
+migration test is also skipped. Sovereign passed 864 tests. Registry dependency
+scans report zero known advisories across 129 backend runtime packages and 646
+frontend production packages; the pinned activemodel Git source is outside
+registry coverage. Changed Core Python files have no medium/high Bandit findings:
+11 low findings are unchanged route assertions and one is the gzip-token false
+positive. Sovereign's Bandit report is clean.
+
+The real Sovereign endpoint and clients called the real Core Agent API over
+loopback and persisted synthetic records in isolated PostgreSQL. Pending → ready,
+idempotent replay, receiver-process restart, browser context-injection refusal,
+private lineage removal, source correction/invalidation, reviewed regeneration,
+and cohort revocation all passed. Replays created no duplicate receipts, audit
+events, or canonical phases; revocation produced no additional writes. This
+rehearsal substituted local Clerk/Entra principals and a deterministic generator;
+live identity, Azure model, deployed UI, and deployment rollback remain unproven.
+
+The adjacent `operational-provider-beta-evidence-20260923.json` records exact
+source commits, PR sizes, rehearsal results, and local report hashes. Independent
+review remains pending: Cursor CLI is signed out and the Mac is locked. This
+evidence does not substitute for the required non-implementer review.
+
+## Remaining technical release sequence
+
+1. Independently review the final PR heads and merge the bounded increments.
+2. Resolve current staging drift before selecting the immutable merged candidate.
+   Core web currently exposes build label `scribe-local-2ef8c2de69d0d9ed-dirty`,
+   which cannot establish reviewed source provenance; worker/scheduler run
+   `ace819712c2b4c757893a9bf134dad5198d1708f`. Preserve their current digests and
+   configuration and retain them until replacement is explicitly selected.
+3. Prepare the exact merged image locally, with Actions still disabled. Apply
+   the additive expand rung through the founder-controlled release path, then
+   align Core web, worker, and scheduler. Deploy the compatible Sovereign sender
+   afterward. Existing source-bound admission pins must be refreshed through
+   review for this new pair; do not relax or bypass them.
+4. Configure the selected provider cohort, prove live identity/model connectivity,
+   exercise the embedded UI on synthetic records, verify queue-health signals,
+   and rehearse application rollback with the additive schema left dormant.
+
+No live migration, cloud mutation, deployment, or cohort activation has occurred.
