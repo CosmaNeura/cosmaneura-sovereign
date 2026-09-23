@@ -20,7 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.compliance import safety
 from app.clients.labs import SANDBOX_LABEL
-from app.config import (AuthMode, MountProfile, Persona, get_settings,
+from app.config import (PROVIDER_BETA_CAPABILITIES, AuthMode, MountProfile, Persona, get_settings,
                         validate_deployment_configuration)
 from app.schemas import (ChatRequest, ChatResponse,
                          CompassionateSafetyFallback, DigestRequest,
@@ -834,7 +834,7 @@ async def welcome(http_request: Request) -> dict:
     elif persona == Persona.PROVIDER:
         greeting = (f"Welcome — I'm the {name} clinical assistant. I can prep your "
                     "next session, prepare an ERD ethics consult, explain a "
-                    "diagnosis for a visit, or find a faithful specialist.")
+                    "diagnosis for a visit.")
     else:
         greeting = (f"Welcome — I'm the {name} health assistant, here to give you "
                     "clear, trustworthy health information guided by Catholic "
@@ -859,9 +859,8 @@ async def welcome(http_request: Request) -> dict:
         candidates = _PATIENT_PATHS
     granted = set(mount.capabilities)
     if _settings.platform_agent_api_enabled:
-        # The provider-first activation deliberately omits the labs lane even
-        # if an unexpectedly broad platform response carries the future grant.
-        granted.discard("ehr:labs:read")
+        # Match the runtime release ceiling even if Core returns broader grants.
+        granted.intersection_update(PROVIDER_BETA_CAPABILITIES)
     labs_sandbox = (
         persona == Persona.PROVIDER
         and not _settings.platform_agent_api_enabled

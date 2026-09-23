@@ -85,7 +85,8 @@ from app.compliance import safety, sensitive_disclosure
 from app.compliance.audit import AuditLogger
 from app.compliance.baa import require_baa_covered_llm
 from app.compliance.phi import deidentify
-from app.config import ComplianceProfile, Persona, Settings, get_settings
+from app.config import (PROVIDER_BETA_CAPABILITIES, ComplianceProfile, Persona,
+                        Settings, get_settings)
 from app.schemas import (ALL_PRESENTATION_SUPPRESSIONS, ChatRequest,
                          ChatResponse, Citation, CompassionateSafetyFallback,
                          DigestRequest, DigestResponse, DoctrinalSensitivity,
@@ -631,14 +632,13 @@ class Sovereign:
             raise MountResolutionError(
                 status_code=401, code="VERIFIED_ACTOR_REQUIRED", retryable=False,
             )
-        if self.s.platform_agent_api_enabled and "ehr:labs:read" in mount.capabilities:
-            # Initial platform activation is intentionally feature-limited.
-            # Preserve the ratified labs implementation for a later switch,
-            # but never honor an accidentally over-broad capability today.
+        if self.s.platform_agent_api_enabled:
+            # The release ceiling is shared with /welcome. Unexpected grants
+            # cannot enable sample referrals, labs, or other unlaunched lanes.
             mount = mount.model_copy(update={
                 "capabilities": tuple(
                     value for value in mount.capabilities
-                    if value != "ehr:labs:read"
+                    if value in PROVIDER_BETA_CAPABILITIES
                 ),
             })
         effective_persona = mount.persona_hint

@@ -116,6 +116,16 @@ DEPLOYMENT_MOUNTS: dict[MountProfile, DeploymentMount] = {
 }
 
 
+# The operational provider beta can only narrow platform-issued authority.
+# Expanding the platform grant cannot silently enable an unlaunched workflow.
+PROVIDER_BETA_CAPABILITIES = frozenset({
+    "education:answer",
+    "ethics:consult",
+    "visit-prep:run",
+    "session-prep:read",
+})
+
+
 # ---------------------------------------------------------------------------
 # Settings (read from environment / .env)  -- see .env.example
 # ---------------------------------------------------------------------------
