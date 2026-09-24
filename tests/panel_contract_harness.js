@@ -61,7 +61,13 @@ class FakeElement {
   get scrollHeight() { return 100; }
   get offsetWidth() { return 400; }
   set scrollTop(_value) {}
-  focus() {}
+  focus() { if (!this.disabled) document.activeElement = this; }
+  get disabled() { return this._disabled; }
+  set disabled(value) {
+    this._disabled = value;
+    if (value && typeof document !== "undefined" && document.activeElement === this)
+      document.activeElement = null;
+  }
   click() { if (typeof this.onclick === "function") return this.onclick(); }
   setAttribute() {}
   remove() {

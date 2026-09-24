@@ -197,10 +197,28 @@ async function main() {
     await advance(5000);
     assert(f.requests.length === 1, "poll overlapped foreground chat");
     f.chatRelease(); await chat;
+    assert(document.activeElement !== f.panel.root.querySelector(".cnp-in"),
+      "chat autofocus falsely paused the pending preparation");
     // The synthetic chat failure restores its draft; dismiss it before resuming.
     f.panel.root.querySelector(".cnp-in").value = "";
     await advance(5000);
     assert(f.requests.length === 2 && f.has("Session Prep ready"), "poll did not resume after chat");
+    f.end();
+  }
+
+  // Reopening an already-open panel must not focus the empty input and pause
+  // its active watch. Normal chat focus returns once preparation is ready.
+  {
+    const f = await fixture();
+    await f.go.onclick();
+    f.panel.open();
+    assert(document.activeElement !== f.panel.root.querySelector(".cnp-in"),
+      "open autofocus paused active preparation");
+    f.mode = "ready";
+    await advance(5000);
+    f.panel.open();
+    assert(document.activeElement === f.panel.root.querySelector(".cnp-in"),
+      "ready preparation suppressed normal chat focus");
     f.end();
   }
 
