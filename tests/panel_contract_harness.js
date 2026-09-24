@@ -118,12 +118,12 @@ function response(status, body) {
 async function main() {
   const body = new FakeElement("body");
   body.style = {};
-  global.document = {
+  global.document = Object.assign(new FakeElement("document"), {
     body,
     head: new FakeElement("head"),
     createElement: tag => new FakeElement(tag),
     createElementNS: (_namespace, tag) => new FakeElement(tag),
-  };
+  });
   let uuidCounter = 1;
   global.window = {
     innerWidth: 1200,
@@ -525,6 +525,7 @@ async function main() {
     loadHistory: async () => null,
   });
   await prepController.setRecord(currentRecord);
+  prepController.open();
   const prepGo = prepController.root.querySelector(".cnp-prep-go");
   const prepView = prepController.root.querySelector(".cnp-prep-view");
   assert(prepController.root.querySelector(".cnp-prep").hidden === false,
@@ -630,6 +631,7 @@ async function main() {
   assert(!find(prepView, node => node.textContent === "Direct prepared-brief content."),
          "late prior-record response repopulated Session Prep");
   await recordSwitch;
+  prepController.open();
   sessionPrepMode = "ready";
   await prepGo.onclick();
   assert(find(prepView, node => node.textContent === "Direct prepared-brief content."),
@@ -647,6 +649,7 @@ async function main() {
   assert(!find(prepView, node => node.textContent === "Direct prepared-brief content."),
          "late prior-encounter response repopulated Session Prep");
   await encounterSwitch;
+  prepController.open();
 
   // Revocation is terminal and clears every rendered byte rather than showing
   // the previous authorized brief as fallback.
@@ -659,7 +662,10 @@ async function main() {
   prepController.destroy();
 }
 
-main().catch(error => {
-  process.stderr.write(String(error.stack || error) + "\n");
-  process.exitCode = 1;
-});
+module.exports = { FakeElement, assert, find, response };
+if (require.main === module) {
+  main().catch(error => {
+    process.stderr.write(String(error.stack || error) + "\n");
+    process.exitCode = 1;
+  });
+}
