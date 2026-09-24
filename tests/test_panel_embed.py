@@ -302,6 +302,26 @@ def test_panel_first_send_exact_retry_success_and_record_reset_runtime():
     )
 
 
+def test_session_prep_automatic_completion_and_interrupted_delivery_runtime():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable")
+    subprocess.run(
+        [node, str(ROOT / "tests/session_prep_completion_harness.js"), str(PANEL_PATH)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_session_prep_announcements_exclude_the_clinical_brief_body():
+    panel = _panel_source()
+    assert '<div class="cnp-prep-progress" role="status" aria-live="polite">' in panel
+    assert '<div class="cnp-prep-view" hidden>' in panel
+    assert '<div class="cnp-prep-view" role="status"' not in panel
+
+
 def test_demo_surfaces_keep_entry_closed_and_mount_only_with_a_pasted_token():
     landing, dashboard = (path.read_text() for path in DEMO_PATHS)
 

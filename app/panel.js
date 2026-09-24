@@ -64,6 +64,7 @@
     "background:var(--panel)}.cnp-prep-view[hidden]{display:none}",
     ".cnp-prep-state{font-size:10px;text-transform:uppercase;letter-spacing:.55px;",
     "color:var(--accent);font-weight:800}.cnp-prep-meta{font-size:10.5px;color:var(--muted);margin-top:3px}",
+    ".cnp-prep-progress{font-size:11px;color:var(--muted);margin-top:5px}",
     ".cnp-prep-section{margin-top:9px}.cnp-prep-section h4{font-size:11px;margin:0 0 3px;",
     "color:#b9dcef;text-transform:uppercase;letter-spacing:.4px}.cnp-prep-section p{margin:0}",
     ".cnp-prep-section ul{margin:2px 0 0;padding-left:18px}",
@@ -396,7 +397,7 @@
       clientId: null, history: null, persona: "patient", generation: 0,
       accessGranted: false, localFixture: false,
       recordReady: false, recordHeaders: null,
-      sessionPrepAvailable: false, prepBusy: false,
+      sessionPrepAvailable: false, prepBusy: false, prepCycle: null,
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
       recordController: null, chatController: null, prepController: null,
       retryAttempt: null,
@@ -420,7 +421,8 @@
       '    <div class="cnp-sandbox" hidden></div></div>' +
       '    <button class="cnp-x" title="Close">×</button></div>' +
       '  <div class="cnp-prep" hidden><button class="cnp-prep-go" type="button">Open Session Prep</button>' +
-      '    <div class="cnp-prep-view" role="status" aria-live="polite" hidden></div></div>' +
+      '    <div class="cnp-prep-progress" role="status" aria-live="polite"></div>' +
+      '    <div class="cnp-prep-view" hidden></div></div>' +
       '  <div class="cnp-thread"></div>' +
       '  <div class="cnp-chips"></div>' +
       '  <div class="cnp-foot"><div class="cnp-row">' +
@@ -442,6 +444,7 @@
         fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox"),
         sub = root.querySelector(".cnp-sub"), prep = root.querySelector(".cnp-prep"),
         prepGo = root.querySelector(".cnp-prep-go"),
+        prepProgress = root.querySelector(".cnp-prep-progress"),
         prepView = root.querySelector(".cnp-prep-view");
 
     function bubble(cls) {
@@ -465,9 +468,12 @@
     }
 
     function clearSessionPrep() {
+      if (state.prepCycle) clearTimeout(state.prepCycle.timer);
+      state.prepCycle = null;
       abort(state.prepController);
       state.prepController = null;
       state.prepBusy = false;
+      prepProgress.textContent = "";
       prepView.innerHTML = "";
       prepView.hidden = true;
     }
@@ -1035,8 +1041,57 @@
       prepView.appendChild(section);
     }
 
-    function renderSessionPrep(value, recordId, generation) {
-      if (!currentGeneration(generation) || state.clientId !== recordId) return;
+    function currentPrep(cycle) {
+      return cycle && state.prepCycle === cycle &&
+        state.open && !document.hidden &&
+        currentGeneration(cycle.generation) && state.clientId === cycle.recordId;
+    }
+
+    function schedulePrepCheck(value, cycle) {
+      var delay = value.retry_after_seconds * 1000;
+      function writing() {
+        return document.activeElement === input || input.value.trim().length > 0;
+      }
+      function schedule() {
+        if (!currentPrep(cycle)) return;
+        // Reserve a full request budget rather than manufacture a timeout at
+        // the end of the waiting window.
+        if (cycle.checks >= 12 || Date.now() + delay + 30000 > cycle.deadline) {
+          prepProgress.textContent = "Automatic checking has paused. You can check again when you’re ready.";
+          return;
+        }
+        prepProgress.textContent = writing()
+          ? "Automatic checks pause while you’re writing a question."
+          : "Checking automatically while this panel is open.";
+        cycle.timer = setTimeout(function () {
+          cycle.timer = null;
+          if (!currentPrep(cycle)) return;
+          // A suspended browser must not start new work after the deadline.
+          if (Date.now() + 30000 > cycle.deadline || state.busy || state.switching || writing()) {
+            schedule();
+            return;
+          }
+          cycle.checks += 1;
+          return loadSessionPrep(cycle, true);
+        }, delay);
+      }
+      schedule();
+    }
+
+    function renderSessionPrep(value, cycle) {
+      if (!currentPrep(cycle)) return;
+      var presentation = Object.assign({}, value);
+      delete presentation.client_turn_id;
+      delete presentation.retry_after_seconds;
+      var fingerprint = JSON.stringify(presentation);
+      if (cycle.lastRender === fingerprint) {
+        if (value.state === "pending" || value.state === "refreshing")
+          schedulePrepCheck(value, cycle);
+        return;
+      }
+      cycle.lastRender = fingerprint;
+      prepProgress.textContent = value.state === "ready"
+        ? "Your prepared brief is ready." : "Session Prep is unavailable.";
       prepView.innerHTML = "";
       prepView.hidden = false;
       var stateLabel = document.createElement("div"); stateLabel.className = "cnp-prep-state";
@@ -1053,10 +1108,11 @@
             : "Session Prep is not available for this encounter.";
         prepView.appendChild(empty);
         if (value.state === "pending") {
+          schedulePrepCheck(value, cycle);
           var check = document.createElement("button"); check.className = "cnp-retry";
           check.textContent = "Check again";
           check.onclick = function () {
-            if (currentGeneration(generation) && state.clientId === recordId)
+            if (currentPrep(cycle))
               return requestSessionPrep();
           };
           prepView.appendChild(check);
@@ -1068,6 +1124,7 @@
         value.source_count + (value.source_count === 1 ? " source" : " sources");
       prepView.appendChild(meta);
       if (value.state === "refreshing") {
+        schedulePrepCheck(value, cycle);
         var stale = document.createElement("p");
         stale.textContent = "This still-authorized brief is stale while Core updates it.";
         prepView.appendChild(stale);
@@ -1085,7 +1142,7 @@
         var refresh = document.createElement("button"); refresh.className = "cnp-retry";
         refresh.textContent = "Refresh Session Prep";
         refresh.onclick = function () {
-          if (currentGeneration(generation) && state.clientId === recordId)
+          if (currentPrep(cycle))
             return requestSessionPrep();
         };
         prepView.appendChild(refresh);
@@ -1093,6 +1150,10 @@
     }
 
     function paintPrepFailure(attempt, message, allowRetry) {
+      if (!currentPrep(attempt.cycle)) return;
+      clearTimeout(attempt.cycle.timer);
+      attempt.cycle.lastRender = null;
+      prepProgress.textContent = "Session Prep could not be updated.";
       prepView.innerHTML = "";
       prepView.hidden = false;
       var label = document.createElement("div"); label.className = "cnp-prep-state";
@@ -1103,28 +1164,31 @@
       var retry = document.createElement("button"); retry.className = "cnp-retry";
       retry.textContent = "Retry this exact Session Prep request";
       retry.onclick = function () {
-        if (state.prepBusy || state.switching || state.destroyed ||
-            !currentGeneration(attempt.generation)) return;
+        if (state.busy || state.prepBusy || state.switching || state.destroyed ||
+            !currentPrep(attempt.cycle)) return;
+        // An explicit retry gets a new waiting budget, but keeps its body/turn.
+        attempt.cycle.deadline = Date.now() + 180000;
+        attempt.cycle.checks = 0;
         return runSessionPrepAttempt(attempt);
       };
       prepView.appendChild(retry);
     }
 
-    async function prepHeadersForAttempt(attempt) {
-      var headers = attempt.initialHeaders;
-      if (headers) {
-        attempt.initialHeaders = null;
-      } else {
-        headers = await freshBearerHeaders();
-        if (!currentGeneration(attempt.generation))
-          throw new DOMException("stale", "AbortError");
-        var refreshed = governedContext(await opts.getContext(), attempt.recordId);
-        if (!currentGeneration(attempt.generation))
-          throw new DOMException("stale", "AbortError");
-        if (!refreshed) {
-          loadThreadFor(null);
-          throw new DOMException("record mismatch", "AbortError");
-        }
+    function currentPrepAttempt(attempt, controller) {
+      return currentPrep(attempt.cycle) && state.prepController === controller &&
+        !controller.signal.aborted;
+    }
+
+    async function prepHeadersForAttempt(attempt, controller) {
+      var headers = await freshBearerHeaders();
+      if (!currentPrepAttempt(attempt, controller))
+        throw new DOMException("stale", "AbortError");
+      var refreshed = governedContext(await opts.getContext(), attempt.cycle.recordId);
+      if (!currentPrepAttempt(attempt, controller))
+        throw new DOMException("stale", "AbortError");
+      if (!refreshed) {
+        loadThreadFor(null);
+        throw new DOMException("record mismatch", "AbortError");
       }
       headers = Object.assign({}, headers);
       headers["content-type"] = "application/json";
@@ -1133,18 +1197,32 @@
     }
 
     async function runSessionPrepAttempt(attempt) {
-      if (!currentGeneration(attempt.generation) || state.switching) return;
+      if (!currentPrep(attempt.cycle) || state.busy || state.prepBusy || state.switching) return;
       state.prepBusy = true; syncControls();
-      prepView.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
+      if (!attempt.background || !attempt.cycle.lastRender) {
+        prepView.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
+        attempt.cycle.lastRender = null;
+      }
+      prepProgress.textContent = "Checking for Session Prep updates…";
       prepView.hidden = false;
       var controller = new AbortController(); state.prepController = controller;
-      try {
-        var headers = await prepHeadersForAttempt(attempt);
-        if (!currentGeneration(attempt.generation)) return;
+      var timeout;
+      var canceled = new Promise(function (_resolve, reject) {
+        controller.signal.addEventListener("abort", function () {
+          reject(new DOMException("canceled", "AbortError"));
+        }, { once: true });
+        timeout = setTimeout(function () {
+          reject(new DOMException("Session Prep timed out", "TimeoutError"));
+          controller.abort();
+        }, Math.max(1, Math.min(30000, attempt.cycle.deadline - Date.now())));
+      });
+      async function deliver() {
+        var headers = await prepHeadersForAttempt(attempt, controller);
+        if (!currentPrepAttempt(attempt, controller)) return;
         var response = await fetch(attempt.url, {
           method: "POST", headers: headers, body: attempt.body, signal: controller.signal,
         });
-        if (!currentGeneration(attempt.generation) || state.prepController !== controller) return;
+        if (!currentPrepAttempt(attempt, controller)) return;
         if (response.status === 401 || response.status === 403) {
           lockNamedBeta();
           return;
@@ -1155,7 +1233,7 @@
         }
         if (!response.ok) {
           var problem = await safeProblem(response);
-          if (!currentGeneration(attempt.generation) || state.prepController !== controller) return;
+          if (!currentPrepAttempt(attempt, controller)) return;
           if (response.status === 409 && problem &&
               problem.code === "RECORD_CONTEXT_MISMATCH") {
             loadThreadFor(null);
@@ -1172,25 +1250,30 @@
           return;
         }
         var value = governedSessionPrep(await response.json());
-        if (!currentGeneration(attempt.generation) || state.prepController !== controller) return;
+        if (!currentPrepAttempt(attempt, controller)) return;
         if (!value || value.client_turn_id !== attempt.clientTurnId) {
           paintPrepFailure(attempt, "The Session Prep response could not be verified.", false);
           return;
         }
-        renderSessionPrep(value, attempt.recordId, attempt.generation);
+        renderSessionPrep(value, attempt.cycle);
+      }
+      try {
+        await Promise.race([deliver(), canceled]);
       } catch (error) {
-        if (currentGeneration(attempt.generation) && error.authenticationUnavailable) {
+        if (currentPrep(attempt.cycle) && error.authenticationUnavailable) {
           lockNamedBeta();
-        } else if (currentGeneration(attempt.generation) && error.name !== "AbortError") {
+        } else if (currentPrep(attempt.cycle) && error.name !== "AbortError") {
           paintPrepFailure(
             attempt,
-            error instanceof TypeError ? "The Session Prep connection was interrupted."
+            error.name === "TimeoutError" ? "The Session Prep request timed out. You can retry it."
+              : error instanceof TypeError ? "The Session Prep connection was interrupted."
               : "The Session Prep request could not be verified.",
-            error instanceof TypeError
+            error instanceof TypeError || error.name === "TimeoutError"
           );
         }
       } finally {
-        if (currentGeneration(attempt.generation) && state.prepController === controller) {
+        clearTimeout(timeout);
+        if (currentPrep(attempt.cycle) && state.prepController === controller) {
           state.prepController = null; state.prepBusy = false; syncControls();
         }
       }
@@ -1198,46 +1281,30 @@
 
     async function requestSessionPrep() {
       if (state.busy || state.prepBusy || state.switching || state.destroyed ||
-          !state.sessionPrepAvailable || !state.recordReady || state.clientId === null) return;
-      var generation = state.generation;
+          !state.open || document.hidden || !state.sessionPrepAvailable ||
+          !state.recordReady || state.clientId === null) return;
       // A new action never retains a previous brief while authority and the
       // current host record are being re-evaluated.
       clearSessionPrep();
-      state.prepBusy = true; syncControls();
+      var cycle = {
+        recordId: state.clientId, generation: state.generation,
+        deadline: Date.now() + 180000, checks: 0, timer: null,
+      };
+      state.prepCycle = cycle;
+      return loadSessionPrep(cycle);
+    }
+
+    async function loadSessionPrep(cycle, background) {
+      if (!currentPrep(cycle)) return;
       try {
-        var headers = await freshBearerHeaders();
-        if (!currentGeneration(generation)) return;
-        var recordId = state.clientId;
-        var context = governedContext(await opts.getContext(), recordId);
-        if (!currentGeneration(generation)) return;
-        if (!context) {
-          loadThreadFor(null);
-          return;
-        }
         var clientTurnId = freshClientTurnId();
-        var body = JSON.stringify({
-          client_turn_id: clientTurnId,
+        return await runSessionPrepAttempt({
+          url: url + "/session-prep", cycle: cycle, clientTurnId: clientTurnId,
+          background: background === true,
+          body: JSON.stringify({ client_turn_id: clientTurnId }),
         });
-        var attempt = {
-          url: url + "/session-prep", initialHeaders: headers, body: body,
-          clientTurnId: clientTurnId,
-          recordId: recordId, generation: generation,
-        };
-        await runSessionPrepAttempt(attempt);
-      } catch (error) {
-        if (currentGeneration(generation) && error.authenticationUnavailable) {
-          lockNamedBeta();
-        } else if (currentGeneration(generation) && error.name !== "AbortError") {
-          paintPrepFailure(
-            { generation: generation },
-            "Couldn’t initialize Session Prep for this encounter.",
-            false
-          );
-        }
-      } finally {
-        if (currentGeneration(generation) && state.prepController === null) {
-          state.prepBusy = false; syncControls();
-        }
+      } catch (_error) {
+        paintPrepFailure({ cycle: cycle }, "Couldn’t initialize Session Prep for this encounter.", false);
       }
     }
 
@@ -1452,6 +1519,7 @@
       if (state.destroyed) return;
       if (open && !state.accessGranted) return;
       state.open = open;
+      if (!open) { clearSessionPrep(); syncControls(); }
       rail.classList.toggle("cnp-open", open);
       var canShift = opts.shiftContent !== false && window.innerWidth >= 900;
       if (open && canShift) {
@@ -1494,6 +1562,9 @@
     fab.onclick = function () { setOpen(!state.open); };
     root.querySelector(".cnp-x").onclick = function () { setOpen(false); };
     prepGo.onclick = requestSessionPrep;
+    listen(document, "visibilitychange", function () {
+      if (document.hidden) { clearSessionPrep(); syncControls(); }
+    });
     send.onclick = ask;
     listen(input, "keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
