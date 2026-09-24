@@ -1047,6 +1047,12 @@
         currentGeneration(cycle.generation) && state.clientId === cycle.recordId;
     }
 
+    function focusChatInput() {
+      // Polling defers to a focused input. Do not manufacture that signal when
+      // the provider is only reading an answer while preparation is pending.
+      if (!state.prepCycle || state.prepCycle.timer === null) input.focus();
+    }
+
     function schedulePrepCheck(value, cycle) {
       var delay = value.retry_after_seconds * 1000;
       function writing() {
@@ -1449,7 +1455,7 @@
             state.chatController === controller) {
           state.chatController = null;
           state.busy = false; syncControls();
-          thread.scrollTop = thread.scrollHeight; input.focus();
+          thread.scrollTop = thread.scrollHeight; focusChatInput();
         }
       }
     }
@@ -1507,7 +1513,7 @@
         }
       } finally {
         if (!handedOff && currentGeneration(generation)) {
-          state.busy = false; syncControls(); input.focus();
+          state.busy = false; syncControls(); focusChatInput();
         }
       }
     }
@@ -1532,7 +1538,7 @@
       if (open && state.recordReady && !thread.children.length && !state.switching) {
         loadWelcome(state.generation);
       }
-      if (open && state.recordReady) input.focus();
+      if (open && state.recordReady) focusChatInput();
     }
 
     function destroy() {

@@ -72,3 +72,14 @@ coordinated Sovereign image; no Core or data rollback is required.
 Completed source checkpoint means committed/pushed code, passing local checks,
 and exact-commit Cursor review with findings resolved. Staging deployment and
 real-provider acceptance remain separate, with no production promotion here.
+
+## Follow-up: programmatic chat focus
+
+The follow-up based on reviewed PR53 head `33b9c403414f6b911782c99d32ac203f4a7377c1`
+keeps the panel's own autofocus from looking like provider typing while a check
+is scheduled. Actual input focus or a draft still pauses checking. Normal chat
+autofocus resumes when preparation is ready, checking has stopped, or the cycle
+has been cleared. The browser harness now models focus and blur on disabled
+fields, reproducing the earlier failure before the fix. This remains Tier 2
+within the same release/recovery boundary; merge after PR53 and keep staging
+deployment separately coordinated.
