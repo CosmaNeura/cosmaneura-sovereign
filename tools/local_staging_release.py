@@ -7,6 +7,7 @@ not replace the historical source-pair admission or touch the public mount.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -191,6 +192,37 @@ def verify_source(plan):
     )
 
 
+def container_spec(container):
+    """Remove only observed Azure app/revision serialization defaults.
+
+    The revision API omits these fields. Preserve every other field so actual
+    image, command, identity reference, probe and resource drift still fails.
+    The storage exception is limited to this release's observed resource size.
+    """
+    result = copy.deepcopy(container)
+    if result.get("imageType") == "ContainerImage":
+        result.pop("imageType")
+    for item in result.get("env", []):
+        if item.get("secretRef") and item.get("value") in (None, ""):
+            item.pop("value", None)
+    resources = result.get("resources", {})
+    if (
+        resources.get("cpu") == 0.5
+        and resources.get("memory") == "1Gi"
+        and resources.get("ephemeralStorage") == "2Gi"
+    ):
+        resources.pop("ephemeralStorage")
+    for probe in result.get("probes", []):
+        if probe.get("initialDelaySeconds") == 0:
+            probe.pop("initialDelaySeconds")
+        http = probe.get("httpGet", {})
+        if http.get("host") == "":
+            http.pop("host")
+        if http.get("httpHeaders") == []:
+            http.pop("httpHeaders")
+    return result
+
+
 def state(name):
     item = az("containerapp", "show", "-g", GROUP, "-n", name)
     properties = item["properties"]
@@ -222,7 +254,10 @@ def state(name):
         observed["healthState"] == "Healthy"
         and observed["provisioningState"] == "Provisioned"
     )
-    require(observed["template"]["containers"] == containers)
+    require(
+        [container_spec(c) for c in observed["template"]["containers"]]
+        == [container_spec(c) for c in containers]
+    )
     return {
         "image": containers[0]["image"],
         "revision": properties["latestReadyRevisionName"],
