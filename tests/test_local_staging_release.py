@@ -221,3 +221,103 @@ def test_deployment_preserves_public_mount_and_rejects_drift_before_update(monke
     with pytest.raises(ValueError):
         m.deploy(proposal, "1" * 64, published)
     assert not calls
+
+
+def azure_container_pair():
+    revision = {
+        "name": "provider",
+        "image": "registry/image@sha256:" + "a" * 64,
+        "command": ["python"],
+        "args": ["server.py"],
+        "env": [
+            {"name": "KEY", "secretRef": "key-ref"},
+            {"name": "MOUNT_PROFILE", "value": "provider_assistant"},
+        ],
+        "resources": {"cpu": 0.5, "memory": "1Gi"},
+        "probes": [
+            {
+                "type": "Readiness",
+                "periodSeconds": 10,
+                "httpGet": {"path": "/healthz", "port": 8000, "scheme": "HTTP"},
+            }
+        ],
+    }
+    app = copy.deepcopy(revision)
+    app["imageType"] = "ContainerImage"
+    app["env"][0]["value"] = ""
+    app["resources"]["ephemeralStorage"] = "2Gi"
+    app["probes"][0]["initialDelaySeconds"] = 0
+    app["probes"][0]["httpGet"].update(host="", httpHeaders=[])
+    return app, revision
+
+
+def serve_pair(monkeypatch, app, revision):
+    properties = {
+        "latestRevisionName": m.APP + "--old",
+        "latestReadyRevisionName": m.APP + "--old",
+        "template": {"containers": [app]},
+        "configuration": {
+            "activeRevisionsMode": "Single",
+            "ingress": {"traffic": [{"latestRevision": True, "weight": 100}]},
+        },
+    }
+    observed = {
+        "healthState": "Healthy",
+        "provisioningState": "Provisioned",
+        "template": {"containers": [revision]},
+    }
+    monkeypatch.setattr(
+        m,
+        "az",
+        lambda *args: {
+            "properties": observed
+            if args[:3] == ("containerapp", "revision", "show")
+            else properties
+        },
+    )
+
+
+@pytest.mark.parametrize("empty", [None, ""])
+def test_state_accepts_observed_azure_defaults_without_mutating_response(
+    monkeypatch, empty
+):
+    app, revision = azure_container_pair()
+    app["env"][0]["value"] = empty
+    original = copy.deepcopy(app)
+    serve_pair(monkeypatch, app, revision)
+    assert m.state(m.APP) == {"image": app["image"], "revision": m.APP + "--old"}
+    assert app == original
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (("image",), "different-image"),
+        (("imageType",), "Artifact"),
+        (("command",), ["other"]),
+        (("args",), ["other.py"]),
+        (("env", 0, "secretRef"), "different-ref"),
+        (("env", 0, "value"), "unexpected-inline-value"),
+        (("env", 1, "value"), "public"),
+        (("resources", "cpu"), 1),
+        (("resources", "memory"), "2Gi"),
+        (("resources", "ephemeralStorage"), "4Gi"),
+        (("probes", 0, "initialDelaySeconds"), 5),
+        (("probes", 0, "periodSeconds"), 30),
+        (("probes", 0, "httpGet", "host"), "other.internal"),
+        (("probes", 0, "httpGet", "httpHeaders"), [{"name": "X-Test", "value": "1"}]),
+        (("probes", 0, "httpGet", "path"), "/other"),
+        (("probes", 0, "httpGet", "port"), 9000),
+        (("probes", 0, "httpGet", "scheme"), "HTTPS"),
+        (("unknownField",), "unexpected"),
+    ],
+)
+def test_state_still_refuses_substantive_container_drift(monkeypatch, path, value):
+    app, revision = azure_container_pair()
+    target = app
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    serve_pair(monkeypatch, app, revision)
+    with pytest.raises(ValueError, match="local_staging_release_refused"):
+        m.state(m.APP)
