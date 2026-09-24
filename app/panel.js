@@ -64,6 +64,7 @@
     "background:var(--panel)}.cnp-prep-view[hidden]{display:none}",
     ".cnp-prep-state{font-size:10px;text-transform:uppercase;letter-spacing:.55px;",
     "color:var(--accent);font-weight:800}.cnp-prep-meta{font-size:10.5px;color:var(--muted);margin-top:3px}",
+    ".cnp-prep-progress{font-size:11px;color:var(--muted);margin-top:5px}",
     ".cnp-prep-section{margin-top:9px}.cnp-prep-section h4{font-size:11px;margin:0 0 3px;",
     "color:#b9dcef;text-transform:uppercase;letter-spacing:.4px}.cnp-prep-section p{margin:0}",
     ".cnp-prep-section ul{margin:2px 0 0;padding-left:18px}",
@@ -420,7 +421,8 @@
       '    <div class="cnp-sandbox" hidden></div></div>' +
       '    <button class="cnp-x" title="Close">×</button></div>' +
       '  <div class="cnp-prep" hidden><button class="cnp-prep-go" type="button">Open Session Prep</button>' +
-      '    <div class="cnp-prep-view" role="status" aria-live="polite" hidden></div></div>' +
+      '    <div class="cnp-prep-progress" role="status" aria-live="polite"></div>' +
+      '    <div class="cnp-prep-view" hidden></div></div>' +
       '  <div class="cnp-thread"></div>' +
       '  <div class="cnp-chips"></div>' +
       '  <div class="cnp-foot"><div class="cnp-row">' +
@@ -442,6 +444,7 @@
         fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox"),
         sub = root.querySelector(".cnp-sub"), prep = root.querySelector(".cnp-prep"),
         prepGo = root.querySelector(".cnp-prep-go"),
+        prepProgress = root.querySelector(".cnp-prep-progress"),
         prepView = root.querySelector(".cnp-prep-view");
 
     function bubble(cls) {
@@ -470,6 +473,7 @@
       abort(state.prepController);
       state.prepController = null;
       state.prepBusy = false;
+      prepProgress.textContent = "";
       prepView.innerHTML = "";
       prepView.hidden = true;
     }
@@ -1044,33 +1048,50 @@
     }
 
     function schedulePrepCheck(value, cycle) {
-      var status = document.createElement("p");
       var delay = value.retry_after_seconds * 1000;
+      function writing() {
+        return document.activeElement === input || input.value.trim().length > 0;
+      }
       function schedule() {
         if (!currentPrep(cycle)) return;
-        if (cycle.checks >= 12 || Date.now() + delay >= cycle.deadline) {
-          status.textContent = "This is taking longer than expected. You can check again when you’re ready.";
+        // Reserve a full request budget rather than manufacture a timeout at
+        // the end of the waiting window.
+        if (cycle.checks >= 12 || Date.now() + delay + 30000 > cycle.deadline) {
+          prepProgress.textContent = "Automatic checking has paused. You can check again when you’re ready.";
           return;
         }
-        status.textContent = "Checking automatically while this panel is open.";
+        prepProgress.textContent = writing()
+          ? "Automatic checks pause while you’re writing a question."
+          : "Checking automatically while this panel is open.";
         cycle.timer = setTimeout(function () {
           cycle.timer = null;
           if (!currentPrep(cycle)) return;
           // A suspended browser must not start new work after the deadline.
-          if (Date.now() >= cycle.deadline || state.busy || state.switching) {
+          if (Date.now() + 30000 > cycle.deadline || state.busy || state.switching || writing()) {
             schedule();
             return;
           }
           cycle.checks += 1;
-          return loadSessionPrep(cycle);
+          return loadSessionPrep(cycle, true);
         }, delay);
       }
-      prepView.appendChild(status);
       schedule();
     }
 
     function renderSessionPrep(value, cycle) {
       if (!currentPrep(cycle)) return;
+      var presentation = Object.assign({}, value);
+      delete presentation.client_turn_id;
+      delete presentation.retry_after_seconds;
+      var fingerprint = JSON.stringify(presentation);
+      if (cycle.lastRender === fingerprint) {
+        if (value.state === "pending" || value.state === "refreshing")
+          schedulePrepCheck(value, cycle);
+        return;
+      }
+      cycle.lastRender = fingerprint;
+      prepProgress.textContent = value.state === "ready"
+        ? "Your prepared brief is ready." : "Session Prep is unavailable.";
       prepView.innerHTML = "";
       prepView.hidden = false;
       var stateLabel = document.createElement("div"); stateLabel.className = "cnp-prep-state";
@@ -1131,6 +1152,8 @@
     function paintPrepFailure(attempt, message, allowRetry) {
       if (!currentPrep(attempt.cycle)) return;
       clearTimeout(attempt.cycle.timer);
+      attempt.cycle.lastRender = null;
+      prepProgress.textContent = "Session Prep could not be updated.";
       prepView.innerHTML = "";
       prepView.hidden = false;
       var label = document.createElement("div"); label.className = "cnp-prep-state";
@@ -1176,7 +1199,11 @@
     async function runSessionPrepAttempt(attempt) {
       if (!currentPrep(attempt.cycle) || state.busy || state.prepBusy || state.switching) return;
       state.prepBusy = true; syncControls();
-      prepView.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
+      if (!attempt.background || !attempt.cycle.lastRender) {
+        prepView.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
+        attempt.cycle.lastRender = null;
+      }
+      prepProgress.textContent = "Checking for Session Prep updates…";
       prepView.hidden = false;
       var controller = new AbortController(); state.prepController = controller;
       var timeout;
@@ -1267,12 +1294,13 @@
       return loadSessionPrep(cycle);
     }
 
-    async function loadSessionPrep(cycle) {
+    async function loadSessionPrep(cycle, background) {
       if (!currentPrep(cycle)) return;
       try {
         var clientTurnId = freshClientTurnId();
         return await runSessionPrepAttempt({
           url: url + "/session-prep", cycle: cycle, clientTurnId: clientTurnId,
+          background: background === true,
           body: JSON.stringify({ client_turn_id: clientTurnId }),
         });
       } catch (_error) {

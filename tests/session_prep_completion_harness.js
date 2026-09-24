@@ -67,6 +67,7 @@ async function fixture() {
     });
     assert(url.endsWith("/session-prep"), "unexpected request");
     f.requests.push(options);
+    if (f.latency) await new Promise(resolve => setTimeout(resolve, f.latency));
     const mode = f.mode;
     if (mode === "hang") await hold();
     if (mode === "network") throw new TypeError("synthetic disconnect");
@@ -115,7 +116,9 @@ async function fixture() {
   f.panel.open();
   f.view = f.panel.root.querySelector(".cnp-prep-view");
   f.go = f.panel.root.querySelector(".cnp-prep-go");
-  f.has = text => !!find(f.view, node => node.textContent.includes(text));
+  f.progress = f.panel.root.querySelector(".cnp-prep-progress");
+  f.has = text => f.progress.textContent.includes(text) ||
+    !!find(f.view, node => node.textContent.includes(text));
   f.button = text => find(f.view, node => node.textContent === text);
   f.end = () => {
     f.panel.destroy();
@@ -162,9 +165,9 @@ async function main() {
     await advance(240000);
     assert(f.requests.length <= 13, "poll count exceeded budget");
     if (retryAfter === 1) assert(f.requests.length === 13, "count ceiling not exercised");
-    if (retryAfter === 20) assert(f.requests.length === 9, "time ceiling not exercised");
+    if (retryAfter === 20) assert(f.requests.length === 8, "time ceiling not exercised");
     if (retryAfter === 300) assert(f.requests.length === 1, "long retry interval was shortened");
-    assert(timers.size === 0 && f.has("taking longer"), "exhaustion left a spinner or timer");
+    assert(timers.size === 0 && f.has("Automatic checking has paused"), "exhaustion left a spinner or timer");
     f.mode = "ready";
     await f.button("Check again").onclick();
     assert(f.has("Session Prep ready"), "manual check failed after budget exhaustion");
@@ -178,7 +181,7 @@ async function main() {
     now += 240000;
     const queued = [...timers.values()][0]; timers.clear();
     queued.callback(); await flush();
-    assert(f.requests.length === 1 && timers.size === 0 && f.has("taking longer"), "resumed overdue poll");
+    assert(f.requests.length === 1 && timers.size === 0 && f.has("Automatic checking has paused"), "resumed overdue poll");
     f.end();
   }
 
@@ -194,6 +197,8 @@ async function main() {
     await advance(5000);
     assert(f.requests.length === 1, "poll overlapped foreground chat");
     f.chatRelease(); await chat;
+    // The synthetic chat failure restores its draft; dismiss it before resuming.
+    f.panel.root.querySelector(".cnp-in").value = "";
     await advance(5000);
     assert(f.requests.length === 2 && f.has("Session Prep ready"), "poll did not resume after chat");
     f.end();
@@ -208,6 +213,54 @@ async function main() {
     await f.button("Check again").onclick();
     queued.callback(); await flush();
     assert(f.requests.length === 2 && timers.size === 0, "superseded timer launched work");
+    f.end();
+  }
+
+  // Drafts/focus delay polling so a check cannot disable a field mid-sentence.
+  for (const writing of ["draft", "focus"]) {
+    const f = await fixture();
+    await f.go.onclick();
+    const input = f.panel.root.querySelector(".cnp-in");
+    if (writing === "draft") input.value = "An unfinished question";
+    else document.activeElement = input;
+    await advance(5000);
+    assert(f.requests.length === 1 && !input.disabled && f.has("while you’re writing"), "poll interrupted typing");
+    input.value = ""; document.activeElement = null;
+    f.mode = "ready";
+    await advance(5000);
+    assert(f.requests.length === 2 && f.has("Session Prep ready"), "poll failed to resume after typing");
+    f.end();
+  }
+
+  // An unchanged response keeps the actual content nodes and scroll position.
+  for (const initial of ["pending", "refreshing"]) {
+    const f = await fixture(); f.mode = initial;
+    await f.go.onclick();
+    const children = [...f.view.children];
+    f.latency = 2400;
+    await advance(5000);
+    assert(f.has("Checking for Session Prep updates"), "background progress absent");
+    assert(children.every((node, i) => f.view.children[i] === node), "background check blanked content");
+    // Changes in transport identity or pacing do not replace identical content.
+    f.retryAfter = 10;
+    await advance(2400);
+    assert(children.every((node, i) => f.view.children[i] === node), "unchanged brief was rebuilt");
+    f.mode = "ready";
+    await advance(12400);
+    assert(f.has("Session Prep ready"), "preserved content blocked completion");
+    f.end();
+  }
+
+  // Realistic response latency must end the watch neutrally, not manufacture
+  // a short final timeout at the edge of its waiting budget.
+  {
+    const f = await fixture(); f.retryAfter = 20; f.latency = 2400;
+    const first = f.go.onclick();
+    await flush(); await advance(2400); await first;
+    await advance(240000);
+    assert(f.requests.length === 7 && timers.size === 0, "latency drift exceeded waiting budget");
+    assert(f.has("Automatic checking has paused") && !f.has("timed out"), "deadline produced a false timeout");
+    assert(f.requests.every(request => !request.signal.aborted), "deadline aborted an avoidable final request");
     f.end();
   }
 

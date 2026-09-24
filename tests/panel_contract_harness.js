@@ -41,7 +41,7 @@ class FakeElement {
     if (this.className === "cnp-root" && value.includes("cnp-rail")) {
       const names = ["cnp-gate", "cnp-fab", "cnp-rail", "cnp-thread", "cnp-chips", "cnp-in",
                      "cnp-send", "cnp-fmt", "cnp-sandbox", "cnp-sub", "cnp-x",
-                     "cnp-prep", "cnp-prep-go", "cnp-prep-view"];
+                     "cnp-prep", "cnp-prep-go", "cnp-prep-view", "cnp-prep-progress"];
       this._mountNodes = {};
       names.forEach(name => {
         const node = new FakeElement(

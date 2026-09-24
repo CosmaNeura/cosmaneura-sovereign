@@ -11,6 +11,14 @@ logical check reacquires authority and uses a new turn; an ambiguous delivery
 retry preserves its original turn and body. A hung request releases the panel
 after thirty seconds and offers an exact retry.
 
+Automatic checks wait while the provider focuses the chat input, holds a draft,
+or sends a chat request. In-flight background checks retain the displayed
+pending/stale response; identical content is not rebuilt. Only concise progress
+messages sit in the live region. Any unsuccessful check clears clinical content
+rather than assuming its source remains eligible after a failed revalidation.
+Every scheduled check reserves its full thirty-second request budget; nearing
+the overall deadline pauses checking neutrally without creating a short timeout.
+
 Only the existing provider Session Prep panel and its synthetic tests change.
 No Scribe, Core, deployment, schema, dependency, AI generation, or stored-data
 contract changes are needed. No clinical content is cached in browser storage.
