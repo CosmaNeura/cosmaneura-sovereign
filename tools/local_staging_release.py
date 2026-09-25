@@ -119,14 +119,25 @@ def verify_pair(repo, selected):
         == f"https://api.github.com/repos/CosmaNeura/{repo}/issues/{selected['pr']}"
     )
     body = review["body"]
-    require(sha(body.encode()) == selected["review_sha256"] and body.startswith(PREFIX))
-    metadata, separator, report = body[len(PREFIX) :].partition(" -->\n")
+    require(type(body) is str and 0 < len(body) <= 65536)
+    require(sha(body.encode()) == selected["review_sha256"])
+    # Keep retained Cursor reviews valid and identify the authorized independent
+    # reviewer honestly. Neither format represents GitHub approval.
+    envelopes = {
+        PREFIX: "Cursor",
+        "<!-- COSMANEURA_LOCAL_AGENT_REVIEW ": "Codex",
+    }
+    prefixes = [prefix for prefix in envelopes if body.startswith(prefix)]
+    require(len(prefixes) == 1)
+    prefix = prefixes[0]
+    metadata, separator, report = body[len(prefix) :].partition(" -->\n")
     require(separator and report.strip())
     metadata = json.loads(metadata, object_pairs_hook=unique)
+    require(type(metadata) is dict and metadata.get("after_final_substantive_push") is True)
     require(
         metadata
         == {
-            "reviewer": "Cursor",
+            "reviewer": envelopes[prefix],
             "reviewed_head": selected["reviewed_head"],
             "result": "accepted",
             "after_final_substantive_push": True,
