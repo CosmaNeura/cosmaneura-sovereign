@@ -173,8 +173,9 @@ def test_state_requires_healthy_single_revision_serving_all_traffic(monkeypatch)
         m.state(m.APP)
 
 
-def test_deployment_preserves_public_mount_and_rejects_drift_before_update(monkeypatch):
+def deployment_scenario(monkeypatch, recovery_failure=None):
     proposal = plan()
+    current = copy.deepcopy(proposal["recovery"])
     calls = []
     published = {
         "complete": True,
@@ -187,7 +188,7 @@ def test_deployment_preserves_public_mount_and_rejects_drift_before_update(monke
         m,
         "state",
         lambda name: (
-            proposal["recovery"] if name == m.APP else proposal["public_before"]
+            current if name == m.APP else proposal["public_before"]
         ),
     )
 
@@ -197,23 +198,60 @@ def test_deployment_preserves_public_mount_and_rejects_drift_before_update(monke
             return {"digest": args[-1].split("@")[1]}
         if args[:2] == ("containerapp", "update"):
             suffix = args[args.index("--revision-suffix") + 1]
-            proposal["recovery"] = {
-                "image": published["image"],
-                "revision": m.APP + "--" + suffix,
-            }
+            current.update(
+                {
+                    "image": published["image"],
+                    "revision": m.APP + "--" + suffix,
+                }
+            )
             return {}
+        if args[:3] == ("containerapp", "revision", "show"):
+            assert args[-1] == proposal["recovery"]["revision"]
+            if recovery_failure == "missing":
+                raise m.subprocess.CalledProcessError(1, "az")
+            previous = {
+                "provisioningState": "Provisioned",
+                "template": {"containers": [{"image": proposal["recovery"]["image"]}]},
+            }
+            if recovery_failure == "wrong_image":
+                previous["template"]["containers"][0]["image"] = published["image"]
+            elif recovery_failure == "failed":
+                previous["provisioningState"] = "Failed"
+            elif recovery_failure == "empty":
+                previous["template"]["containers"] = []
+            elif recovery_failure == "extra_container":
+                previous["template"]["containers"].append({"image": "unexpected"})
+            return {"properties": previous}
         return {
-            "properties": {"latestReadyRevisionName": proposal["recovery"]["revision"]}
+            "properties": {
+                "latestReadyRevisionName": current["revision"],
+                "configuration": (
+                    {}
+                    if recovery_failure == "missing_retention"
+                    else {"maxInactiveRevisions": 0 if recovery_failure == "zero" else 10}
+                ),
+            }
         }
 
     monkeypatch.setattr(m, "az", az)
-    original = copy.deepcopy(proposal["public_before"])
+    return proposal, published, calls
+
+
+def test_deployment_preserves_public_mount_and_rejects_drift_before_update(
+    monkeypatch, capsys
+):
+    proposal, published, calls = deployment_scenario(monkeypatch)
+    original = copy.deepcopy(proposal)
     m.deploy(proposal, "1" * 64, published)
     updates = [call for call in calls if call[:2] == ("containerapp", "update")]
     assert len(updates) == 1 and updates[0][updates[0].index("-n") + 1] == m.APP
-    assert proposal["public_before"] == original
+    assert proposal == original
     assert "FEATURE_ATHENA_LABS=false" in updates[0]
     assert "SESSION_PREP_CONTEXT_SOURCE=platform" in updates[0]
+    assert updates[0][updates[0].index("--max-inactive-revisions") + 1] == "10"
+    report = json.loads(capsys.readouterr().out)
+    assert report["recovery"] == original["recovery"]
+    assert report["recovery_revision_retained"] is True
     calls.clear()
     monkeypatch.setattr(
         m, "state", lambda name: {"image": "drift", "revision": "drift"}
@@ -221,6 +259,25 @@ def test_deployment_preserves_public_mount_and_rejects_drift_before_update(monke
     with pytest.raises(ValueError):
         m.deploy(proposal, "1" * 64, published)
     assert not calls
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "zero", "missing_retention", "missing", "wrong_image", "failed", "empty",
+        "extra_container",
+    ],
+)
+def test_deployment_does_not_report_success_without_exact_recovery(
+    monkeypatch, capsys, failure
+):
+    proposal, published, calls = deployment_scenario(monkeypatch, failure)
+    with pytest.raises((ValueError, m.subprocess.CalledProcessError)):
+        m.deploy(proposal, "1" * 64, published)
+    assert capsys.readouterr().out == ""
+    updates = [call for call in calls if call[:2] == ("containerapp", "update")]
+    assert len(updates) == 1
+    assert updates[0][updates[0].index("-n") + 1] == m.APP
 
 
 def azure_container_pair():

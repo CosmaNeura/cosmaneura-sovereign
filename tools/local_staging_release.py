@@ -270,6 +270,29 @@ def receipt(path, value):
     Path(path).chmod(0o400)
 
 
+def verify_retained_recovery(recovery):
+    """Keep the plan's exact revision available, including its prior template."""
+    properties = az("containerapp", "show", "-g", GROUP, "-n", APP)["properties"]
+    require(properties["configuration"].get("maxInactiveRevisions") == 10)
+    previous = az(
+        "containerapp",
+        "revision",
+        "show",
+        "-g",
+        GROUP,
+        "-n",
+        APP,
+        "--revision",
+        recovery["revision"],
+    )["properties"]
+    containers = previous["template"]["containers"]
+    require(
+        previous["provisioningState"] == "Provisioned"
+        and len(containers) == 1
+        and containers[0]["image"] == recovery["image"]
+    )
+
+
 def build(plan, plan_digest, output):
     output = Path(output)
     require(
@@ -493,6 +516,8 @@ def deploy(plan, plan_digest, published):
         image,
         "--revision-suffix",
         suffix,
+        "--max-inactive-revisions",
+        "10",
         "--set-env-vars",
         "FEATURE_SESSION_PREP=true",
         "SESSION_PREP_CONTEXT_SOURCE=platform",
@@ -507,6 +532,7 @@ def deploy(plan, plan_digest, published):
         time.sleep(5)
     require(state(APP) == {"image": image, "revision": APP + "--" + suffix})
     require(state(PUBLIC_APP) == plan["public_before"])
+    verify_retained_recovery(plan["recovery"])
     print(
         json.dumps(
             {
@@ -515,6 +541,7 @@ def deploy(plan, plan_digest, published):
                 "image": image,
                 "revision": APP + "--" + suffix,
                 "recovery": plan["recovery"],
+                "recovery_revision_retained": True,
             }
         )
     )
