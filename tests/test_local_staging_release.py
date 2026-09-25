@@ -61,17 +61,19 @@ def test_target_and_recovery_plan_are_staging_only_and_fresh():
         m.validate_plan(bad)
 
 
-def reviews():
+def reviews(reviewer="Cursor", prefix=None):
     chosen = selected()
-    report = "Independent Cursor review: no actionable findings.\n"
+    report = f"Independent {reviewer} review: no actionable findings.\n"
     metadata = {
-        "reviewer": "Cursor",
+        "reviewer": reviewer,
         "reviewed_head": chosen["reviewed_head"],
         "result": "accepted",
         "after_final_substantive_push": True,
         "report_sha256": hashlib.sha256(report.encode()).hexdigest(),
     }
-    body = m.PREFIX + json.dumps(metadata) + " -->\n" + report
+    if prefix is None:
+        prefix = m.PREFIX if reviewer == "Cursor" else "<!-- COSMANEURA_LOCAL_AGENT_REVIEW "
+    body = prefix + json.dumps(metadata) + " -->\n" + report
     chosen["review_sha256"] = hashlib.sha256(body.encode()).hexdigest()
     data = {
         "pull": {
@@ -91,9 +93,7 @@ def reviews():
     return chosen, data
 
 
-def test_current_merged_source_requires_exact_post_push_cursor_review(monkeypatch):
-    chosen, data = reviews()
-
+def mock_review_source(monkeypatch, data):
     def gh(endpoint):
         return data[
             "pull"
@@ -106,6 +106,12 @@ def test_current_merged_source_requires_exact_post_push_cursor_review(monkeypatc
         ]
 
     monkeypatch.setattr(m, "gh", gh)
+
+
+@pytest.mark.parametrize("reviewer", ["Cursor", "Codex"])
+def test_current_merged_source_requires_exact_post_push_review(monkeypatch, reviewer):
+    chosen, data = reviews(reviewer)
+    mock_review_source(monkeypatch, data)
     m.verify_pair("cosmaneura-sovereign", chosen)
     for group, field, value in [
         ("pull", "merged", False),
@@ -118,6 +124,45 @@ def test_current_merged_source_requires_exact_post_push_cursor_review(monkeypatc
             m.verify_pair("cosmaneura-sovereign", chosen)
         data[group][field] = old
     data["ref"]["object"]["sha"] = "0" * 40
+    with pytest.raises(ValueError):
+        m.verify_pair("cosmaneura-sovereign", chosen)
+
+
+@pytest.mark.parametrize(
+    "reviewer,prefix",
+    [
+        ("Codex", m.PREFIX),
+        ("Cursor", "<!-- COSMANEURA_LOCAL_AGENT_REVIEW "),
+        ("Unrecognized", "<!-- COSMANEURA_LOCAL_AGENT_REVIEW "),
+    ],
+)
+def test_review_envelope_must_identify_its_allowed_reviewer(monkeypatch, reviewer, prefix):
+    chosen, data = reviews(reviewer, prefix)
+    mock_review_source(monkeypatch, data)
+    with pytest.raises(ValueError):
+        m.verify_pair("cosmaneura-sovereign", chosen)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reviewed_head", "0" * 40),
+        ("result", "rejected"),
+        ("after_final_substantive_push", False),
+        ("after_final_substantive_push", 1),
+        ("report_sha256", "0" * 64),
+    ],
+)
+def test_codex_review_keeps_exact_acceptance_and_report_binding(monkeypatch, field, value):
+    chosen, data = reviews("Codex")
+    prefix = "<!-- COSMANEURA_LOCAL_AGENT_REVIEW "
+    metadata, _, report = data["review"]["body"][len(prefix):].partition(" -->\n")
+    metadata = json.loads(metadata)
+    metadata[field] = value
+    body = prefix + json.dumps(metadata) + " -->\n" + report
+    data["review"]["body"] = body
+    chosen["review_sha256"] = hashlib.sha256(body.encode()).hexdigest()
+    mock_review_source(monkeypatch, data)
     with pytest.raises(ValueError):
         m.verify_pair("cosmaneura-sovereign", chosen)
 
