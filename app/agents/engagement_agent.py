@@ -19,6 +19,7 @@ PHI handling — this is the agent most likely to touch PHI:
 from __future__ import annotations
 
 from app.agents.base import BaseAgent
+from app.clients.conversation_read import CONVERSATION_RULES, conversation_prompt
 from app.clients.provider_question_contract import PROVIDER_CONTEXT_RULES, ProviderQuestionResult
 from app.config import ComplianceProfile, Persona
 from app.schemas import AgentResult, ChatRequest, Citation
@@ -58,10 +59,11 @@ class EngagementAgent(BaseAgent):
         fmt, fmt_rules = self.resolve_output_format(request)
 
         content = await self.llm.complete(
-            system=_SYSTEM + (PROVIDER_CONTEXT_RULES if provider_context else ""),
+            system=_SYSTEM + CONVERSATION_RULES + (PROVIDER_CONTEXT_RULES if provider_context else ""),
             prompt=(f"Audience: {audience}\n"
                     f"Person's message: {request.message}\n"
                     f"Known history/context: {history}\n\n"
+                    + conversation_prompt(request.history)
                     + (f"Prepared summary: {provider_context.prompt_text()}\n"
                        if provider_context else "")
                     + f"Output format requirement: {fmt_rules}\n"

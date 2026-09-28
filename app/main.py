@@ -30,6 +30,9 @@ from app.schemas import (ChatRequest, ChatResponse,
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
 from app.security.mount import MountResolutionError
 from app.security.rate_limit import TokenBucketRateLimiter
+from app.clients.conversation_read import (
+    ConversationReadError, ConversationReadRequest, ConversationReadResponse,
+)
 from app.sovereign.orchestrator import INTENT_CAPABILITIES, Sovereign
 
 _settings = get_settings()
@@ -47,7 +50,7 @@ _public_chat_limiter = TokenBucketRateLimiter(
 _EMBED_VERSION = "1.0"
 _EMBED_VERSION_HEADER = "X-Cosmaneura-Embed-Version"
 _PROTECTED_EMBED_PATHS = frozenset({
-    "/welcome", "/chat", "/digest", "/session-prep",
+    "/welcome", "/chat", "/digest", "/session-prep", "/embed/history",
 })
 _CORS_ALLOW_METHODS = ("GET", "POST")
 _CORS_ALLOW_HEADERS = (
@@ -705,6 +708,28 @@ async def chat(
         client_turn_id=client_turn_id,
     )
     return response.model_copy(update={"client_turn_id": client_turn_id})
+
+
+@app.post("/embed/history", response_model=ConversationReadResponse)
+async def conversation_history(
+    request: ConversationReadRequest, http_request: Request, http_response: Response,
+) -> ConversationReadResponse:
+    """Read recent/accepted-turn state under a fresh mount, without inference."""
+    _require_embed_version(http_request)
+    token = _raw_bearer(_one_raw_header(http_request, "Authorization"))
+    trace_id = uuid.uuid4().hex
+    try:
+        result = await _sovereign.read_conversation_history(
+            mount_context_token=token, trace_id=trace_id, request=request,
+        )
+    except ConversationReadError as error:
+        code = ("CONTEXT_REQUIRED" if token is None else "CONTEXT_INVALID") if error.status_code == 401 else (
+            "CAPABILITY_DENIED" if error.status_code == 403 else
+            "VALIDATION_FAILED" if error.status_code in {404, 409} else "SERVICE_UNAVAILABLE"
+        )
+        raise SovereignHTTPError(status_code=error.status_code, code=code) from None
+    http_response.headers["X-Trace-ID"] = trace_id
+    return result
 
 
 @app.post("/session-prep", response_model=SessionPrepResponse)

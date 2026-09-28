@@ -380,12 +380,45 @@
           typeof message.client_turn_id !== "string" || !UUID_V4.test(message.client_turn_id) ||
           ["user", "assistant"].indexOf(message.role) < 0 ||
           typeof message.content !== "string" || message.content.length < 1 ||
-          message.content.length > 20000 || typeof message.recorded_at !== "string" ||
+          message.content.length > 40000 || Array.from(message.content).length > 20000 ||
+          typeof message.recorded_at !== "string" ||
           isNaN(Date.parse(message.recorded_at))) return null;
       if (message.role === "user" && message.presentation !== null) return null;
       if (message.role === "assistant" && !governedPresentation(message.presentation)) return null;
     }
     return value;
+  }
+
+  function governedConversation(value) {
+    if (!closedObject(value, ["schema_version", "history", "turns"]) ||
+        value.schema_version !== "1.0.0" || !governedHistory(value.history) ||
+        value.history.next_cursor !== null || value.history.messages.length > 12 ||
+        !Array.isArray(value.turns) || value.turns.length > 6 ||
+        new TextEncoder().encode(JSON.stringify(value.history.messages)).length > 192 * 1024)
+      return null;
+    var ids = new Set(), refs = new Set(), position = 0;
+    for (var i = 0; i < value.turns.length; i++) {
+      var turn = value.turns[i];
+      if (!closedObject(turn, ["turn_ref", "client_turn_id", "state", "outcome", "recorded_at"]) ||
+          typeof turn.turn_ref !== "string" || !OPAQUE_REF.test(turn.turn_ref) ||
+          typeof turn.client_turn_id !== "string" || !UUID_V4.test(turn.client_turn_id) ||
+          ids.has(turn.client_turn_id) || refs.has(turn.turn_ref) ||
+          ["pending", "completed", "stale"].indexOf(turn.state) < 0 ||
+          (turn.state === "completed" ? ["completed", "refused", "unavailable"].indexOf(turn.outcome) < 0
+            : turn.outcome !== null) ||
+          typeof turn.recorded_at !== "string" || isNaN(Date.parse(turn.recorded_at))) return null;
+      ids.add(turn.client_turn_id); refs.add(turn.turn_ref);
+      var expected = turn.state === "completed" ? ["user", "assistant"] : [];
+      var next = value.history.messages[position];
+      if (turn.state !== "completed" && next && next.turn_ref === turn.turn_ref)
+        expected = ["user"];
+      for (var j = 0; j < expected.length; j++) {
+        var message = value.history.messages[position++];
+        if (!message || message.turn_ref !== turn.turn_ref ||
+            message.client_turn_id !== turn.client_turn_id || message.role !== expected[j]) return null;
+      }
+    }
+    return position === value.history.messages.length ? value : null;
   }
 
   function mount(opts) {
@@ -779,11 +812,12 @@
           ? await opts.loadHistory(recordId, { signal: recordController.signal })
           : null;
         if (!currentGeneration(generation)) return null;
-        var loaded = history === null ? null : governedHistory(history);
+        var conversation = history && history.schema_version ? governedConversation(history) : null;
+        var loaded = history === null ? null : conversation ? conversation.history : governedHistory(history);
         if (history !== null && !loaded)
           throw new Error("governed history is invalid");
         state.history = loaded;
-        (loaded ? loaded.messages : []).forEach(function (m) {
+        function restoreMessage(m) {
           var b = bubble(m.role === "user" ? "u" : "a");
           if (m.role === "user") b.textContent = m.content || "";
           else render(b, {
@@ -794,7 +828,25 @@
             structured: {},
             safety_notice: null,
           }, recordId, generation, true);
-        });
+        }
+        if (conversation) {
+          var notice = document.createElement("div");
+          notice.className = "cnp-meta"; notice.setAttribute("role", "status");
+          notice.textContent = "Recent encounter conversation · up to six turns";
+          thread.appendChild(notice);
+          conversation.turns.forEach(function (turn) {
+            conversation.history.messages.filter(function (m) {
+              return m.client_turn_id === turn.client_turn_id;
+            }).forEach(restoreMessage);
+            if (turn.state === "completed") return;
+            var user = conversation.history.messages.find(function (m) {
+              return m.client_turn_id === turn.client_turn_id && m.role === "user";
+            });
+            var attempt = { clientTurnId: turn.client_turn_id, recordId: recordId,
+              generation: generation, text: user ? user.content : "" };
+            paintReadStatus(bubble("a"), attempt, turn.state);
+          });
+        } else (loaded ? loaded.messages : []).forEach(restoreMessage);
         state.recordReady = true;
         if (loaded && typeof opts.onHistoryUpdated === "function") {
           Promise.resolve().then(function () {
@@ -1375,12 +1427,93 @@
       return headers;
     }
 
+    function appendResponseCheck(b, attempt) {
+      if (typeof opts.loadHistory !== "function") return;
+      var check = document.createElement("button");
+      check.className = "cnp-retry cnp-check-response"; check.textContent = "Check response";
+      check.onclick = function () { return checkResponse(attempt, b); };
+      b.appendChild(check);
+    }
+
+    function paintReadStatus(b, attempt, status) {
+      b.innerHTML = "<p>" + esc(status === "stale"
+        ? "This earlier response is no longer current. Ask a new question to use current context."
+        : "This turn has no recorded response yet. Checking does not run it again.") + "</p>";
+      if (status === "pending") appendResponseCheck(b, attempt);
+    }
+
+    async function checkResponse(attempt, b) {
+      if (state.busy || state.switching || state.destroyed ||
+          !currentGeneration(attempt.generation) || state.clientId !== attempt.recordId) return;
+      state.busy = true; syncControls();
+      var controller = new AbortController();
+      state.chatController = controller;
+      var timeout = setTimeout(function () { controller.abort(); }, 15000);
+      b.innerHTML = "<p>Checking the recorded response…</p>";
+      var cancelled = new Promise(function (_resolve, reject) {
+        controller.signal.addEventListener("abort", function () {
+          reject(new DOMException("canceled", "AbortError"));
+        }, { once: true });
+      });
+      async function deliver() {
+        var headers = await headersForAttempt(attempt);
+        delete headers["x-cosmaneura-client-turn-id"];
+        if (!currentGeneration(attempt.generation) || controller.signal.aborted) return;
+        var response = await fetch(url + "/embed/history", {
+          method: "POST", headers: headers, signal: controller.signal,
+          body: JSON.stringify({ schema_version: "1.0.0", mode: "turn",
+                                 client_turn_id: attempt.clientTurnId }),
+        });
+        if (!currentGeneration(attempt.generation) || state.chatController !== controller) return;
+        if (response.status === 401 || response.status === 403) { lockNamedBeta(); return; }
+        if (response.headers.get("x-cosmaneura-embed-version") !== embedVersion)
+          throw new Error("unverified integration");
+        if (!response.ok) {
+          b.innerHTML = "<p>" + esc(response.status === 404
+            ? "No recorded turn is available in this encounter. Your draft is preserved."
+            : "The recorded response is unavailable. Your draft is preserved.") + "</p>";
+          appendResponseCheck(b, attempt);
+          return;
+        }
+        var value = governedConversation(await response.json());
+        if (!currentGeneration(attempt.generation) || state.chatController !== controller) return;
+        if (!value || value.turns.length !== 1 ||
+            value.turns[0].client_turn_id !== attempt.clientTurnId) throw new Error("unmatched response");
+        var context = await opts.getContext();
+        if (!currentGeneration(attempt.generation) || state.chatController !== controller) return;
+        if (!governedContext(context, attempt.recordId)) { loadThreadFor(null); return; }
+        var status = value.turns[0].state;
+        if (status !== "completed") { paintReadStatus(b, attempt, status); return; }
+        var message = value.history.messages[1];
+        render(b, { answer: message.content, presentation: message.presentation,
+          citations: [], doctrinal_review: null, structured: {}, safety_notice: null,
+        }, attempt.recordId, attempt.generation, true);
+        if (state.retryAttempt === attempt) state.retryAttempt = null;
+        // Reading a stored response never replaces a new draft or resends it.
+      }
+      try {
+        await Promise.race([deliver(), cancelled]);
+      } catch (error) {
+        if (currentGeneration(attempt.generation) && error.authenticationUnavailable) lockNamedBeta();
+        else if (currentGeneration(attempt.generation) && state.chatController === controller) {
+          b.innerHTML = "<p>The recorded response could not be verified. Your draft is preserved.</p>";
+          appendResponseCheck(b, attempt);
+        }
+      } finally {
+        clearTimeout(timeout);
+        if (currentGeneration(attempt.generation) && state.chatController === controller) {
+          state.chatController = null; state.busy = false; syncControls();
+        }
+      }
+    }
+
     function paintAttemptFailure(b, attempt, message, allowRetry) {
       b.innerHTML = "<p>" + esc(message) + "</p>";
       input.value = attempt.text;
       input.style.height = "auto";
       input.style.height = Math.min(input.scrollHeight, 110) + "px";
       state.retryAttempt = attempt;
+      appendResponseCheck(b, attempt);
       if (!allowRetry) return;
       var retry = document.createElement("button");
       retry.className = "cnp-retry";
@@ -1452,7 +1585,7 @@
           if (r.status === 426) {
             message = "This assistant integration needs to be updated. Reload this page.";
           } else if (r.status === 503 && problem && problem.retryable === false) {
-            message = "This turn is still pending. Your draft and turn identifier are preserved; reload its governed history later before starting a new request.";
+            message = "The response has not been verified. Your draft and turn identifier are preserved; check for a recorded response before starting a new request.";
           } else if (canRetry) {
             message = "The assistant is temporarily unavailable. Your exact draft is preserved.";
           } else {
@@ -1467,7 +1600,7 @@
         if (d.client_turn_id !== attempt.clientTurnId) {
           paintAttemptFailure(
             b, attempt,
-            "The assistant response could not be matched to this turn. Reload its governed history.",
+            "The assistant response could not be matched to this turn. Check for its recorded response.",
             false
           );
           return;

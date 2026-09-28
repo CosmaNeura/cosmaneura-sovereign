@@ -19,6 +19,7 @@ from app.agents.visit_prep_agent import VisitPrepAgent
 from app.clients.platform_conversation import (
     ConversationDeliveryError, ConversationReceipt, PlatformConversationClient, PlatformTurn,
 )
+from app.clients.conversation_read import ConversationContextResponse
 from app.clients.provider_question import ProviderQuestionClient
 from app.clients.platform_usage import (
     PlatformUsageClient, activate_usage_context, deactivate_usage_context,
@@ -238,10 +239,16 @@ def sovereign(state="ready", *, needs_context=True, record_capability=True, enab
         platform_agent_api_base_url="https://platform.example",
         platform_agent_api_scope="api://synthetic/.default", platform_workload_client_id="synthetic-client",
     )
+    history = AsyncMock()
+    history.read_context.return_value = ConversationContextResponse.model_validate({
+        "tool_call_ref": "history_context_fictional", "status": "completed",
+        "result": {"schema_version": "1.0.0", "messages": [], "source_version_digest": None},
+    })
     service = Sovereign(
         settings, mount_resolver=Resolver(record_capability), platform_audit_client=AsyncMock(),
         platform_usage_client=AsyncMock(), platform_conversation_client=conversation,
         session_prep_client=AsyncMock(), provider_question_client=context,
+        conversation_read_client=history,
     )
     service.router.route = AsyncMock(return_value=(Intent.ENGAGEMENT, DoctrinalSensitivity.LOW, ""))
     service.router.needs_provider_context = AsyncMock(return_value=needs_context)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from app.clients.conversation_read import CONVERSATION_RULES
 from app.clients.llm import LLMClient
 from app.clients.magisterium import MagisteriumClient
 from app.compliance.phi import deidentify
@@ -119,14 +120,14 @@ class Router:
                 usage_purpose="doctrinal_routing",
             )
             result = await self.llm.classify_json(
-                system=_SYSTEM,
+                system=_SYSTEM + CONVERSATION_RULES,
                 prompt=f"{context}\nDoctrinal authority's read: {guidance}",
                 usage_call_kind="routing",
                 usage_purpose="intent_routing",
             )
         else:  # HYBRID (default): fast LLM distributes the task.
             result = await self.llm.classify_json(
-                system=_SYSTEM,
+                system=_SYSTEM + CONVERSATION_RULES,
                 prompt=context,
                 usage_call_kind="routing",
                 usage_purpose="intent_routing",

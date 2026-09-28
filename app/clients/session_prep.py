@@ -88,6 +88,8 @@ def _safe_retry(response: httpx.Response) -> tuple[bool, float]:
     return True, min(delay, MAX_SESSION_PREP_SECONDS)
 
 class SessionPrepClient:
+    _response_limit = MAX_SESSION_PREP_RESPONSE_BYTES
+
     def __init__(
         self,
         *,
@@ -134,10 +136,11 @@ class SessionPrepClient:
         headers: dict[str, str],
         payload: dict[str, object],
         timeout_seconds: float,
+        endpoint: Optional[str] = None,
     ) -> httpx.Response:
         async def send(client: httpx.AsyncClient) -> httpx.Response:
             request = client.build_request(
-                "POST", self._endpoint, headers=headers, json=payload,
+                "POST", endpoint or self._endpoint, headers=headers, json=payload,
             )
             response = await client.send(
                 request, stream=True, follow_redirects=False,
@@ -158,20 +161,20 @@ class SessionPrepClient:
                         declared_size = int(declared[0])
                     except ValueError:
                         declared_size = -1
-                    if not 0 <= declared_size <= MAX_SESSION_PREP_RESPONSE_BYTES:
+                    if not 0 <= declared_size <= self._response_limit:
                         raise SessionPrepDeliveryError(
                             "schema", status_code=503, retryable=False,
                         )
                 body = bytearray()
                 if response.is_stream_consumed:
-                    if len(response.content) > MAX_SESSION_PREP_RESPONSE_BYTES:
+                    if len(response.content) > self._response_limit:
                         raise SessionPrepDeliveryError(
                             "schema", status_code=503, retryable=False,
                         )
                     body.extend(response.content)
                 else:
                     async for chunk in response.aiter_raw():
-                        if len(chunk) > MAX_SESSION_PREP_RESPONSE_BYTES - len(body):
+                        if len(chunk) > self._response_limit - len(body):
                             raise SessionPrepDeliveryError(
                                 "schema", status_code=503, retryable=False,
                             )
