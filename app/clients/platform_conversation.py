@@ -357,15 +357,21 @@ class PlatformConversationClient:
         answer: str,
         outcome: ConversationOutcome,
         presentation: dict[str, object],
+        provider_context_ref: Optional[str] = None,
     ) -> ConversationReceipt:
+        payload: dict[str, object] = {
+            "phase": "final_response",
+            "outcome": outcome,
+            "response": {"content_type": "text/plain", "content": answer},
+            "presentation": presentation,
+        }
+        if provider_context_ref is not None:
+            if not re.fullmatch(r"[A-Za-z0-9._~-]{8,160}", provider_context_ref):
+                raise ValueError("invalid provider context reference")
+            payload["provider_context_ref"] = provider_context_ref
         return await self._write(
             turn=turn,
             phase="final_response",
             expected_turn_ref=expected_turn_ref,
-            payload={
-                "phase": "final_response",
-                "outcome": outcome,
-                "response": {"content_type": "text/plain", "content": answer},
-                "presentation": presentation,
-            },
+            payload=payload,
         )
