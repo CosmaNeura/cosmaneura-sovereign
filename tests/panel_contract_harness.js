@@ -41,7 +41,7 @@ class FakeElement {
     if (this.className === "cnp-root" && value.includes("cnp-rail")) {
       const names = ["cnp-gate", "cnp-fab", "cnp-rail", "cnp-thread", "cnp-chips", "cnp-in",
                      "cnp-send", "cnp-fmt", "cnp-sandbox", "cnp-sub", "cnp-x",
-                     "cnp-prep", "cnp-prep-go", "cnp-prep-view", "cnp-prep-progress"];
+                     "cnp-prep", "cnp-prep-go", "cnp-prep-toggle", "cnp-prep-view", "cnp-prep-progress"];
       this._mountNodes = {};
       names.forEach(name => {
         const node = new FakeElement(
@@ -69,7 +69,12 @@ class FakeElement {
       document.activeElement = null;
   }
   click() { if (typeof this.onclick === "function") return this.onclick(); }
-  setAttribute() {}
+  setAttribute(name, value) {
+    if (!this._attributes) this._attributes = {};
+    this._attributes[name] = String(value);
+  }
+  getAttribute(name) { return this._attributes?.[name] ?? null; }
+  contains(node) { return node === this || this.children.some(child => child.contains(node)); }
   remove() {
     if (this.parentNode)
       this.parentNode.children = this.parentNode.children.filter(child => child !== this);
@@ -534,6 +539,11 @@ async function main() {
   prepController.open();
   const prepGo = prepController.root.querySelector(".cnp-prep-go");
   const prepView = prepController.root.querySelector(".cnp-prep-view");
+  const prepToggle = prepController.root.querySelector(".cnp-prep-toggle");
+  assert(prepToggle.hidden && prepToggle.getAttribute("aria-expanded") === "false",
+         "brief toggle was exposed before a brief existed");
+  assert(prepToggle.getAttribute("aria-controls") === prepView.id && prepView.tabIndex === 0,
+         "brief disclosure is not linked to its keyboard-scrollable region");
   assert(prepController.root.querySelector(".cnp-prep").hidden === false,
          "governed Session Prep path did not reveal the action");
   const prepChatStart = chatRequests.length;
@@ -566,6 +576,23 @@ async function main() {
          "prepared brief was not projected directly");
   assert(find(prepView, node => node.textContent.includes("1 source")),
          "human-readable source summary was not rendered");
+  const disclosureCalls = sessionPrepRequests.length;
+  const disclosureAuth = tokenSequence;
+  const retainedBrief = prepView.children[0];
+  prepView.focus();
+  prepToggle.click();
+  assert(prepView.hidden && prepToggle.textContent === "Show brief" &&
+         prepToggle.getAttribute("aria-expanded") === "false",
+         "hide brief did not update visible and accessible disclosure state");
+  assert(document.activeElement === prepToggle,
+         "hiding the brief left keyboard focus inside hidden content");
+  prepToggle.click();
+  assert(!prepView.hidden && prepToggle.textContent === "Hide brief" &&
+         prepToggle.getAttribute("aria-expanded") === "true",
+         "show brief did not restore the same brief");
+  assert(prepView.children[0] === retainedBrief && sessionPrepRequests.length === disclosureCalls &&
+         tokenSequence === disclosureAuth,
+         "display-only disclosure fetched, reauthenticated, or rerendered the brief");
   let renderedPrepSurface = "";
   walk(prepController.root, node => {
     renderedPrepSurface += " " + node.textContent + " " + node.innerHTML;
@@ -587,6 +614,8 @@ async function main() {
          "pending state was not rendered");
   assert(!find(prepView, node => node.textContent === "Direct prepared-brief content."),
          "pending state retained prior clinical content");
+  assert(prepToggle.hidden && !prepView.hidden,
+         "pending status was hidden behind a brief toggle");
 
   // A refreshing result may render only the stale brief returned by that call.
   sessionPrepMode = "refreshing";
@@ -632,6 +661,11 @@ async function main() {
   const recordSwitch = prepController.setRecord(currentRecord);
   assert(prepView.hidden === true && prepView.children.length === 0,
          "record switch did not synchronously clear Session Prep");
+  const switchedCount = sessionPrepRequests.length;
+  prepToggle.click();
+  assert(prepToggle.hidden && prepView.hidden && prepToggle.getAttribute("aria-expanded") === "false" &&
+         sessionPrepRequests.length === switchedCount,
+         "retained disclosure control revived cleared record content");
   releaseSessionPrep(); releaseSessionPrep = null;
   await lateRecordResponse;
   assert(!find(prepView, node => node.textContent === "Direct prepared-brief content."),
@@ -663,6 +697,9 @@ async function main() {
   await prepGo.onclick();
   assert(prepView.hidden === true && prepView.children.length === 0,
          "revocation retained Session Prep content");
+  prepToggle.click();
+  assert(prepToggle.hidden && prepView.hidden,
+         "retained disclosure control revived revoked brief content");
   assert(prepController.root.querySelector(".cnp-gate").hidden === false,
          "revocation did not restore the closed named-beta gate");
   prepController.destroy();

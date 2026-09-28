@@ -44,9 +44,11 @@
     "border-radius:14px;border:1px solid var(--line);cursor:pointer;font-weight:800;font-size:20px;",
     "background:linear-gradient(135deg,var(--accent),#9c7a2f);color:#1a130a;box-shadow:0 6px 22px rgba(0,0,0,.4)}",
     ".cnp-rail{position:fixed;top:0;right:0;bottom:0;z-index:99999;width:400px;max-width:96vw;",
+    "box-sizing:border-box;max-height:100dvh;overflow:hidden;",
     "display:none;flex-direction:column;background:var(--bg);border-left:1px solid var(--line);",
     "box-shadow:-12px 0 34px rgba(0,0,0,.45)}",
     ".cnp-rail.cnp-open{display:flex}",
+    ".cnp-head,.cnp-chips,.cnp-foot{flex-shrink:0}",
     ".cnp-head{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line)}",
     ".cnp-logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#9c7a2f);",
     "display:grid;place-items:center;font-weight:800;color:#1a130a;font-size:13px}",
@@ -56,19 +58,25 @@
     "letter-spacing:.45px;text-transform:uppercase}",
     ".cnp-sandbox[hidden]{display:none}",
     ".cnp-x{margin-left:auto;background:none;border:none;color:var(--muted);font-size:19px;cursor:pointer}",
-    ".cnp-prep{padding:10px 14px;border-bottom:1px solid var(--line);background:#111a26}",
-    ".cnp-prep[hidden]{display:none}.cnp-prep-go{width:100%;background:var(--panel2);",
+    ".cnp-prep{display:flex;flex-direction:column;flex:0 1 auto;min-height:0;max-height:45%;",
+    "box-sizing:border-box;overflow:hidden;padding:10px 14px;border-bottom:1px solid var(--line);background:#111a26}",
+    ".cnp-prep[hidden]{display:none}.cnp-prep-actions{display:flex;gap:6px;flex-shrink:0}",
+    ".cnp-prep-go{flex:1;min-width:0;background:var(--panel2);",
     "border:1px solid var(--accent2);color:var(--ink);border-radius:9px;padding:8px 11px;",
     "font-weight:700;cursor:pointer}.cnp-prep-go:disabled{opacity:.5}",
+    ".cnp-prep-toggle{flex-shrink:0;background:var(--panel);border:1px solid var(--line);",
+    "color:var(--ink);border-radius:9px;padding:6px 8px;font-size:11px;cursor:pointer}",
+    ".cnp-prep-toggle[hidden]{display:none}",
     ".cnp-prep-view{margin-top:9px;padding:10px;border:1px solid var(--line);border-radius:9px;",
+    "min-height:0;overflow-y:auto;overscroll-behavior:contain;",
     "background:var(--panel)}.cnp-prep-view[hidden]{display:none}",
     ".cnp-prep-state{font-size:10px;text-transform:uppercase;letter-spacing:.55px;",
     "color:var(--accent);font-weight:800}.cnp-prep-meta{font-size:10.5px;color:var(--muted);margin-top:3px}",
-    ".cnp-prep-progress{font-size:11px;color:var(--muted);margin-top:5px}",
+    ".cnp-prep-progress{flex-shrink:0;font-size:11px;color:var(--muted);margin-top:5px}",
     ".cnp-prep-section{margin-top:9px}.cnp-prep-section h4{font-size:11px;margin:0 0 3px;",
     "color:#b9dcef;text-transform:uppercase;letter-spacing:.4px}.cnp-prep-section p{margin:0}",
     ".cnp-prep-section ul{margin:2px 0 0;padding-left:18px}",
-    ".cnp-thread{flex:1;overflow-y:auto;padding:14px}",
+    ".cnp-thread{flex:1 1 0;min-height:0;overflow-y:auto;padding:14px}",
     ".cnp-msg{margin:10px 0;display:flex}.cnp-msg.cnp-u{justify-content:flex-end}",
     ".cnp-b{max-width:88%;padding:10px 13px;border-radius:12px;background:var(--panel);",
     "border:1px solid var(--line);font-size:13.5px}",
@@ -105,7 +113,7 @@
     "border-radius:999px;padding:4px 10px;cursor:pointer}.cnp-chip:hover{color:var(--ink);border-color:var(--accent2)}",
     ".cnp-foot{border-top:1px solid var(--line);padding:10px 14px}",
     ".cnp-row{display:flex;gap:7px;align-items:flex-end}",
-    ".cnp-in{flex:1;resize:none;background:var(--panel);border:1px solid var(--line);color:var(--ink);",
+    ".cnp-in{flex:1;min-width:0;box-sizing:border-box;resize:none;background:var(--panel);border:1px solid var(--line);color:var(--ink);",
     "border-radius:10px;padding:9px 11px;font:inherit;font-size:13.5px;max-height:110px;outline:none}",
     ".cnp-in:focus{border-color:var(--accent2)}",
     ".cnp-send{background:var(--accent);color:#1a130a;border:none;border-radius:10px;",
@@ -120,6 +128,7 @@
     "margin-right:3px;animation:cnpb 1s infinite}.cnp-typing span:nth-child(2){animation-delay:.2s}",
     ".cnp-typing span:nth-child(3){animation-delay:.4s}",
     "@keyframes cnpb{0%,60%,100%{opacity:.3}30%{opacity:1}}",
+    "@media(max-height:600px){.cnp-prep{max-height:35%}}",
   ].join("");
 
   var SUPPRESSION_NAMES = [
@@ -128,6 +137,7 @@
   ];
   var OPAQUE_REF = /^[A-Za-z0-9._~-]{8,160}$/;
   var UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  var panelSequence = 0;
 
   function freshClientTurnId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function")
@@ -398,6 +408,7 @@
       accessGranted: false, localFixture: false,
       recordReady: false, recordHeaders: null,
       sessionPrepAvailable: false, prepBusy: false, prepCycle: null,
+      prepHasBrief: false, prepCollapsed: false,
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
       recordController: null, chatController: null, prepController: null,
       retryAttempt: null,
@@ -420,7 +431,9 @@
       '    <div class="cnp-sub">Named beta · access required</div>' +
       '    <div class="cnp-sandbox" hidden></div></div>' +
       '    <button class="cnp-x" title="Close">×</button></div>' +
-      '  <div class="cnp-prep" hidden><button class="cnp-prep-go" type="button">Open Session Prep</button>' +
+      '  <div class="cnp-prep" hidden><div class="cnp-prep-actions">' +
+      '    <button class="cnp-prep-go" type="button">Open Session Prep</button>' +
+      '    <button class="cnp-prep-toggle" type="button" aria-expanded="false" hidden>Show brief</button></div>' +
       '    <div class="cnp-prep-progress" role="status" aria-live="polite"></div>' +
       '    <div class="cnp-prep-view" hidden></div></div>' +
       '  <div class="cnp-thread"></div>' +
@@ -444,8 +457,22 @@
         fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox"),
         sub = root.querySelector(".cnp-sub"), prep = root.querySelector(".cnp-prep"),
         prepGo = root.querySelector(".cnp-prep-go"),
+        prepToggle = root.querySelector(".cnp-prep-toggle"),
         prepProgress = root.querySelector(".cnp-prep-progress"),
         prepView = root.querySelector(".cnp-prep-view");
+    prepView.id = "cnp-prep-view-" + (++panelSequence);
+    prepView.tabIndex = 0;
+    prepView.setAttribute("role", "region");
+    prepView.setAttribute("aria-label", "Session Prep brief");
+    prepToggle.setAttribute("aria-controls", prepView.id);
+
+    function syncPrepDisclosure() {
+      var expanded = state.prepHasBrief && !state.prepCollapsed;
+      prepToggle.hidden = !state.prepHasBrief;
+      prepToggle.setAttribute("aria-expanded", String(expanded));
+      prepToggle.textContent = expanded ? "Hide brief" : "Show brief";
+      if (state.prepHasBrief) prepView.hidden = state.prepCollapsed;
+    }
 
     function bubble(cls) {
       var w = document.createElement("div"); w.className = "cnp-msg " + (cls === "u" ? "cnp-u" : "");
@@ -474,8 +501,12 @@
       state.prepController = null;
       state.prepBusy = false;
       prepProgress.textContent = "";
+      state.prepHasBrief = false;
+      state.prepCollapsed = false;
       prepView.innerHTML = "";
       prepView.hidden = true;
+      prepView.scrollTop = 0;
+      syncPrepDisclosure();
     }
 
     function listen(target, event, handler, scope) {
@@ -1100,6 +1131,9 @@
         ? "Your prepared brief is ready." : "Session Prep is unavailable.";
       prepView.innerHTML = "";
       prepView.hidden = false;
+      state.prepHasBrief = value.state === "ready" || value.state === "refreshing";
+      if (!state.prepHasBrief) state.prepCollapsed = false;
+      syncPrepDisclosure();
       var stateLabel = document.createElement("div"); stateLabel.className = "cnp-prep-state";
       stateLabel.textContent = value.state === "ready" ? "Session Prep ready" :
         value.state === "refreshing" ? "Session Prep refreshing" :
@@ -1162,6 +1196,9 @@
       prepProgress.textContent = "Session Prep could not be updated.";
       prepView.innerHTML = "";
       prepView.hidden = false;
+      state.prepHasBrief = false;
+      state.prepCollapsed = false;
+      syncPrepDisclosure();
       var label = document.createElement("div"); label.className = "cnp-prep-state";
       label.textContent = "Session Prep unavailable"; prepView.appendChild(label);
       var text = document.createElement("p"); text.textContent = message;
@@ -1568,6 +1605,12 @@
     fab.onclick = function () { setOpen(!state.open); };
     root.querySelector(".cnp-x").onclick = function () { setOpen(false); };
     prepGo.onclick = requestSessionPrep;
+    prepToggle.onclick = function () {
+      if (!state.prepHasBrief || !currentPrep(state.prepCycle)) return;
+      state.prepCollapsed = !state.prepCollapsed;
+      if (state.prepCollapsed && prepView.contains(document.activeElement)) prepToggle.focus();
+      syncPrepDisclosure();
+    };
     listen(document, "visibilitychange", function () {
       if (document.hidden) { clearSessionPrep(); syncControls(); }
     });

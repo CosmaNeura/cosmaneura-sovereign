@@ -116,6 +116,7 @@ async function fixture() {
   f.panel.open();
   f.view = f.panel.root.querySelector(".cnp-prep-view");
   f.go = f.panel.root.querySelector(".cnp-prep-go");
+  f.toggle = f.panel.root.querySelector(".cnp-prep-toggle");
   f.progress = f.panel.root.querySelector(".cnp-prep-progress");
   f.has = text => f.progress.textContent.includes(text) ||
     !!find(f.view, node => node.textContent.includes(text));
@@ -134,6 +135,11 @@ async function main() {
     const f = await fixture();
     f.mode = initial;
     await f.go.onclick();
+    if (initial === "refreshing") {
+      f.toggle.click();
+      assert(f.view.hidden && f.toggle.getAttribute("aria-expanded") === "false",
+             "refreshing brief could not be collapsed");
+    }
     const staleButton = f.button(initial === "pending" ? "Check again" : "Refresh Session Prep");
     const auth = f.authCalls, context = f.contextCalls;
     assert(f.has("Checking automatically"), "waiting feedback absent");
@@ -142,6 +148,8 @@ async function main() {
     f.mode = "ready";
     await advance(1);
     assert(f.has("Session Prep ready") && f.has("Synthetic completed brief"), "did not complete automatically");
+    assert(f.view.hidden === (initial === "refreshing"),
+           "background completion overrode the clinician's disclosure state");
     assert(f.authCalls === auth + 1 && f.contextCalls === context + 1, "poll reused authority");
     assert(f.requests[0].body !== f.requests[1].body, "logical poll replayed pending turn");
     for (const request of f.requests) {
@@ -151,6 +159,8 @@ async function main() {
     assert(timers.size === 0, "ready state continued polling");
     // A retained prior cycle button must not replace a more recent result.
     await f.go.onclick();
+    assert(!f.view.hidden && f.toggle.getAttribute("aria-expanded") === "true",
+           "a new explicit Session Prep action did not reset the disclosure");
     const count = f.requests.length;
     await staleButton.onclick();
     assert(f.requests.length === count, "old cycle button launched a request");
