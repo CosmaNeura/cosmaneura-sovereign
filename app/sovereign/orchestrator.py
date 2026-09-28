@@ -63,6 +63,10 @@ from app.clients.platform_usage import (
     successful_usage_refs,
     usage_reporting_complete,
 )
+from app.clients.provider_question import ProviderQuestionClient
+from app.clients.provider_question_contract import (
+    ProviderQuestionArguments, ProviderQuestionRequest, ProviderQuestionResult,
+)
 from app.clients.session_prep import (
     SessionPrepClient,
     SessionPrepDeliveryError,
@@ -173,6 +177,11 @@ _AUTHORITY_METADATA_KEYS = frozenset({
     "labs_request",
     "patient_ref",
     "patient_name",
+    "provider_context",
+    "provider_context_ref",
+    "prepared_brief",
+    "provenance",
+    "source_version_digest",
 })
 
 _DEFAULT_SANDBOX_LOOKBACK_DAYS = 730
@@ -290,7 +299,8 @@ class Sovereign:
                  ] = None,
                  platform_usage_client: Optional[PlatformUsageClient] = None,
                  mount_bootstrapper: Optional[MountBootstrapper] = None,
-                 session_prep_client: Optional[SessionPrepClient] = None):
+                 session_prep_client: Optional[SessionPrepClient] = None,
+                 provider_question_client: Optional[ProviderQuestionClient] = None):
         self.s = settings or get_settings()
         self.llm = LLMClient(self.s)
         self.magisterium = MagisteriumClient(self.s)
@@ -310,7 +320,7 @@ class Sovereign:
                     or platform_usage_client is None
                     or (
                         self.s.feature_session_prep
-                        and session_prep_client is None
+                        and (session_prep_client is None or provider_question_client is None)
                     )
                 )
                 else None
@@ -351,6 +361,12 @@ class Sovereign:
                 if self.s.feature_session_prep
                 else None
             )
+            self.provider_question = provider_question_client or (
+                ProviderQuestionClient(
+                    platform_base_url=self.s.platform_agent_api_base_url or "",
+                    workload_token_provider=token_provider,
+                ) if self.s.feature_session_prep else None
+            )
         else:
             self.mount_resolver = mount_resolver or PinnedResolver.from_settings(self.s)
             self.mount_bootstrapper = mount_bootstrapper
@@ -358,6 +374,7 @@ class Sovereign:
             self.platform_conversation = platform_conversation_client
             self.platform_usage = platform_usage_client
             self.session_prep = session_prep_client
+            self.provider_question = provider_question_client
         self.agents = {
             Intent.REFERRAL: ReferralAgent(self.s, self.llm),
             Intent.CONCIERGE: ConciergeAgent(self.s, self.llm),
@@ -827,6 +844,63 @@ class Sovereign:
                 safety_notice="capability_denied",
             )
 
+        # This optional read follows accepted-turn, BAA, and capability gates.
+        # Core derives the current record and revalidates this receipt at final
+        # acceptance. Neither a body hint nor the classifier grants authority.
+        provider_context: ProviderQuestionResult | None = None
+        provider_context_ref: str | None = None
+        if (
+            self.s.feature_session_prep and platform_turn is not None
+            and profile.persona == Persona.PROVIDER
+            and intent in {Intent.ENGAGEMENT, Intent.VISIT_PREP, Intent.ETHICS_CONSULT}
+        ):
+            try:
+                needs_context = await self.router.needs_provider_context(request, intent)
+            except Exception:
+                deactivate_usage_context()
+                raise MountResolutionError(
+                    status_code=503, code="PROVIDER_CONTEXT_SELECTION_UNAVAILABLE",
+                    retryable=False,
+                ) from None
+            if needs_context:
+                if (
+                    "session-prep:read" not in mount.capabilities
+                    or self.provider_question is None or user_receipt is None
+                ):
+                    return await self._finalize(
+                        "The prepared visit summary is unavailable for this question. "
+                        "I cannot confirm facts from prior visits without it.",
+                        intent, profile, trace_id, audit_turn=audit_turn,
+                        platform_turn=platform_turn, user_receipt=user_receipt,
+                        safety_notice="provider_context_unavailable",
+                    )
+                try:
+                    context_response = await self.provider_question.read(
+                        turn=platform_turn,
+                        request=ProviderQuestionRequest(arguments=ProviderQuestionArguments(
+                            source_turn_ref=user_receipt.turn_ref,
+                        )),
+                    )
+                except SessionPrepDeliveryError as error:
+                    deactivate_usage_context()
+                    raise MountResolutionError(
+                        status_code=409 if error.category == "conflict" else 503,
+                        code=f"PROVIDER_CONTEXT_{error.category.upper()}",
+                        retryable=False,
+                    ) from None
+                provider_context_ref = context_response.tool_call_ref
+                if context_response.result.state != "ready":
+                    return await self._finalize(
+                        "The prepared visit summary is unavailable for this question. "
+                        "I cannot confirm facts from prior visits. Open Session Prep "
+                        "to build or refresh the summary, then ask a new question.",
+                        intent, profile, trace_id, audit_turn=audit_turn,
+                        platform_turn=platform_turn, user_receipt=user_receipt,
+                        safety_notice="provider_context_unavailable",
+                        provider_context_ref=provider_context_ref,
+                    )
+                provider_context = context_response.result
+
         # 3) Dispatch.
         if intent == Intent.DOCTRINAL:
             # Magisterium answers directly; scrub the question first (non-BAA).
@@ -863,6 +937,7 @@ class Sovereign:
                 audit_turn=audit_turn,
                 platform_turn=platform_turn,
                 user_receipt=user_receipt,
+                provider_context_ref=provider_context_ref,
                 safety_notice="capability_denied",
             )
         if intent == Intent.LAB_REVIEW:
@@ -1010,6 +1085,8 @@ class Sovereign:
                     content=None,
                     required=True,
                 )
+        elif provider_context is not None:
+            result = await agent.run(request, profile, provider_context=provider_context)
         else:
             result = await agent.run(request, profile)
         self.audit.record(trace_id=trace_id, profile=profile, event="agent_complete",
@@ -1067,6 +1144,7 @@ class Sovereign:
                               audit_turn=audit_turn,
                               platform_turn=platform_turn,
                               user_receipt=user_receipt,
+                              provider_context_ref=provider_context_ref,
                               citations=citations,
                               doctrinal=verdict, structured=result.data)
 
@@ -1274,6 +1352,7 @@ class Sovereign:
         sensitive_mode: bool = False, audit_turn: Optional[AuditTurn] = None,
         platform_turn: Optional[PlatformTurn] = None,
         user_receipt: Optional[ConversationReceipt] = None,
+        provider_context_ref: Optional[str] = None,
     ) -> ChatResponse:
         if sensitive_mode and intent != Intent.SENSITIVE_DISCLOSURE:
             raise ValueError("sensitive mode requires sensitive-disclosure intent")
@@ -1293,7 +1372,12 @@ class Sovereign:
                     code="CANONICAL_TURN_UNAVAILABLE",
                     retryable=True,
                 )
-            outcome = "refused" if safety_notice == "capability_denied" else "completed"
+            outcome = ("unavailable" if safety_notice == "provider_context_unavailable"
+                       else "refused" if safety_notice == "capability_denied" else "completed")
+            context_dependency = (
+                {"provider_context_ref": provider_context_ref}
+                if provider_context_ref is not None else {}
+            )
             try:
                 await self.platform_conversation.write_final_response(
                     turn=platform_turn,
@@ -1301,6 +1385,7 @@ class Sovereign:
                     answer=final,
                     outcome=outcome,
                     presentation=presentation.model_dump(mode="json"),
+                    **context_dependency,
                 )
             except ConversationDeliveryError as error:
                 deactivate_usage_context()
@@ -1327,7 +1412,8 @@ class Sovereign:
                 ) from None
         self.audit.record(trace_id=trace_id, profile=profile, event="egress",
                           content_for_hash=final)
-        status = "refused" if safety_notice == "capability_denied" else "completed"
+        status = ("failed" if safety_notice == "provider_context_unavailable"
+                  else "refused" if safety_notice == "capability_denied" else "completed")
         usage_refs = tuple(
             PlatformReference(kind="model_usage", ref=reference)
             for reference in successful_usage_refs()

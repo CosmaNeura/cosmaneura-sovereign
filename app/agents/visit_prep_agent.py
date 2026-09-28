@@ -31,6 +31,7 @@ controls the wording; default is "patient/clinician".
 from __future__ import annotations
 
 from app.agents.base import BaseAgent
+from app.clients.provider_question_contract import PROVIDER_CONTEXT_RULES, ProviderQuestionResult
 from app.config import ComplianceProfile
 from app.schemas import AgentResult, ChatRequest
 
@@ -57,7 +58,8 @@ _SYSTEM = (
 class VisitPrepAgent(BaseAgent):
     name = "visit_prep_agent"
 
-    async def run(self, request: ChatRequest, profile: ComplianceProfile) -> AgentResult:
+    async def run(self, request: ChatRequest, profile: ComplianceProfile, *,
+                  provider_context: ProviderQuestionResult | None = None) -> AgentResult:
         self.require_baa_covered_llm(profile)
 
         # NB: no scrubbing here — like the engagement agent, this call is the
@@ -77,10 +79,14 @@ class VisitPrepAgent(BaseAgent):
         # Rolling longitudinal context from POST /digest — constant-size
         # multi-visit memory maintained by the host app per client.
         journey = request.metadata.get("journey_digest") or ""
+        if provider_context is not None:
+            # Platform context is server-owned; legacy browser bridges cannot
+            # supplement its reviewed source set.
+            prior = patient_profile = intake_summary = journey = ""
         fmt, fmt_rules = self.resolve_output_format(request)
 
         content = await self.llm.complete(
-            system=_SYSTEM,
+            system=_SYSTEM + (PROVIDER_CONTEXT_RULES if provider_context else ""),
             prompt=(f"Clinician's request: {request.message}\n"
                     f"Care model: {care_model}\n"
                     f"Terminology pair: {terminology}\n"
@@ -93,6 +99,8 @@ class VisitPrepAgent(BaseAgent):
                     + (f"<intake_summary>\n{intake_summary}\n</intake_summary>\n"
                        if intake_summary else "")
                     + f"<prior_sessions>\n{prior}\n</prior_sessions>\n"
+                    + (f"Prepared summary: {provider_context.prompt_text()}\n"
+                       if provider_context else "")
                     + f"\nOutput format requirement: {fmt_rules}\n"
                       "Produce the prep sheet."),
             max_tokens=700,

@@ -19,6 +19,7 @@ PHI handling — this is the agent most likely to touch PHI:
 from __future__ import annotations
 
 from app.agents.base import BaseAgent
+from app.clients.provider_question_contract import PROVIDER_CONTEXT_RULES, ProviderQuestionResult
 from app.config import ComplianceProfile, Persona
 from app.schemas import AgentResult, ChatRequest, Citation
 
@@ -39,7 +40,8 @@ _SYSTEM = (
 class EngagementAgent(BaseAgent):
     name = "engagement_agent"
 
-    async def run(self, request: ChatRequest, profile: ComplianceProfile) -> AgentResult:
+    async def run(self, request: ChatRequest, profile: ComplianceProfile, *,
+                  provider_context: ProviderQuestionResult | None = None) -> AgentResult:
         # NB: we deliberately do NOT scrub here — this agent's LLM call is the
         # BAA-covered path, and the explanation needs the real context. The
         # orchestrator guarantees this content is not forwarded to non-BAA hops.
@@ -50,15 +52,19 @@ class EngagementAgent(BaseAgent):
         # only at the orchestrator's arbitration gate, on a de-identified summary.
         self.require_baa_covered_llm(profile)
 
-        history = request.metadata.get("health_history") or ""
+        history = "" if provider_context else request.metadata.get("health_history") or ""
         audience = "clinician preparing for a visit" if profile.persona == Persona.PROVIDER \
             else "patient preparing for their own visit"
+        fmt, fmt_rules = self.resolve_output_format(request)
 
         content = await self.llm.complete(
-            system=_SYSTEM,
+            system=_SYSTEM + (PROVIDER_CONTEXT_RULES if provider_context else ""),
             prompt=(f"Audience: {audience}\n"
                     f"Person's message: {request.message}\n"
                     f"Known history/context: {history}\n\n"
+                    + (f"Prepared summary: {provider_context.prompt_text()}\n"
+                       if provider_context else "")
+                    + f"Output format requirement: {fmt_rules}\n"
                     "Produce the plain-language explanation and the question list."),
             max_tokens=1100,
         )
@@ -67,5 +73,5 @@ class EngagementAgent(BaseAgent):
             content=content,
             citations=[Citation(source="MedlinePlus (suggested reference)",
                                 url="https://medlineplus.gov/")],
-            data={},
+            data={"output_format": fmt},
         )

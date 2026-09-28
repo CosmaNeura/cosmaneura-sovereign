@@ -26,6 +26,7 @@ PHI handling — mirrors the engagement agent:
 from __future__ import annotations
 
 from app.agents.base import BaseAgent
+from app.clients.provider_question_contract import PROVIDER_CONTEXT_RULES, ProviderQuestionResult
 from app.clients.pubmed import LINACRE_JOURNAL, PubMedClient
 from app.compliance.phi import deidentify
 from app.config import ComplianceProfile
@@ -65,7 +66,8 @@ class EthicsConsultAgent(BaseAgent):
         super().__init__(*args, **kwargs)
         self.pubmed = PubMedClient(self.s)
 
-    async def run(self, request: ChatRequest, profile: ComplianceProfile) -> AgentResult:
+    async def run(self, request: ChatRequest, profile: ComplianceProfile, *,
+                  provider_context: ProviderQuestionResult | None = None) -> AgentResult:
         self.require_baa_covered_llm(profile)
 
         # Non-BAA literature search ahead -> derive the topic from SCRUBBED
@@ -85,13 +87,15 @@ class EthicsConsultAgent(BaseAgent):
         evidence = catholic + [e for e in general
                                if e["pmid"] not in {c["pmid"] for c in catholic}]
 
-        case_context = request.metadata.get("case_context") or ""
+        case_context = "" if provider_context else request.metadata.get("case_context") or ""
         fmt, fmt_rules = self.resolve_output_format(request)
         content = await self.llm.complete(
-            system=_SYSTEM,
+            system=_SYSTEM + (PROVIDER_CONTEXT_RULES if provider_context else ""),
             prompt=(f"Clinician's question: {request.message}\n"
                     f"Case context: {case_context}\n"
-                    f"<published_literature>\n{evidence}\n</published_literature>\n"
+                    + (f"Prepared summary: {provider_context.prompt_text()}\n"
+                       if provider_context else "")
+                    + f"<published_literature>\n{evidence}\n</published_literature>\n"
                     f"\nOutput format requirement: {fmt_rules}\n"
                     "Produce the structured consult prep."),
             max_tokens=1200,
