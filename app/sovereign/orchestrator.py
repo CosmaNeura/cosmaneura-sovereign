@@ -38,7 +38,7 @@ from pydantic import ValidationError
 from app.agents.base import BaseAgent
 from app.agents.concierge_agent import ConciergeAgent
 from app.agents.engagement_agent import EngagementAgent
-from app.agents.ethics_agent import EthicsConsultAgent
+from app.agents.ethics_agent import EthicsConsultAgent, LITERATURE_NOTICES
 from app.agents.labs_agent import LabReviewAgent
 from app.agents.plan_workbench_agent import PlanWorkbenchAgent
 from app.agents.referral_agent import ReferralAgent
@@ -1208,6 +1208,13 @@ class Sovereign:
                     answer = (
                         "A note in keeping with Catholic teaching: " + verdict.revised_content
                     )
+
+            if intent == Intent.ETHICS_CONSULT:
+                # Deterministic availability disclosure follows any doctrinal
+                # replacement, then enters the canonical answer and download.
+                notice = LITERATURE_NOTICES.get(result.data.get("literature_status"))
+                if notice:
+                    answer += "\n\n" + notice
 
             citations = list(result.citations) + list(verdict.citations)
             return await self._finalize(answer, intent, profile, trace_id,
