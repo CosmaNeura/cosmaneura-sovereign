@@ -643,8 +643,8 @@
         (w.paths || []).some(function (path) { return path.intent === "session_prep"; });
       input.readOnly = state.localFixture;
       if (state.localFixture) fmt.value = "chat";
-      sub.textContent = state.localFixture ? "Local synthetic walkthrough" : state.persona === "provider"
-        ? "Faithful clinical assistant" : "Faithful health assistant";
+      sub.textContent = state.localFixture ? "Local synthetic walkthrough"
+        : "Your personal AI assistant";
       input.placeholder = state.localFixture ? "Use a synthetic guided prompt…" : state.persona === "provider"
         ? "Ask about the open record…" : "Ask a health or values question…";
       syncControls();
