@@ -137,6 +137,11 @@ class Settings(BaseSettings):
     magisterium_api_key: Optional[str] = Field(default=None)
     magisterium_base_url: str = "https://www.magisterium.com/api/v1"
     magisterium_model: str = "magisterium-1"
+    # Per-read inactivity budget for REST responses, not a whole-turn deadline.
+    # Connect/write/pool continue to use request_timeout_seconds.
+    magisterium_read_timeout_seconds: float = Field(
+        default=90.0, ge=1.0, le=120.0, allow_inf_nan=False,
+    )
     magisterium_mcp_url: str = "https://mcp.magisterium.com"
     # Optional ADDITIVE doctrinal layer: let agents consult Magisterium's MCP
     # server inline (via Anthropic's MCP connector) while they reason, on top of
