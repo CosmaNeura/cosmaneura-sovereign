@@ -172,6 +172,17 @@ async function main() {
   let sessionPrepMode = "ready";
   let releaseSessionPrep = null;
   const sessionPrepRequests = [];
+  let historyReadMode = "completed", releaseHistoryRead = null;
+  const historyReadRequests = [];
+  function historyEnvelope(id, status) {
+    const common = { turn_ref: "turn_fictional_history", client_turn_id: id,
+                     recorded_at: "2026-09-28T12:00:00Z" };
+    const messages = [{ ...common, role: "user", content: "Recorded fictional question", presentation: null }];
+    if (status === "completed") messages.push({ ...common, role: "assistant",
+      content: "Exact stored fictional answer", presentation: { mode: "standard", suppress: [], human_contact: null } });
+    return { schema_version: "1.0.0", history: { thread_ref: "thread_fictional_history", messages, next_cursor: null },
+      turns: [{ ...common, state: status, outcome: status === "completed" ? "completed" : null }] };
+  }
   let humanContacts = 0;
   let historyNotifications = 0;
 
@@ -241,6 +252,17 @@ async function main() {
           resultMode === "unavailable" ? "context_not_available" : null,
       });
     }
+    if (url.endsWith("/embed/history")) {
+      historyReadRequests.push({ ...options, url });
+      const mode = historyReadMode;
+      if (mode === "never") return new Promise(() => {});
+      if (mode === "late") await new Promise(resolve => { releaseHistoryRead = resolve; });
+      if (["403", "404", "409"].includes(mode)) return response(Number(mode), {});
+      const requestBody = JSON.parse(options.body);
+      const value = historyEnvelope(requestBody.client_turn_id, mode === "pending" || mode === "stale" ? mode : "completed");
+      if (mode === "mismatch") value.turns[0].client_turn_id = "99999999-9999-4999-8999-999999999999";
+      return response(200, value);
+    }
     assert(url.endsWith("/chat"), "unexpected URL");
     chatRequests.push({
       url,
@@ -248,6 +270,11 @@ async function main() {
       authorization: options.headers.authorization,
       turn: options.headers["x-cosmaneura-client-turn-id"],
     });
+    if (chatMode === "lost-final") {
+      return response(503, { type: "https://contracts.cosmaneura.com/problems/service_unavailable",
+        title: "Service unavailable", status: 503, code: "SERVICE_UNAVAILABLE", detail: "Unverified response",
+        trace_id: "trace_fictional_lost_final", retryable: false });
+    }
     if (chatMode === "service-retry") {
       chatMode = "success";
       return response(503, {
@@ -703,6 +730,95 @@ async function main() {
   assert(prepController.root.querySelector(".cnp-gate").hidden === false,
          "revocation did not restore the closed named-beta gate");
   prepController.destroy();
+
+  // Recovery is a read: a lost final is rendered from its exact canonical text
+  // and presentation, without a second chat/model request or replacing a draft.
+  sessionPrepAdvertised = false;
+  currentRecord = "record_history";
+  const oldTurnId = "11111111-1111-4111-8111-111111111111";
+  let hydrationState = "completed";
+  const recovery = window.CosmaNeuraPanel.mount({
+    sovereignUrl: "https://sovereign.example", embedVersion: "1.0",
+    getAuthToken: async () => `opaque-history-token-${++tokenSequence}-abcdefghijkl`,
+    getContext: async () => ({ clientId: currentRecord }), onHumanContact: async () => {},
+    loadHistory: async () => historyEnvelope(oldTurnId, hydrationState),
+  });
+  await recovery.setRecord(currentRecord);
+  recovery.open();
+  assert(find(recovery.root, node => node.innerHTML.includes("Exact stored fictional answer")),
+         "canonical recent history was not hydrated");
+  assert(find(recovery.root, node => node.textContent.includes("up to six turns")),
+         "recent-history limit was not visible");
+  const recoveryInput = recovery.root.querySelector(".cnp-in");
+  const recoverySend = recovery.root.querySelector(".cnp-send");
+  chatMode = "lost-final";
+  recoveryInput.value = "An uncertain fictional question";
+  await recoverySend.click();
+  assert(!find(recovery.root, node => node.textContent === "Retry this exact request"),
+         "accepted uncertainty offered model replay");
+  const chatCount = chatRequests.length;
+  const uncertainId = chatRequests[chatCount - 1].turn;
+  recoveryInput.value = "Keep my newer draft";
+  await find(recovery.root, node => node.textContent === "Check response").click();
+  assert(chatRequests.length === chatCount, "response check reran chat");
+  assert(recoveryInput.value === "Keep my newer draft", "response check overwrote the draft");
+  const readRequest = historyReadRequests.at(-1);
+  assert(readRequest.url === "https://sovereign.example/embed/history" &&
+         readRequest.body === JSON.stringify({ schema_version: "1.0.0", mode: "turn", client_turn_id: uncertainId }),
+         "response check sent more than the closed turn selector");
+  assert(!readRequest.headers["x-cosmaneura-client-turn-id"] &&
+         readRequest.headers.authorization !== chatRequests.at(-1).authorization,
+         "response check reused lineage or an old bearer");
+  assert(!find(recovery.root, node => node.textContent === "Download document"),
+         "restored response invented download data");
+
+  for (const status of ["pending", "stale"]) {
+    hydrationState = status;
+    await recovery.setRecord(currentRecord);
+    assert(!find(recovery.root, node => node.innerHTML.includes("Exact stored fictional answer")),
+           "pending/stale history exposed an assistant answer");
+    assert(find(recovery.root, node => node.innerHTML.includes(status === "pending"
+      ? "no recorded response yet" : "no longer current")), "missing governed turn status");
+  }
+  hydrationState = "pending";
+  await recovery.setRecord(currentRecord);
+  for (const mode of ["404", "409", "mismatch", "pending"]) {
+    historyReadMode = mode;
+    recoveryInput.value = "Preserve this draft";
+    await find(recovery.root, node => node.textContent === "Check response").click();
+    assert(recoveryInput.value === "Preserve this draft" && chatRequests.length === chatCount,
+           "failed or pending read changed draft or reran chat");
+    assert(!find(recovery.root, node => node.innerHTML.includes("Exact stored fictional answer")),
+           "failed or pending read exposed answer content");
+  }
+  historyReadMode = "never";
+  const actualSetTimeout = global.setTimeout;
+  global.setTimeout = (callback, delay, ...args) => actualSetTimeout(callback, delay === 15000 ? 0 : delay, ...args);
+  try {
+    await find(recovery.root, node => node.textContent === "Check response").click();
+  } finally { global.setTimeout = actualSetTimeout; }
+  assert(!recoverySend.disabled && recoveryInput.value === "Preserve this draft",
+         "an unresponsive history read left the composer busy");
+  assert(find(recovery.root, node => node.textContent === "Check response"),
+         "timed-out read did not retain an explicit read action");
+  historyReadMode = "late";
+  const lateRead = find(recovery.root, node => node.textContent === "Check response").click();
+  for (let i = 0; i < 12 && !releaseHistoryRead; i++) await Promise.resolve();
+  assert(releaseHistoryRead, "history read was not held");
+  currentRecord = "record_history_other";
+  const switchedHistory = recovery.setRecord(currentRecord);
+  assert(recovery.root.querySelector(".cnp-thread").children.length === 0,
+         "record switch retained old history while loading");
+  releaseHistoryRead(); releaseHistoryRead = null;
+  await lateRead; await switchedHistory;
+  assert(!find(recovery.root, node => node.innerHTML.includes("Exact stored fictional answer")),
+         "late prior-record history painted in a new scope");
+  historyReadMode = "403";
+  await find(recovery.root, node => node.textContent === "Check response").click();
+  assert(recovery.root.querySelector(".cnp-thread").children.length === 0 &&
+         recovery.root.querySelector(".cnp-gate").hidden === false,
+         "history revocation did not clear and close the panel");
+  recovery.destroy();
 }
 
 module.exports = { FakeElement, assert, find, response };

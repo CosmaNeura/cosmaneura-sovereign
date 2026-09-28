@@ -31,6 +31,7 @@ controls the wording; default is "patient/clinician".
 from __future__ import annotations
 
 from app.agents.base import BaseAgent
+from app.clients.conversation_read import CONVERSATION_RULES, conversation_prompt
 from app.clients.provider_question_contract import PROVIDER_CONTEXT_RULES, ProviderQuestionResult
 from app.config import ComplianceProfile
 from app.schemas import AgentResult, ChatRequest
@@ -86,7 +87,7 @@ class VisitPrepAgent(BaseAgent):
         fmt, fmt_rules = self.resolve_output_format(request)
 
         content = await self.llm.complete(
-            system=_SYSTEM + (PROVIDER_CONTEXT_RULES if provider_context else ""),
+            system=_SYSTEM + CONVERSATION_RULES + (PROVIDER_CONTEXT_RULES if provider_context else ""),
             prompt=(f"Clinician's request: {request.message}\n"
                     f"Care model: {care_model}\n"
                     f"Terminology pair: {terminology}\n"
@@ -99,6 +100,7 @@ class VisitPrepAgent(BaseAgent):
                     + (f"<intake_summary>\n{intake_summary}\n</intake_summary>\n"
                        if intake_summary else "")
                     + f"<prior_sessions>\n{prior}\n</prior_sessions>\n"
+                    + conversation_prompt(request.history)
                     + (f"Prepared summary: {provider_context.prompt_text()}\n"
                        if provider_context else "")
                     + f"\nOutput format requirement: {fmt_rules}\n"

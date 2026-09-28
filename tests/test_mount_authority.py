@@ -9,6 +9,9 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import AuthMode, MountProfile, Persona, Settings
+from app.clients.conversation_read import ConversationContextResponse
+
+
 from app.clients.platform_conversation import ConversationReceipt
 from app.clients.platform_usage import UsageDeliveryError, UsageWriteReceipt
 from app.schemas import (AgentResult, ChatRequest, ChatResponse,
@@ -23,6 +26,15 @@ from app.security.mount import (MountBootstrap, MountBootstrapRequest,
 from app.sovereign.orchestrator import INTENT_CAPABILITIES, Sovereign
 
 EMBED_HEADERS = {"X-Cosmaneura-Embed-Version": "1.0"}
+
+
+class EmptyConversationRead:
+    async def read_context(self, **_kwargs):
+        return ConversationContextResponse.model_validate({
+            "tool_call_ref": "history_context_fictional", "status": "completed",
+            "result": {"schema_version": "1.0.0", "messages": [], "source_version_digest": None},
+        })
+
 
 
 def _run(coro):
@@ -960,6 +972,7 @@ def test_provider_turn_writes_one_hash_only_platform_observation():
         mount_resolver=_ProviderResolver(),
         platform_audit_client=audit_client,  # type: ignore[arg-type]
         platform_conversation_client=_ConversationClient(),  # type: ignore[arg-type]
+        conversation_read_client=EmptyConversationRead(),
         platform_usage_client=_UsageClient(),  # type: ignore[arg-type]
     )
 
@@ -1142,6 +1155,7 @@ def test_provider_beta_refuses_unlaunched_workflows_despite_platform_grant(
         mount_resolver=Resolver(),
         platform_audit_client=audit,  # type: ignore[arg-type]
         platform_conversation_client=conversation,  # type: ignore[arg-type]
+        conversation_read_client=EmptyConversationRead(),
         platform_usage_client=UsageMustNotRun(),  # type: ignore[arg-type]
     )
     sov.agents[intent] = UnlaunchedAgentMustNotRun()
@@ -1246,6 +1260,7 @@ def test_terminal_observation_uses_ordered_model_usage_refs_and_stays_pending_on
             mount_resolver=Resolver(),
             platform_audit_client=audit,  # type: ignore[arg-type]
             platform_conversation_client=conversation,  # type: ignore[arg-type]
+            conversation_read_client=EmptyConversationRead(),
             platform_usage_client=usage,  # type: ignore[arg-type]
         )
 

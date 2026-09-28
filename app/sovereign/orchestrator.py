@@ -41,6 +41,10 @@ from app.agents.labs_agent import LabReviewAgent
 from app.agents.plan_workbench_agent import PlanWorkbenchAgent
 from app.agents.referral_agent import ReferralAgent
 from app.agents.visit_prep_agent import VisitPrepAgent
+from app.clients.conversation_read import (
+    CONVERSATION_RULES, ConversationReadClient, ConversationReadError,
+    ConversationReadRequest, ConversationReadResponse, conversation_prompt,
+)
 from app.clients.llm import LLMClient
 from app.clients.platform_audit import (
     AuditDeliveryError,
@@ -179,6 +183,7 @@ _AUTHORITY_METADATA_KEYS = frozenset({
     "patient_name",
     "provider_context",
     "provider_context_ref",
+    "history_context_ref",
     "prepared_brief",
     "provenance",
     "source_version_digest",
@@ -300,7 +305,8 @@ class Sovereign:
                  platform_usage_client: Optional[PlatformUsageClient] = None,
                  mount_bootstrapper: Optional[MountBootstrapper] = None,
                  session_prep_client: Optional[SessionPrepClient] = None,
-                 provider_question_client: Optional[ProviderQuestionClient] = None):
+                 provider_question_client: Optional[ProviderQuestionClient] = None,
+                 conversation_read_client: Optional[ConversationReadClient] = None):
         self.s = settings or get_settings()
         self.llm = LLMClient(self.s)
         self.magisterium = MagisteriumClient(self.s)
@@ -318,6 +324,7 @@ class Sovereign:
                     or platform_audit_client is None
                     or platform_conversation_client is None
                     or platform_usage_client is None
+                    or conversation_read_client is None
                     or (
                         self.s.feature_session_prep
                         and (session_prep_client is None or provider_question_client is None)
@@ -353,6 +360,10 @@ class Sovereign:
                 workload_token_provider=token_provider,  # type: ignore[arg-type]
                 timeout_seconds=self.s.platform_write_timeout_seconds,
             )
+            self.conversation_read = conversation_read_client or ConversationReadClient(
+                platform_base_url=self.s.platform_agent_api_base_url or "",
+                workload_token_provider=token_provider,
+            )
             self.session_prep = session_prep_client or (
                 SessionPrepClient(
                     platform_base_url=self.s.platform_agent_api_base_url or "",
@@ -375,6 +386,7 @@ class Sovereign:
             self.platform_usage = platform_usage_client
             self.session_prep = session_prep_client
             self.provider_question = provider_question_client
+            self.conversation_read = conversation_read_client
         self.agents = {
             Intent.REFERRAL: ReferralAgent(self.s, self.llm),
             Intent.CONCIERGE: ConciergeAgent(self.s, self.llm),
@@ -402,6 +414,19 @@ class Sovereign:
             trace_id=trace_id,
             mount_context_token=mount_context_token,
         ))
+
+    async def read_conversation_history(
+        self, *, mount_context_token: Optional[str], trace_id: str,
+        request: ConversationReadRequest,
+    ) -> ConversationReadResponse:
+        """Proxy current-mount history without interaction or model execution."""
+        if not self.s.platform_agent_api_enabled or self.conversation_read is None:
+            raise ConversationReadError(403)
+        if mount_context_token is None:
+            raise ConversationReadError(401)
+        return await self.conversation_read.read_history(
+            mount_context_token=mount_context_token, trace_id=trace_id, request=request,
+        )
 
     async def read_session_prep(
         self,
@@ -696,10 +721,9 @@ class Sovereign:
                 )
                 if user_receipt.replayed:
                     # A prior top-level request already crossed canonical
-                    # acceptance. V1 has no ratified turn-status/final-response
-                    # read, so neither rerun model/tool work nor synthesize a
-                    # final phase. Platform reconciliation owns the visibly
-                    # incomplete lineage; the host keeps this UUID and draft.
+                    # acceptance. Never rerun model/tool work or synthesize a
+                    # final phase. The panel can read the stored response/status
+                    # with this UUID while preserving the clinician's draft.
                     raise MountResolutionError(
                         status_code=503,
                         code="CANONICAL_TURN_INCOMPLETE",
@@ -808,6 +832,26 @@ class Sovereign:
                                    "actor_bound": mount.actor_id is not None},
                           content_for_hash=request.message)
 
+        # A first canonical acceptance gets one immutable server-only snapshot.
+        # Even an empty snapshot must be rebound at final acceptance. Browser
+        # history is never a supplement to this exact-encounter selection.
+        history_context_ref: str | None = None
+        if platform_turn is not None:
+            try:
+                if self.conversation_read is None or user_receipt is None:
+                    raise ConversationReadError(503)
+                history_response = await self.conversation_read.read_context(
+                    turn=platform_turn, source_turn_ref=user_receipt.turn_ref,
+                )
+            except ConversationReadError as error:
+                deactivate_usage_context()
+                raise MountResolutionError(
+                    status_code=error.status_code,
+                    code="CONVERSATION_CONTEXT_UNAVAILABLE", retryable=False,
+                ) from None
+            history_context_ref = history_response.tool_call_ref
+            request = request.model_copy(update={"history": history_response.result.messages})
+
         # 2) Route.
         intent, sensitivity, _ = await self.router.route(request)
         # An ethics consult is doctrine by definition: never let the tiered
@@ -841,6 +885,7 @@ class Sovereign:
                 audit_turn=audit_turn,
                 platform_turn=platform_turn,
                 user_receipt=user_receipt,
+                history_context_ref=history_context_ref,
                 safety_notice="capability_denied",
             )
 
@@ -872,6 +917,7 @@ class Sovereign:
                         "I cannot confirm facts from prior visits without it.",
                         intent, profile, trace_id, audit_turn=audit_turn,
                         platform_turn=platform_turn, user_receipt=user_receipt,
+                        history_context_ref=history_context_ref,
                         safety_notice="provider_context_unavailable",
                     )
                 try:
@@ -896,6 +942,7 @@ class Sovereign:
                         "to build or refresh the summary, then ask a new question.",
                         intent, profile, trace_id, audit_turn=audit_turn,
                         platform_turn=platform_turn, user_receipt=user_receipt,
+                        history_context_ref=history_context_ref,
                         safety_notice="provider_context_unavailable",
                         provider_context_ref=provider_context_ref,
                     )
@@ -904,24 +951,26 @@ class Sovereign:
         # 3) Dispatch.
         if intent == Intent.DOCTRINAL:
             # Magisterium answers directly; scrub the question first (non-BAA).
-            verdict = await self.arbiter.answer_doctrinal(deidentify(request.message).text)
+            verdict = await self.arbiter.answer_doctrinal(deidentify(request.message + conversation_prompt(request.history)).text)
             answer = verdict.revised_content or verdict.rationale
             return await self._finalize(answer, intent, profile, trace_id,
                                   audit_turn=audit_turn,
                                   platform_turn=platform_turn,
                                   user_receipt=user_receipt,
+                                  history_context_ref=history_context_ref,
                                   citations=verdict.citations, doctrinal=verdict)
 
         if intent == Intent.SMALL_TALK:
             answer = await self.llm.complete(
                 system=("You are the friendly front door of a Catholic healthcare "
                         "assistant. Be brief and kind; gently offer to help find care, "
-                        "explain a condition, or explore options."),
-                prompt=request.message, max_tokens=300,
+                        "explain a condition, or explore options." + CONVERSATION_RULES),
+                prompt=request.message + conversation_prompt(request.history), max_tokens=300,
             )
             return await self._finalize(
                 answer, intent, profile, trace_id, audit_turn=audit_turn,
                 platform_turn=platform_turn, user_receipt=user_receipt,
+                history_context_ref=history_context_ref,
             )
 
         agent = self.agents.get(intent)
@@ -937,6 +986,7 @@ class Sovereign:
                 audit_turn=audit_turn,
                 platform_turn=platform_turn,
                 user_receipt=user_receipt,
+                history_context_ref=history_context_ref,
                 provider_context_ref=provider_context_ref,
                 safety_notice="capability_denied",
             )
@@ -1144,6 +1194,7 @@ class Sovereign:
                               audit_turn=audit_turn,
                               platform_turn=platform_turn,
                               user_receipt=user_receipt,
+                              history_context_ref=history_context_ref,
                               provider_context_ref=provider_context_ref,
                               citations=citations,
                               doctrinal=verdict, structured=result.data)
@@ -1353,6 +1404,7 @@ class Sovereign:
         platform_turn: Optional[PlatformTurn] = None,
         user_receipt: Optional[ConversationReceipt] = None,
         provider_context_ref: Optional[str] = None,
+        history_context_ref: Optional[str] = None,
     ) -> ChatResponse:
         if sensitive_mode and intent != Intent.SENSITIVE_DISCLOSURE:
             raise ValueError("sensitive mode requires sensitive-disclosure intent")
@@ -1378,6 +1430,8 @@ class Sovereign:
                 {"provider_context_ref": provider_context_ref}
                 if provider_context_ref is not None else {}
             )
+            if history_context_ref is not None:
+                context_dependency["history_context_ref"] = history_context_ref
             try:
                 await self.platform_conversation.write_final_response(
                     turn=platform_turn,

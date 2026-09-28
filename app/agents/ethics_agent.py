@@ -26,6 +26,7 @@ PHI handling — mirrors the engagement agent:
 from __future__ import annotations
 
 from app.agents.base import BaseAgent
+from app.clients.conversation_read import CONVERSATION_RULES, conversation_prompt
 from app.clients.provider_question_contract import PROVIDER_CONTEXT_RULES, ProviderQuestionResult
 from app.clients.pubmed import LINACRE_JOURNAL, PubMedClient
 from app.compliance.phi import deidentify
@@ -72,9 +73,9 @@ class EthicsConsultAgent(BaseAgent):
 
         # Non-BAA literature search ahead -> derive the topic from SCRUBBED
         # text only. The raw case (which may hold PHI) stays on the BAA path.
-        clean = deidentify(request.message).text
+        clean = deidentify(request.message + conversation_prompt(request.history)).text
         slots = await self.llm.classify_json(
-            system=_TOPIC_SYSTEM,
+            system=_TOPIC_SYSTEM + CONVERSATION_RULES,
             prompt=f"Message: {clean}\nFields: topic (3-6 words).",
         )
         topic = slots.get("topic") or clean[:200]
@@ -90,9 +91,10 @@ class EthicsConsultAgent(BaseAgent):
         case_context = "" if provider_context else request.metadata.get("case_context") or ""
         fmt, fmt_rules = self.resolve_output_format(request)
         content = await self.llm.complete(
-            system=_SYSTEM + (PROVIDER_CONTEXT_RULES if provider_context else ""),
+            system=_SYSTEM + CONVERSATION_RULES + (PROVIDER_CONTEXT_RULES if provider_context else ""),
             prompt=(f"Clinician's question: {request.message}\n"
                     f"Case context: {case_context}\n"
+                    + conversation_prompt(request.history)
                     + (f"Prepared summary: {provider_context.prompt_text()}\n"
                        if provider_context else "")
                     + f"<published_literature>\n{evidence}\n</published_literature>\n"

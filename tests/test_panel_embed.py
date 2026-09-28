@@ -97,7 +97,8 @@ def test_record_switch_is_null_safe_and_rehydrates_governed_history_only():
     assert "var headers = await freshBearerHeaders()" in panel
     assert "var welcome = await welcomeData(headers, generation)" in panel
     assert "var suppliedContext = await opts.getContext()" in panel
-    assert "var loaded = history === null ? null : governedHistory(history)" in panel
+    assert "conversation ? conversation.history : governedHistory(history)" in panel
+    assert "governedConversation(history)" in panel
     assert "Array.isArray(loaded)" not in panel
     assert "loaded.messages" in panel
     assert "presentation: m.presentation" in panel
