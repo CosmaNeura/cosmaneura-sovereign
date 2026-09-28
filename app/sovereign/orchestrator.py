@@ -34,6 +34,7 @@ from typing import Optional
 
 from pydantic import ValidationError
 
+from app.agents.base import BaseAgent
 from app.agents.concierge_agent import ConciergeAgent
 from app.agents.engagement_agent import EngagementAgent
 from app.agents.ethics_agent import EthicsConsultAgent
@@ -961,16 +962,19 @@ class Sovereign:
                                   citations=verdict.citations, doctrinal=verdict)
 
         if intent == Intent.SMALL_TALK:
+            fmt, fmt_rules = BaseAgent.resolve_output_format(request)
             answer = await self.llm.complete(
                 system=("You are the friendly front door of a Catholic healthcare "
                         "assistant. Be brief and kind; gently offer to help find care, "
                         "explain a condition, or explore options." + CONVERSATION_RULES),
-                prompt=request.message + conversation_prompt(request.history), max_tokens=300,
+                prompt=(request.message + conversation_prompt(request.history)
+                        + f"\nOutput format requirement: {fmt_rules}\n"), max_tokens=300,
             )
             return await self._finalize(
                 answer, intent, profile, trace_id, audit_turn=audit_turn,
                 platform_turn=platform_turn, user_receipt=user_receipt,
                 history_context_ref=history_context_ref,
+                structured={"output_format": fmt},
             )
 
         agent = self.agents.get(intent)

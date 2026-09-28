@@ -89,6 +89,7 @@ class ConciergeAgent(BaseAgent):
                 max_tokens=300,
             )
 
+        fmt, fmt_rules = self.resolve_output_format(request)
         content = await self.llm.complete(
             system=(
                 "You are a concierge guide to frontier medicine and biotech. Speak "
@@ -104,7 +105,8 @@ class ConciergeAgent(BaseAgent):
             prompt=(f"User interest: {clean}\nRecruiting trials (JSON): {studies}\n"
                     + (f"<doctrinal_advisory>\n{advisory}\n</doctrinal_advisory>\n"
                        if advisory else "")
-                    + "\nSummarize what's notable, name relevant sponsors/companies, and "
+                    + f"\nOutput format requirement: {fmt_rules}\n"
+                    + "Summarize what's notable, name relevant sponsors/companies, and "
                       "suggest sensible next steps."),
             max_tokens=900,
         )
@@ -113,4 +115,5 @@ class ConciergeAgent(BaseAgent):
                               url=s.get("url")) for s in studies[:5]]
         return AgentResult(agent=self.name, content=content, citations=citations,
                            data={"trials": studies,
-                                 "doctrinal_mcp_consulted": bool(advisory)})
+                                 "doctrinal_mcp_consulted": bool(advisory),
+                                 "output_format": fmt})

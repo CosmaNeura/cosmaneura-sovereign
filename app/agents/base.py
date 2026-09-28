@@ -32,12 +32,13 @@ class BaseAgent(ABC):
                      "save, print, or hand to the patient."),
     }
 
-    def resolve_output_format(self, request: ChatRequest) -> tuple[str, str]:
+    @classmethod
+    def resolve_output_format(cls, request: ChatRequest) -> tuple[str, str]:
         """Return (format_name, formatting instruction) for this request."""
         fmt = str(request.metadata.get("output_format") or "chat").lower()
-        if fmt not in self._FORMAT_RULES:
+        if fmt not in cls._FORMAT_RULES:
             fmt = "chat"
-        return fmt, self._FORMAT_RULES[fmt]
+        return fmt, cls._FORMAT_RULES[fmt]
 
     def require_baa_covered_llm(self, profile: ComplianceProfile) -> None:
         """PHI tripwire — see app/compliance/baa.py (shared with /digest)."""
