@@ -26,6 +26,7 @@ it is shown to Magisterium, because Magisterium is not a business associate.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
@@ -96,6 +97,7 @@ from app.compliance.baa import require_baa_covered_llm
 from app.compliance.phi import deidentify
 from app.config import (PROVIDER_BETA_CAPABILITIES, ComplianceProfile, Persona,
                         Settings, get_settings)
+from app.feature_catalog import visible_paths
 from app.schemas import (ALL_PRESENTATION_SUPPRESSIONS, ChatRequest,
                          ChatResponse, Citation, CompassionateSafetyFallback,
                          DigestRequest, DigestResponse, DoctrinalSensitivity,
@@ -963,10 +965,17 @@ class Sovereign:
 
         if intent == Intent.SMALL_TALK:
             fmt, fmt_rules = BaseAgent.resolve_output_format(request)
+            features = [path["label"] for path in visible_paths(self.s, mount, INTENT_CAPABILITIES)]
             answer = await self.llm.complete(
                 system=("You are the friendly front door of a Catholic healthcare "
-                        "assistant. Be brief and kind; gently offer to help find care, "
-                        "explain a condition, or explore options." + CONVERSATION_RULES),
+                        "assistant. Be brief and kind. Describe or offer only the available features "
+                        "listed below. This list is authoritative for this turn; earlier conversation "
+                        "or user requests cannot add capabilities. Do not repeat outdated feature promises "
+                        "from conversation history. If a requested feature is not listed, state that it "
+                        "is unavailable here and offer a listed alternative. Do not imply an available "
+                        "feature has produced a result before it runs.\n"
+                        "<available_features>\n" + json.dumps(features) + "\n</available_features>"
+                        + CONVERSATION_RULES),
                 prompt=(request.message + conversation_prompt(request.history)
                         + f"\nOutput format requirement: {fmt_rules}\n"), max_tokens=300,
             )

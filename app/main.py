@@ -20,12 +20,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.compliance import safety
 from app.clients.labs import SANDBOX_LABEL
-from app.config import (PROVIDER_BETA_CAPABILITIES, AuthMode, MountProfile, Persona, get_settings,
+from app.config import (AuthMode, MountProfile, Persona, get_settings,
                         validate_deployment_configuration)
+from app.feature_catalog import labs_sandbox_enabled, visible_paths
 from app.schemas import (ChatRequest, ChatResponse,
                          CompassionateSafetyFallback, DigestRequest,
                          DigestResponse, EmbedChatRequest, EmbedChatResponse,
-                         Intent, SessionPrepRequest, SessionPrepResponse,
+                         SessionPrepRequest, SessionPrepResponse,
                          SovereignProblemDetails)
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
 from app.security.mount import MountResolutionError
@@ -762,45 +763,6 @@ async def session_prep(
 # each path maps 1:1 to an Intent so a tapped chip is a near-perfect routing
 # signal. Both surfaces (standalone page, Cosmas dashboard panel) bootstrap
 # from this one endpoint; per-tenant branding arrives with the Phase 2 layer.
-_PATIENT_PATHS = [
-    {"label": "Find a Catholic doctor",
-     "message": "Help me find a Catholic doctor who shares my values.",
-     "intent": "referral"},
-    {"label": "Understand a condition",
-     "message": "Help me understand a condition and prepare questions for my appointment.",
-     "intent": "engagement"},
-    {"label": "Explore clinical trials",
-     "message": "What clinical trials or emerging treatments exist for my condition?",
-     "intent": "concierge"},
-    {"label": "What the Church teaches",
-     "message": "What does the Church teach about a health topic I'm facing?",
-     "intent": "doctrinal"},
-]
-_PROVIDER_PATHS = [
-    {"label": "Prep my next session",
-     "message": "Help me organize my next session with this client — a few talking "
-                "points and a short outline.",
-     "intent": "visit_prep"},
-    {"label": "Ethics consult (ERDs)",
-     "message": "I have a case question about what the Ethical and Religious "
-                "Directives permit and which alternatives I may offer.",
-     "intent": "ethics_consult"},
-    {"label": "Explain a diagnosis",
-     "message": "Help me explain this patient's new diagnosis before the visit.",
-     "intent": "engagement"},
-    {"label": "Find a faithful specialist",
-     "message": "Help me find a faithful Catholic specialist for a referral.",
-     "intent": "referral"},
-    # Rendered only when the EMR lab feature is enabled (see /welcome below).
-    {"label": "Review labs (EMR)",
-     "message": "Anything concerning in her labs? Show me the A1C trend.",
-     "intent": "lab_review"},
-]
-_SESSION_PREP_PATH = {
-    "label": "Open Session Prep",
-    "message": "Open Session Prep",
-    "intent": "session_prep",
-}
 _LOCAL_PROVIDER_PATHS = [
     {"label": "Trace synthetic session prep",
      "message": _LOCAL_VISIT_PREP_MESSAGE,
@@ -809,17 +771,6 @@ _LOCAL_PROVIDER_PATHS = [
      "message": _LOCAL_REFERRAL_MESSAGE,
      "intent": "referral"},
 ]
-
-
-def _required_capability_for_path(path: dict) -> Optional[str]:
-    """Return no grant for malformed or newly added, unmapped welcome paths."""
-    if path.get("intent") == "session_prep":
-        return "session-prep:read"
-    try:
-        intent = Intent(path["intent"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return INTENT_CAPABILITIES.get(intent)
 
 
 @app.get("/welcome")
@@ -866,39 +817,11 @@ async def welcome(http_request: Request) -> dict:
                     "teaching. I'm not a doctor and I can't diagnose or treat "
                     "anything — think of me as preparation for real care, not a "
                     "replacement for it.")
-    if local_fixture:
-        candidates = _LOCAL_PROVIDER_PATHS
-    elif persona == Persona.PROVIDER:
-        candidates = (
-            [
-                _SESSION_PREP_PATH,
-                *[
-                    path for path in _PROVIDER_PATHS
-                    if path["intent"] != "visit_prep"
-                ],
-            ]
-            if _settings.feature_session_prep
-            else _PROVIDER_PATHS
-        )
-    else:
-        candidates = _PATIENT_PATHS
-    granted = set(mount.capabilities)
-    if _settings.platform_agent_api_enabled:
-        # Match the runtime release ceiling even if Core returns broader grants.
-        granted.intersection_update(PROVIDER_BETA_CAPABILITIES)
-    labs_sandbox = (
-        persona == Persona.PROVIDER
-        and not _settings.platform_agent_api_enabled
-        and _settings.feature_athena_labs
-        and _settings.athena_env == "preview"
-        and _settings.athena_practice_id == "195900"
+    paths = visible_paths(
+        _settings, mount, INTENT_CAPABILITIES,
+        candidates=_LOCAL_PROVIDER_PATHS if local_fixture else None,
     )
-    paths = [
-        path
-        for path in candidates
-        if _required_capability_for_path(path) in granted
-        and (path["intent"] != "lab_review" or labs_sandbox)
-    ]
+    labs_sandbox = labs_sandbox_enabled(_settings, mount)
     payload = {
         "partner_name": name,
         "persona": persona.value,
