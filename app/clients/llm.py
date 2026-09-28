@@ -18,7 +18,8 @@ from typing import Optional
 
 import httpx
 
-from app.compliance.netsec import assert_safe_outbound_url, safe_error_message
+from app.compliance.netsec import (UpstreamCallError, assert_safe_outbound_url,
+                                   safe_error_message)
 from app.compliance.phi import assert_no_phi
 from app.config import Settings, get_settings
 from app.clients.platform_usage import (
@@ -166,9 +167,10 @@ class LLMClient:
         except httpx.HTTPError as exc:
             # Never surface the raw error: in provider mode the request body may
             # contain PHI that httpx can echo back in the exception string.
-            error = RuntimeError(safe_error_message(exc, context="LLM inference"))
+            error = UpstreamCallError(safe_error_message(exc, context="LLM inference"))
             error.usage_facts = provider_usage_facts(  # type: ignore[attr-defined]
-                headers=exc.response.headers if exc.response is not None else None,
+                headers=(exc.response.headers
+                         if isinstance(exc, httpx.HTTPStatusError) else None),
                 usage=None,
                 provider="anthropic",
             )
@@ -216,9 +218,10 @@ class LLMClient:
                 data = resp.json()
         except httpx.HTTPError as exc:
             # Provider mode may carry PHI in the body; never echo the raw error.
-            error = RuntimeError(safe_error_message(exc, context="LLM inference"))
+            error = UpstreamCallError(safe_error_message(exc, context="LLM inference"))
             error.usage_facts = provider_usage_facts(  # type: ignore[attr-defined]
-                headers=exc.response.headers if exc.response is not None else None,
+                headers=(exc.response.headers
+                         if isinstance(exc, httpx.HTTPStatusError) else None),
                 usage=None,
                 provider="azure_openai",
             )
