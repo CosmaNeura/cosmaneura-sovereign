@@ -113,7 +113,7 @@
     "border-radius:999px;padding:4px 10px;cursor:pointer}.cnp-chip:hover{color:var(--ink);border-color:var(--accent2)}",
     ".cnp-foot{border-top:1px solid var(--line);padding:10px 14px}",
     ".cnp-row{display:flex;gap:7px;align-items:flex-end}",
-    ".cnp-in{flex:1;min-width:0;resize:none;background:var(--panel);border:1px solid var(--line);color:var(--ink);",
+    ".cnp-in{flex:1;min-width:0;box-sizing:border-box;resize:none;background:var(--panel);border:1px solid var(--line);color:var(--ink);",
     "border-radius:10px;padding:9px 11px;font:inherit;font-size:13.5px;max-height:110px;outline:none}",
     ".cnp-in:focus{border-color:var(--accent2)}",
     ".cnp-send{background:var(--accent);color:#1a130a;border:none;border-radius:10px;",
@@ -128,6 +128,7 @@
     "margin-right:3px;animation:cnpb 1s infinite}.cnp-typing span:nth-child(2){animation-delay:.2s}",
     ".cnp-typing span:nth-child(3){animation-delay:.4s}",
     "@keyframes cnpb{0%,60%,100%{opacity:.3}30%{opacity:1}}",
+    "@media(max-height:600px){.cnp-prep{max-height:35%}}",
   ].join("");
 
   var SUPPRESSION_NAMES = [
