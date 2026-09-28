@@ -380,7 +380,8 @@
           typeof message.client_turn_id !== "string" || !UUID_V4.test(message.client_turn_id) ||
           ["user", "assistant"].indexOf(message.role) < 0 ||
           typeof message.content !== "string" || message.content.length < 1 ||
-          message.content.length > 20000 || typeof message.recorded_at !== "string" ||
+          message.content.length > 40000 || Array.from(message.content).length > 20000 ||
+          typeof message.recorded_at !== "string" ||
           isNaN(Date.parse(message.recorded_at))) return null;
       if (message.role === "user" && message.presentation !== null) return null;
       if (message.role === "assistant" && !governedPresentation(message.presentation)) return null;

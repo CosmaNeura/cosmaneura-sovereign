@@ -174,12 +174,13 @@ async function main() {
   const sessionPrepRequests = [];
   let historyReadMode = "completed", releaseHistoryRead = null;
   const historyReadRequests = [];
+  let historyAnswer = "Exact stored fictional answer";
   function historyEnvelope(id, status) {
     const common = { turn_ref: "turn_fictional_history", client_turn_id: id,
                      recorded_at: "2026-09-28T12:00:00Z" };
     const messages = [{ ...common, role: "user", content: "Recorded fictional question", presentation: null }];
     if (status === "completed") messages.push({ ...common, role: "assistant",
-      content: "Exact stored fictional answer", presentation: { mode: "standard", suppress: [], human_contact: null } });
+      content: historyAnswer, presentation: { mode: "standard", suppress: [], human_contact: null } });
     return { schema_version: "1.0.0", history: { thread_ref: "thread_fictional_history", messages, next_cursor: null },
       turns: [{ ...common, state: status, outcome: status === "completed" ? "completed" : null }] };
   }
@@ -819,6 +820,36 @@ async function main() {
          recovery.root.querySelector(".cnp-gate").hidden === false,
          "history revocation did not clear and close the panel");
   recovery.destroy();
+
+  // JSON schema maxLength counts Unicode code points, not UTF-16 units. Keep
+  // exact stored text while retaining the independent aggregate UTF-8 limit.
+  async function checkHistoryBoundary(value, valid, envelope) {
+    historyAnswer = value;
+    const bounded = window.CosmaNeuraPanel.mount({
+      sovereignUrl: "https://sovereign.example", embedVersion: "1.0",
+      getAuthToken: async () => "opaque-unicode-token-abcdefghijkl",
+      getContext: async () => ({ clientId: currentRecord }), onHumanContact: async () => {},
+      loadHistory: async () => envelope || historyEnvelope(oldTurnId, "completed"),
+    });
+    const loaded = await bounded.setRecord(currentRecord);
+    assert((loaded !== null) === valid, "history code-point/UTF-8 bound was inconsistent");
+    assert(Boolean(find(bounded.root, node => node.innerHTML.includes(value))) === valid,
+           "history boundary altered or exposed rejected raw text");
+    bounded.destroy();
+  }
+  await checkHistoryBoundary("😀".repeat(20000), true);
+  await checkHistoryBoundary("😀".repeat(20001), false);
+  await checkHistoryBoundary("a".repeat(20000), true);
+  await checkHistoryBoundary("a".repeat(20001), false);
+  historyAnswer = "😀".repeat(20000);
+  const aggregate = historyEnvelope(oldTurnId, "completed");
+  for (let i = 2; i <= 3; i++) {
+    const part = historyEnvelope(`${String(i).repeat(8)}-1111-4111-8111-111111111111`, "completed");
+    part.turns[0].turn_ref += i;
+    part.history.messages.forEach(message => { message.turn_ref += i; });
+    aggregate.turns.push(...part.turns); aggregate.history.messages.push(...part.history.messages);
+  }
+  await checkHistoryBoundary(historyAnswer, false, aggregate);
 }
 
 module.exports = { FakeElement, assert, find, response };

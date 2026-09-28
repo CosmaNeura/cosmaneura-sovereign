@@ -2,7 +2,9 @@
 
 Clinicians can reopen the current encounter's recent conversation and check an
 uncertain response without running the question again. Supported drafts consume
-bounded, server-selected history; every read, including an empty snapshot, binds
+bounded, server-selected history, including the enabled Concierge follow-up lane.
+Public trial/MCP lookups receive de-identified context and extracted slots. Every
+read, including an empty snapshot, binds
 its exact receipt at canonical final acceptance. Core owns scope, revocation,
 source freshness, original prep expiry, and transitive dependency validation.
 
