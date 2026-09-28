@@ -29,6 +29,7 @@ from app.agents.base import BaseAgent
 from app.clients.conversation_read import CONVERSATION_RULES, conversation_prompt
 from app.clients.provider_question_contract import PROVIDER_CONTEXT_RULES, ProviderQuestionResult
 from app.clients.pubmed import LINACRE_JOURNAL, PubMedClient
+from app.compliance.netsec import UpstreamCallError
 from app.compliance.phi import deidentify
 from app.config import ComplianceProfile
 from app.schemas import AgentResult, ChatRequest, Citation
@@ -60,6 +61,18 @@ _SYSTEM = (
 )
 
 
+LITERATURE_NOTICES = {
+    "partial": (
+        "Literature limitation: Part of the PubMed search was unavailable. "
+        "The retrieved literature may be incomplete; review supporting sources separately."
+    ),
+    "unavailable": (
+        "Literature limitation: PubMed retrieval was unavailable. This consult prep "
+        "does not include a retrieved literature review; review supporting sources separately."
+    ),
+}
+
+
 class EthicsConsultAgent(BaseAgent):
     name = "ethics_consult_agent"
 
@@ -82,9 +95,28 @@ class EthicsConsultAgent(BaseAgent):
 
         # Dual evidence pull: general clinical literature + the Catholic
         # bioethics corpus (Linacre Quarterly) — both via the free NCBI API.
-        general = await self.pubmed.search(topic, max_results=4)
-        catholic = await self.pubmed.search(topic, journal=LINACRE_JOURNAL,
-                                            max_results=3)
+        failed_searches = 0
+        try:
+            general = await self.pubmed.search(topic, max_results=4)
+        except UpstreamCallError:
+            general = []
+            failed_searches += 1
+        try:
+            catholic = await self.pubmed.search(topic, journal=LINACRE_JOURNAL,
+                                                max_results=3)
+        except UpstreamCallError:
+            catholic = []
+            failed_searches += 1
+        # Successful empty searches remain distinct from transport failures.
+        # Only this server-side retrieval result creates the limitation marker.
+        literature_status = ("unavailable" if failed_searches == 2
+                             else "partial" if failed_searches else None)
+        literature_context = (
+            LITERATURE_NOTICES[literature_status]
+            + " Use only supplied literature; do not invent publication citations "
+              "or imply that an unavailable search completed.\n"
+            if literature_status else ""
+        )
         evidence = catholic + [e for e in general
                                if e["pmid"] not in {c["pmid"] for c in catholic}]
 
@@ -97,6 +129,7 @@ class EthicsConsultAgent(BaseAgent):
                     + conversation_prompt(request.history)
                     + (f"Prepared summary: {provider_context.prompt_text()}\n"
                        if provider_context else "")
+                    + literature_context
                     + f"<published_literature>\n{evidence}\n</published_literature>\n"
                     f"\nOutput format requirement: {fmt_rules}\n"
                     "Produce the structured consult prep."),
@@ -116,5 +149,6 @@ class EthicsConsultAgent(BaseAgent):
             content=content,
             citations=citations,
             data={"framework": "USCCB_ERDs_6th_edition",
-                  "evidence": evidence, "output_format": fmt},
+                  "evidence": evidence, "output_format": fmt,
+                  **({"literature_status": literature_status} if literature_status else {})},
         )
