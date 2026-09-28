@@ -119,7 +119,11 @@ class MagisteriumClient:
         }
         assert_safe_outbound_url(self.s.magisterium_base_url)
         try:
-            async with httpx.AsyncClient(timeout=self.s.request_timeout_seconds) as client:
+            timeout = httpx.Timeout(
+                self.s.request_timeout_seconds,
+                read=self.s.magisterium_read_timeout_seconds,
+            )
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(
                     f"{self.s.magisterium_base_url}/chat/completions",
                     headers=headers, json=body,
