@@ -21,7 +21,8 @@ from typing import Optional
 
 import httpx
 
-from app.compliance.netsec import assert_safe_outbound_url, safe_error_message
+from app.compliance.netsec import (UpstreamCallError, assert_safe_outbound_url,
+                                   safe_error_message)
 from app.compliance.phi import assert_no_phi
 from app.config import Settings, get_settings
 from app.clients.platform_usage import (
@@ -126,9 +127,10 @@ class MagisteriumClient:
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPError as exc:
-            error = RuntimeError(safe_error_message(exc, context="Magisterium"))
+            error = UpstreamCallError(safe_error_message(exc, context="Magisterium"))
             error.usage_facts = provider_usage_facts(  # type: ignore[attr-defined]
-                headers=exc.response.headers if exc.response is not None else None,
+                headers=(exc.response.headers
+                         if isinstance(exc, httpx.HTTPStatusError) else None),
                 usage=None,
                 provider="magisterium",
             )

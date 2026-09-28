@@ -22,7 +22,7 @@ from typing import Optional
 
 import httpx
 
-from app.compliance.netsec import safe_error_message
+from app.compliance.netsec import UpstreamCallError, safe_error_message
 from app.compliance.phi import assert_no_phi
 from app.config import Settings, get_settings
 
@@ -99,7 +99,7 @@ class PubMedClient:
                 sresp.raise_for_status()
                 summaries = sresp.json().get("result", {})
         except httpx.HTTPError as exc:
-            raise RuntimeError(safe_error_message(exc, context="PubMed")) from None
+            raise UpstreamCallError(safe_error_message(exc, context="PubMed")) from None
 
         return [_summarize(pmid, summaries.get(pmid, {})) for pmid in ids
                 if pmid in summaries]

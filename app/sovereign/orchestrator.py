@@ -116,6 +116,7 @@ from app.security.record_grant import (
     configured_record_grant_key,
     verify_record_grant,
 )
+from app.compliance.netsec import UpstreamCallError
 from app.sovereign.arbiter import DoctrinalArbiter
 from app.sovereign.router import Router
 from app.session_prep import (SessionPrepOutcome, project_session_prep_result,
@@ -855,362 +856,382 @@ class Sovereign:
             history_context_ref = history_response.tool_call_ref
             request = request.model_copy(update={"history": history_response.result.messages})
 
-        # 2) Route.
-        intent, sensitivity, _ = await self.router.route(request)
-        # An ethics consult is doctrine by definition: never let the tiered
-        # gate skip full arbitration on it, whatever the router said.
-        if intent == Intent.ETHICS_CONSULT:
-            sensitivity = DoctrinalSensitivity.HIGH
-        # A lab answer still receives the doctrinal gate on every turn. A
-        # classifier may raise it to HIGH, but it may never lower it to NONE.
-        elif intent == Intent.LAB_REVIEW and sensitivity == DoctrinalSensitivity.NONE:
-            sensitivity = DoctrinalSensitivity.LOW
-        self.audit.record(trace_id=trace_id, profile=profile, event="routed",
-                          details={"intent": intent.value, "sensitivity": sensitivity.value})
-
-        # 2b) Capability gate. This is deliberately after classification but
-        # before every agent/direct answer. An unknown future intent has no map
-        # entry and is denied by default.
-        required_capability = INTENT_CAPABILITIES.get(intent)
-        if required_capability is None or required_capability not in mount.capabilities:
-            self.audit.record(
-                trace_id=trace_id,
-                profile=profile,
-                event="capability_denied",
-                details={"intent": intent.value,
-                         "required": required_capability or "unmapped"},
-            )
-            return await self._finalize(
-                "That request isn't available on this assistant surface.",
-                intent,
-                profile,
-                trace_id,
-                audit_turn=audit_turn,
-                platform_turn=platform_turn,
-                user_receipt=user_receipt,
-                history_context_ref=history_context_ref,
-                safety_notice="capability_denied",
-            )
-
-        # This optional read follows accepted-turn, BAA, and capability gates.
-        # Core derives the current record and revalidates this receipt at final
-        # acceptance. Neither a body hint nor the classifier grants authority.
-        provider_context: ProviderQuestionResult | None = None
+        # Only normalized provider I/O failures become unavailable answers.
+        # Keep confirmed dependency receipts even when review fails after drafting.
+        intent: Intent | None = None
         provider_context_ref: str | None = None
-        if (
-            self.s.feature_session_prep and platform_turn is not None
-            and profile.persona == Persona.PROVIDER
-            and intent in {Intent.ENGAGEMENT, Intent.VISIT_PREP, Intent.ETHICS_CONSULT}
-        ):
-            try:
-                needs_context = await self.router.needs_provider_context(request, intent)
-            except Exception:
-                deactivate_usage_context()
-                raise MountResolutionError(
-                    status_code=503, code="PROVIDER_CONTEXT_SELECTION_UNAVAILABLE",
-                    retryable=False,
-                ) from None
-            if needs_context:
-                if (
-                    "session-prep:read" not in mount.capabilities
-                    or self.provider_question is None or user_receipt is None
-                ):
-                    return await self._finalize(
-                        "The prepared visit summary is unavailable for this question. "
-                        "I cannot confirm facts from prior visits without it.",
-                        intent, profile, trace_id, audit_turn=audit_turn,
-                        platform_turn=platform_turn, user_receipt=user_receipt,
-                        history_context_ref=history_context_ref,
-                        safety_notice="provider_context_unavailable",
-                    )
+        try:
+            # 2) Route.
+            intent, sensitivity, _ = await self.router.route(request)
+            # An ethics consult is doctrine by definition: never let the tiered
+            # gate skip full arbitration on it, whatever the router said.
+            if intent == Intent.ETHICS_CONSULT:
+                sensitivity = DoctrinalSensitivity.HIGH
+            # A lab answer still receives the doctrinal gate on every turn. A
+            # classifier may raise it to HIGH, but it may never lower it to NONE.
+            elif intent == Intent.LAB_REVIEW and sensitivity == DoctrinalSensitivity.NONE:
+                sensitivity = DoctrinalSensitivity.LOW
+            self.audit.record(trace_id=trace_id, profile=profile, event="routed",
+                              details={"intent": intent.value, "sensitivity": sensitivity.value})
+
+            # 2b) Capability gate. This is deliberately after classification but
+            # before every agent/direct answer. An unknown future intent has no map
+            # entry and is denied by default.
+            required_capability = INTENT_CAPABILITIES.get(intent)
+            if required_capability is None or required_capability not in mount.capabilities:
+                self.audit.record(
+                    trace_id=trace_id,
+                    profile=profile,
+                    event="capability_denied",
+                    details={"intent": intent.value,
+                             "required": required_capability or "unmapped"},
+                )
+                return await self._finalize(
+                    "That request isn't available on this assistant surface.",
+                    intent,
+                    profile,
+                    trace_id,
+                    audit_turn=audit_turn,
+                    platform_turn=platform_turn,
+                    user_receipt=user_receipt,
+                    history_context_ref=history_context_ref,
+                    safety_notice="capability_denied",
+                )
+
+            # This optional read follows accepted-turn, BAA, and capability gates.
+            # Core derives the current record and revalidates this receipt at final
+            # acceptance. Neither a body hint nor the classifier grants authority.
+            provider_context: ProviderQuestionResult | None = None
+            if (
+                self.s.feature_session_prep and platform_turn is not None
+                and profile.persona == Persona.PROVIDER
+                and intent in {Intent.ENGAGEMENT, Intent.VISIT_PREP, Intent.ETHICS_CONSULT}
+            ):
                 try:
-                    context_response = await self.provider_question.read(
-                        turn=platform_turn,
-                        request=ProviderQuestionRequest(arguments=ProviderQuestionArguments(
-                            source_turn_ref=user_receipt.turn_ref,
-                        )),
-                    )
-                except SessionPrepDeliveryError as error:
+                    needs_context = await self.router.needs_provider_context(request, intent)
+                except UpstreamCallError:
+                    raise
+                except Exception:
                     deactivate_usage_context()
                     raise MountResolutionError(
-                        status_code=409 if error.category == "conflict" else 503,
-                        code=f"PROVIDER_CONTEXT_{error.category.upper()}",
+                        status_code=503, code="PROVIDER_CONTEXT_SELECTION_UNAVAILABLE",
                         retryable=False,
                     ) from None
-                provider_context_ref = context_response.tool_call_ref
-                if context_response.result.state != "ready":
-                    return await self._finalize(
-                        "The prepared visit summary is unavailable for this question. "
-                        "I cannot confirm facts from prior visits. Open Session Prep "
-                        "to build or refresh the summary, then ask a new question.",
-                        intent, profile, trace_id, audit_turn=audit_turn,
-                        platform_turn=platform_turn, user_receipt=user_receipt,
-                        history_context_ref=history_context_ref,
-                        safety_notice="provider_context_unavailable",
-                        provider_context_ref=provider_context_ref,
-                    )
-                provider_context = context_response.result
+                if needs_context:
+                    if (
+                        "session-prep:read" not in mount.capabilities
+                        or self.provider_question is None or user_receipt is None
+                    ):
+                        return await self._finalize(
+                            "The prepared visit summary is unavailable for this question. "
+                            "I cannot confirm facts from prior visits without it.",
+                            intent, profile, trace_id, audit_turn=audit_turn,
+                            platform_turn=platform_turn, user_receipt=user_receipt,
+                            history_context_ref=history_context_ref,
+                            safety_notice="provider_context_unavailable",
+                        )
+                    try:
+                        context_response = await self.provider_question.read(
+                            turn=platform_turn,
+                            request=ProviderQuestionRequest(arguments=ProviderQuestionArguments(
+                                source_turn_ref=user_receipt.turn_ref,
+                            )),
+                        )
+                    except SessionPrepDeliveryError as error:
+                        deactivate_usage_context()
+                        raise MountResolutionError(
+                            status_code=409 if error.category == "conflict" else 503,
+                            code=f"PROVIDER_CONTEXT_{error.category.upper()}",
+                            retryable=False,
+                        ) from None
+                    provider_context_ref = context_response.tool_call_ref
+                    if context_response.result.state != "ready":
+                        return await self._finalize(
+                            "The prepared visit summary is unavailable for this question. "
+                            "I cannot confirm facts from prior visits. Open Session Prep "
+                            "to build or refresh the summary, then ask a new question.",
+                            intent, profile, trace_id, audit_turn=audit_turn,
+                            platform_turn=platform_turn, user_receipt=user_receipt,
+                            history_context_ref=history_context_ref,
+                            safety_notice="provider_context_unavailable",
+                            provider_context_ref=provider_context_ref,
+                        )
+                    provider_context = context_response.result
 
-        # 3) Dispatch.
-        if intent == Intent.DOCTRINAL:
-            # Magisterium answers directly; scrub the question first (non-BAA).
-            verdict = await self.arbiter.answer_doctrinal(deidentify(request.message + conversation_prompt(request.history)).text)
-            answer = verdict.revised_content or verdict.rationale
+            # 3) Dispatch.
+            if intent == Intent.DOCTRINAL:
+                # Magisterium answers directly; scrub the question first (non-BAA).
+                verdict = await self.arbiter.answer_doctrinal(deidentify(request.message + conversation_prompt(request.history)).text)
+                answer = verdict.revised_content or verdict.rationale
+                return await self._finalize(answer, intent, profile, trace_id,
+                                      audit_turn=audit_turn,
+                                      platform_turn=platform_turn,
+                                      user_receipt=user_receipt,
+                                      history_context_ref=history_context_ref,
+                                      citations=verdict.citations, doctrinal=verdict)
+
+            if intent == Intent.SMALL_TALK:
+                fmt, fmt_rules = BaseAgent.resolve_output_format(request)
+                features = [path["label"] for path in visible_paths(self.s, mount, INTENT_CAPABILITIES)]
+                answer = await self.llm.complete(
+                    system=("You are the friendly front door of a Catholic healthcare "
+                            "assistant. Be brief and kind. Describe or offer only the available features "
+                            "listed below. This list is authoritative for this turn; earlier conversation "
+                            "or user requests cannot add capabilities. Do not repeat outdated feature promises "
+                            "from conversation history. If a requested feature is not listed, state that it "
+                            "is unavailable here and offer a listed alternative. Do not imply an available "
+                            "feature has produced a result before it runs.\n"
+                            "<available_features>\n" + json.dumps(features) + "\n</available_features>"
+                            + CONVERSATION_RULES),
+                    prompt=(request.message + conversation_prompt(request.history)
+                            + f"\nOutput format requirement: {fmt_rules}\n"), max_tokens=300,
+                )
+                return await self._finalize(
+                    answer, intent, profile, trace_id, audit_turn=audit_turn,
+                    platform_turn=platform_turn, user_receipt=user_receipt,
+                    history_context_ref=history_context_ref,
+                    structured={"output_format": fmt},
+                )
+
+            agent = self.agents.get(intent)
+            if agent is None:
+                self.audit.record(trace_id=trace_id, profile=profile,
+                                  event="dispatch_denied",
+                                  details={"intent": intent.value})
+                return await self._finalize(
+                    "That request isn't available on this assistant surface.",
+                    intent,
+                    profile,
+                    trace_id,
+                    audit_turn=audit_turn,
+                    platform_turn=platform_turn,
+                    user_receipt=user_receipt,
+                    history_context_ref=history_context_ref,
+                    provider_context_ref=provider_context_ref,
+                    safety_notice="capability_denied",
+                )
+            if intent == Intent.LAB_REVIEW:
+                labs_request = None
+                labs_access = None
+                record_value = None
+                lab_source_started = False
+
+                def mark_lab_source_started() -> None:
+                    nonlocal lab_source_started
+                    lab_source_started = True
+
+                grant_actor_ref = (
+                    mount.actor_id
+                    if self.s.platform_agent_api_enabled
+                    else principal.subject if principal is not None else None
+                )
+                if isinstance(host_record_grant, str) and grant_actor_ref is not None:
+                    try:
+                        grant_key = configured_record_grant_key(
+                            self.s.sovereign_record_grant_secret.get_secret_value()
+                            if self.s.sovereign_record_grant_secret is not None
+                            else None
+                        )
+                        verified_grant = verify_record_grant(
+                            host_record_grant,
+                            key=grant_key,
+                            expected_actor_ref=grant_actor_ref,
+                        )
+                    except RecordGrantConfigurationError:
+                        self.audit.record(
+                            trace_id=trace_id,
+                            profile=profile,
+                            event="ehr_labs_record_grant_refused",
+                            details={"reason": "grant_verifier_unavailable"},
+                        )
+                    except RecordGrantRejected:
+                        self.audit.record(
+                            trace_id=trace_id,
+                            profile=profile,
+                            event="ehr_labs_record_grant_refused",
+                            details={"reason": "grant_rejected"},
+                        )
+                    else:
+                        record_value = verified_grant.vendor_record_ref
+                if (
+                    record_value is not None
+                    and mount.actor_id is not None
+                    and mount.tenant_id is not None
+                ):
+                    until = date.today()
+                    time_window = LabsTimeWindow(
+                        since=until - timedelta(days=_DEFAULT_SANDBOX_LOOKBACK_DAYS),
+                        until=until,
+                    )
+                    try:
+                        labs_request = LabsReadRequest(
+                            turn_request_ref=str(resolution.client_turn_id),
+                            actor_ref=mount.actor_id,
+                            tenant_ref=mount.tenant_id,
+                            record_ref=record_value,
+                            purpose=LabsPurpose.LAB_REVIEW,
+                            categories=(LabsCategory.LABORATORY,),
+                            time_window=time_window,
+                            tier=LabsTier.SANDBOX,
+                        )
+                    except ValidationError:
+                        self.audit.record(
+                            trace_id=trace_id,
+                            profile=profile,
+                            event="ehr_labs_request_refused",
+                            details={"reason": "invalid_record_ref"},
+                        )
+                    else:
+                        labs_access = LabsReadAccess(
+                            trace_id=trace_id,
+                            expected_turn_request_ref=str(resolution.client_turn_id),
+                            authorized_record_ref=record_value,
+                            expected_purpose=LabsPurpose.LAB_REVIEW,
+                            expected_categories=(LabsCategory.LABORATORY,),
+                            expected_time_window=time_window,
+                            expected_tier=LabsTier.SANDBOX,
+                            mount=mount,
+                            profile=profile,
+                            audit=self.audit,
+                            record_scope_source="platform_signed_open_record",
+                            on_source_attempt=mark_lab_source_started,
+                        )
+                try:
+                    result = await agent.run(
+                        request,
+                        profile,
+                        labs_request=labs_request,
+                        labs_access=labs_access,
+                    )
+                except asyncio.CancelledError:
+                    if lab_source_started:
+                        await self._write_platform_observation(
+                            audit_turn=audit_turn,
+                            event_type="sovereign.ehr_labs_read.failed",
+                            status="failed",
+                            route=Intent.LAB_REVIEW.value,
+                            intent=Intent.LAB_REVIEW.value,
+                            content=None,
+                            required=True,
+                        )
+                    raise
+                except Exception:
+                    if lab_source_started:
+                        await self._write_platform_observation(
+                            audit_turn=audit_turn,
+                            event_type="sovereign.ehr_labs_read.failed",
+                            status="failed",
+                            route=Intent.LAB_REVIEW.value,
+                            intent=Intent.LAB_REVIEW.value,
+                            content=None,
+                            required=True,
+                        )
+                    raise MountResolutionError(
+                        status_code=503,
+                        code="LABS_READ_UNAVAILABLE",
+                        retryable=False,
+                    ) from None
+                lab_read_completed = (
+                    result.data.get("tier") == LabsTier.SANDBOX.value
+                    and isinstance(result.data.get("access"), dict)
+                )
+                if lab_source_started and lab_read_completed:
+                    await self._write_platform_observation(
+                        audit_turn=audit_turn,
+                        event_type="sovereign.ehr_labs_read.completed",
+                        status="completed",
+                        route=Intent.LAB_REVIEW.value,
+                        intent=Intent.LAB_REVIEW.value,
+                        content=None,
+                        required=True,
+                    )
+                elif lab_source_started:
+                    await self._write_platform_observation(
+                        audit_turn=audit_turn,
+                        event_type="sovereign.ehr_labs_read.failed",
+                        status="failed",
+                        route=Intent.LAB_REVIEW.value,
+                        intent=Intent.LAB_REVIEW.value,
+                        content=None,
+                        required=True,
+                    )
+            elif provider_context is not None:
+                result = await agent.run(request, profile, provider_context=provider_context)
+            else:
+                result = await agent.run(request, profile)
+            self.audit.record(trace_id=trace_id, profile=profile, event="agent_complete",
+                              details={"agent": result.agent},
+                              content_for_hash=result.content)
+
+            # 4) Doctrinal arbitration. Lab values never enter a non-BAA hop: no
+            # draft or structured token is rendered. Magisterium receives only a
+            # deterministic policy projection derived from the actual answer, on
+            # the normal routed LOW/HIGH review. Other lanes retain the existing
+            # de-identification boundary before Magisterium.
+            if intent == Intent.LAB_REVIEW:
+                safe_lab_projection = _value_safe_lab_review_projection(
+                    result.content, result.data
+                )
+                arbiter_input = deidentify(safe_lab_projection).text
+                self.audit.record(
+                    trace_id=trace_id,
+                    profile=profile,
+                    event="lab_values_withheld_from_non_baa_arbiter",
+                )
+            else:
+                deid = deidentify(result.content)
+                arbiter_input = deid.text
+                if deid.found_phi:
+                    self.audit.record(
+                        trace_id=trace_id,
+                        profile=profile,
+                        event="phi_scrubbed_for_arbiter",
+                        details={"types": deid.redacted_types},
+                    )
+            verdict = await self.arbiter.review(
+                deidentified_draft=arbiter_input, intent=intent, sensitivity=sensitivity
+            )
+            self.audit.record(trace_id=trace_id, profile=profile, event="arbitration",
+                              details={"conforms": verdict.conforms})
+
+            # If non-conforming, apply Magisterium's guidance. For a REFERRAL the
+            # useful payload is the matched (faithful Catholic) provider list, so we
+            # never discard it — we append the doctrinal note. For content answers
+            # (engagement/concierge) a non-conforming draft is replaced outright.
+            answer = result.content
+            if not verdict.conforms and verdict.revised_content:
+                if intent == Intent.REFERRAL:
+                    answer = (result.content
+                              + "\n\n*A note in keeping with Catholic teaching:* "
+                              + verdict.revised_content)
+                else:
+                    answer = (
+                        "A note in keeping with Catholic teaching: " + verdict.revised_content
+                    )
+
+            citations = list(result.citations) + list(verdict.citations)
             return await self._finalize(answer, intent, profile, trace_id,
                                   audit_turn=audit_turn,
                                   platform_turn=platform_turn,
                                   user_receipt=user_receipt,
                                   history_context_ref=history_context_ref,
-                                  citations=verdict.citations, doctrinal=verdict)
-
-        if intent == Intent.SMALL_TALK:
-            fmt, fmt_rules = BaseAgent.resolve_output_format(request)
-            features = [path["label"] for path in visible_paths(self.s, mount, INTENT_CAPABILITIES)]
-            answer = await self.llm.complete(
-                system=("You are the friendly front door of a Catholic healthcare "
-                        "assistant. Be brief and kind. Describe or offer only the available features "
-                        "listed below. This list is authoritative for this turn; earlier conversation "
-                        "or user requests cannot add capabilities. Do not repeat outdated feature promises "
-                        "from conversation history. If a requested feature is not listed, state that it "
-                        "is unavailable here and offer a listed alternative. Do not imply an available "
-                        "feature has produced a result before it runs.\n"
-                        "<available_features>\n" + json.dumps(features) + "\n</available_features>"
-                        + CONVERSATION_RULES),
-                prompt=(request.message + conversation_prompt(request.history)
-                        + f"\nOutput format requirement: {fmt_rules}\n"), max_tokens=300,
-            )
+                                  provider_context_ref=provider_context_ref,
+                                  citations=citations,
+                                  doctrinal=verdict, structured=result.data)
+        except UpstreamCallError:
+            self.audit.record(trace_id=trace_id, profile=profile, event="upstream_unavailable")
+            # Never reuse any draft, citations or document marker from the failed
+            # pipeline. Cancellation and authority/persistence errors are not caught.
             return await self._finalize(
-                answer, intent, profile, trace_id, audit_turn=audit_turn,
+                "The assistant could not complete this response because a required "
+                "service was unavailable. No reviewed answer or document is available. "
+                "Please ask a new question later.",
+                intent, profile, trace_id, audit_turn=audit_turn,
                 platform_turn=platform_turn, user_receipt=user_receipt,
                 history_context_ref=history_context_ref,
-                structured={"output_format": fmt},
-            )
-
-        agent = self.agents.get(intent)
-        if agent is None:
-            self.audit.record(trace_id=trace_id, profile=profile,
-                              event="dispatch_denied",
-                              details={"intent": intent.value})
-            return await self._finalize(
-                "That request isn't available on this assistant surface.",
-                intent,
-                profile,
-                trace_id,
-                audit_turn=audit_turn,
-                platform_turn=platform_turn,
-                user_receipt=user_receipt,
-                history_context_ref=history_context_ref,
                 provider_context_ref=provider_context_ref,
-                safety_notice="capability_denied",
+                safety_notice="upstream_unavailable",
             )
-        if intent == Intent.LAB_REVIEW:
-            labs_request = None
-            labs_access = None
-            record_value = None
-            lab_source_started = False
-
-            def mark_lab_source_started() -> None:
-                nonlocal lab_source_started
-                lab_source_started = True
-
-            grant_actor_ref = (
-                mount.actor_id
-                if self.s.platform_agent_api_enabled
-                else principal.subject if principal is not None else None
-            )
-            if isinstance(host_record_grant, str) and grant_actor_ref is not None:
-                try:
-                    grant_key = configured_record_grant_key(
-                        self.s.sovereign_record_grant_secret.get_secret_value()
-                        if self.s.sovereign_record_grant_secret is not None
-                        else None
-                    )
-                    verified_grant = verify_record_grant(
-                        host_record_grant,
-                        key=grant_key,
-                        expected_actor_ref=grant_actor_ref,
-                    )
-                except RecordGrantConfigurationError:
-                    self.audit.record(
-                        trace_id=trace_id,
-                        profile=profile,
-                        event="ehr_labs_record_grant_refused",
-                        details={"reason": "grant_verifier_unavailable"},
-                    )
-                except RecordGrantRejected:
-                    self.audit.record(
-                        trace_id=trace_id,
-                        profile=profile,
-                        event="ehr_labs_record_grant_refused",
-                        details={"reason": "grant_rejected"},
-                    )
-                else:
-                    record_value = verified_grant.vendor_record_ref
-            if (
-                record_value is not None
-                and mount.actor_id is not None
-                and mount.tenant_id is not None
-            ):
-                until = date.today()
-                time_window = LabsTimeWindow(
-                    since=until - timedelta(days=_DEFAULT_SANDBOX_LOOKBACK_DAYS),
-                    until=until,
-                )
-                try:
-                    labs_request = LabsReadRequest(
-                        turn_request_ref=str(resolution.client_turn_id),
-                        actor_ref=mount.actor_id,
-                        tenant_ref=mount.tenant_id,
-                        record_ref=record_value,
-                        purpose=LabsPurpose.LAB_REVIEW,
-                        categories=(LabsCategory.LABORATORY,),
-                        time_window=time_window,
-                        tier=LabsTier.SANDBOX,
-                    )
-                except ValidationError:
-                    self.audit.record(
-                        trace_id=trace_id,
-                        profile=profile,
-                        event="ehr_labs_request_refused",
-                        details={"reason": "invalid_record_ref"},
-                    )
-                else:
-                    labs_access = LabsReadAccess(
-                        trace_id=trace_id,
-                        expected_turn_request_ref=str(resolution.client_turn_id),
-                        authorized_record_ref=record_value,
-                        expected_purpose=LabsPurpose.LAB_REVIEW,
-                        expected_categories=(LabsCategory.LABORATORY,),
-                        expected_time_window=time_window,
-                        expected_tier=LabsTier.SANDBOX,
-                        mount=mount,
-                        profile=profile,
-                        audit=self.audit,
-                        record_scope_source="platform_signed_open_record",
-                        on_source_attempt=mark_lab_source_started,
-                    )
-            try:
-                result = await agent.run(
-                    request,
-                    profile,
-                    labs_request=labs_request,
-                    labs_access=labs_access,
-                )
-            except asyncio.CancelledError:
-                if lab_source_started:
-                    await self._write_platform_observation(
-                        audit_turn=audit_turn,
-                        event_type="sovereign.ehr_labs_read.failed",
-                        status="failed",
-                        route=Intent.LAB_REVIEW.value,
-                        intent=Intent.LAB_REVIEW.value,
-                        content=None,
-                        required=True,
-                    )
-                raise
-            except Exception:
-                if lab_source_started:
-                    await self._write_platform_observation(
-                        audit_turn=audit_turn,
-                        event_type="sovereign.ehr_labs_read.failed",
-                        status="failed",
-                        route=Intent.LAB_REVIEW.value,
-                        intent=Intent.LAB_REVIEW.value,
-                        content=None,
-                        required=True,
-                    )
-                raise MountResolutionError(
-                    status_code=503,
-                    code="LABS_READ_UNAVAILABLE",
-                    retryable=False,
-                ) from None
-            lab_read_completed = (
-                result.data.get("tier") == LabsTier.SANDBOX.value
-                and isinstance(result.data.get("access"), dict)
-            )
-            if lab_source_started and lab_read_completed:
-                await self._write_platform_observation(
-                    audit_turn=audit_turn,
-                    event_type="sovereign.ehr_labs_read.completed",
-                    status="completed",
-                    route=Intent.LAB_REVIEW.value,
-                    intent=Intent.LAB_REVIEW.value,
-                    content=None,
-                    required=True,
-                )
-            elif lab_source_started:
-                await self._write_platform_observation(
-                    audit_turn=audit_turn,
-                    event_type="sovereign.ehr_labs_read.failed",
-                    status="failed",
-                    route=Intent.LAB_REVIEW.value,
-                    intent=Intent.LAB_REVIEW.value,
-                    content=None,
-                    required=True,
-                )
-        elif provider_context is not None:
-            result = await agent.run(request, profile, provider_context=provider_context)
-        else:
-            result = await agent.run(request, profile)
-        self.audit.record(trace_id=trace_id, profile=profile, event="agent_complete",
-                          details={"agent": result.agent},
-                          content_for_hash=result.content)
-
-        # 4) Doctrinal arbitration. Lab values never enter a non-BAA hop: no
-        # draft or structured token is rendered. Magisterium receives only a
-        # deterministic policy projection derived from the actual answer, on
-        # the normal routed LOW/HIGH review. Other lanes retain the existing
-        # de-identification boundary before Magisterium.
-        if intent == Intent.LAB_REVIEW:
-            safe_lab_projection = _value_safe_lab_review_projection(
-                result.content, result.data
-            )
-            arbiter_input = deidentify(safe_lab_projection).text
-            self.audit.record(
-                trace_id=trace_id,
-                profile=profile,
-                event="lab_values_withheld_from_non_baa_arbiter",
-            )
-        else:
-            deid = deidentify(result.content)
-            arbiter_input = deid.text
-            if deid.found_phi:
-                self.audit.record(
-                    trace_id=trace_id,
-                    profile=profile,
-                    event="phi_scrubbed_for_arbiter",
-                    details={"types": deid.redacted_types},
-                )
-        verdict = await self.arbiter.review(
-            deidentified_draft=arbiter_input, intent=intent, sensitivity=sensitivity
-        )
-        self.audit.record(trace_id=trace_id, profile=profile, event="arbitration",
-                          details={"conforms": verdict.conforms})
-
-        # If non-conforming, apply Magisterium's guidance. For a REFERRAL the
-        # useful payload is the matched (faithful Catholic) provider list, so we
-        # never discard it — we append the doctrinal note. For content answers
-        # (engagement/concierge) a non-conforming draft is replaced outright.
-        answer = result.content
-        if not verdict.conforms and verdict.revised_content:
-            if intent == Intent.REFERRAL:
-                answer = (result.content
-                          + "\n\n*A note in keeping with Catholic teaching:* "
-                          + verdict.revised_content)
-            else:
-                answer = (
-                    "A note in keeping with Catholic teaching: " + verdict.revised_content
-                )
-
-        citations = list(result.citations) + list(verdict.citations)
-        return await self._finalize(answer, intent, profile, trace_id,
-                              audit_turn=audit_turn,
-                              platform_turn=platform_turn,
-                              user_receipt=user_receipt,
-                              history_context_ref=history_context_ref,
-                              provider_context_ref=provider_context_ref,
-                              citations=citations,
-                              doctrinal=verdict, structured=result.data)
 
     # ------------------------------------------------------------------
     # Journey digest — the answer to the multi-session context problem.
@@ -1410,7 +1431,7 @@ class Sovereign:
 
     # ------------------------------------------------------------------
     async def _finalize(
-        self, answer: str, intent: Intent, profile: ComplianceProfile, trace_id: str,
+        self, answer: str, intent: Intent | None, profile: ComplianceProfile, trace_id: str,
         *, citations: Optional[list[Citation]] = None, doctrinal=None,
         structured: Optional[dict] = None, safety_notice: Optional[str] = None,
         sensitive_mode: bool = False, audit_turn: Optional[AuditTurn] = None,
@@ -1419,6 +1440,10 @@ class Sovereign:
         provider_context_ref: Optional[str] = None,
         history_context_ref: Optional[str] = None,
     ) -> ChatResponse:
+        upstream_unavailable = safety_notice == "upstream_unavailable"
+        unavailable = upstream_unavailable or safety_notice == "provider_context_unavailable"
+        if intent is None and not upstream_unavailable:
+            raise ValueError("an unrouted response must be unavailable")
         if sensitive_mode and intent != Intent.SENSITIVE_DISCLOSURE:
             raise ValueError("sensitive mode requires sensitive-disclosure intent")
         if sensitive_mode:
@@ -1428,7 +1453,10 @@ class Sovereign:
             disclaimer = safety.disclaimer_for(profile.persona)
             final = f"{answer}\n\n— {disclaimer}"
             presentation = StandardPresentation(
-                mode="standard", suppress=[], human_contact=None,
+                mode="standard",
+                suppress=(["intent_badge", "doctrinal_badge", "citations", "structured_cards"]
+                          if upstream_unavailable else []),
+                human_contact=None,
             )
         if platform_turn is not None:
             if self.platform_conversation is None or user_receipt is None:
@@ -1437,7 +1465,7 @@ class Sovereign:
                     code="CANONICAL_TURN_UNAVAILABLE",
                     retryable=True,
                 )
-            outcome = ("unavailable" if safety_notice == "provider_context_unavailable"
+            outcome = ("unavailable" if unavailable
                        else "refused" if safety_notice == "capability_denied" else "completed")
             context_dependency = (
                 {"provider_context_ref": provider_context_ref}
@@ -1456,6 +1484,9 @@ class Sovereign:
                 )
             except ConversationDeliveryError as error:
                 deactivate_usage_context()
+                if upstream_unavailable:
+                    # The model attempt is over; retrying its UUID cannot rerun it.
+                    error = ConversationDeliveryError(error.category, retryable=False)
                 raise self._delivery_mount_error(
                     error=error,
                     owner="conversation",
@@ -1479,7 +1510,7 @@ class Sovereign:
                 ) from None
         self.audit.record(trace_id=trace_id, profile=profile, event="egress",
                           content_for_hash=final)
-        status = ("failed" if safety_notice == "provider_context_unavailable"
+        status = ("failed" if unavailable
                   else "refused" if safety_notice == "capability_denied" else "completed")
         usage_refs = tuple(
             PlatformReference(kind="model_usage", ref=reference)
@@ -1492,8 +1523,8 @@ class Sovereign:
                 audit_turn=audit_turn,
                 event_type=f"sovereign.turn.{status}",
                 status=status,
-                route=intent.value,
-                intent=intent.value,
+                route=intent.value if intent is not None else None,
+                intent=intent.value if intent is not None else None,
                 content=final,
                 required=False,
                 platform_refs=usage_refs,
@@ -1504,7 +1535,9 @@ class Sovereign:
                 extra={"trace_id": audit_turn.trace_id},
             )
         return ChatResponse(
-            answer=final, intent=intent, persona=profile.persona,
+            # Preserve the existing wire enum when routing itself failed; the
+            # fallback has no inferred route in audit and suppresses its badge.
+            answer=final, intent=intent or Intent.ENGAGEMENT, persona=profile.persona,
             citations=citations or [], doctrinal_review=doctrinal,
             structured=structured or {}, safety_notice=safety_notice,
             trace_id=trace_id,

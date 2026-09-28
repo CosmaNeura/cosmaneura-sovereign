@@ -27,6 +27,10 @@ class UnsafeOutboundURL(RuntimeError):
     pass
 
 
+class UpstreamCallError(RuntimeError):
+    """Sanitized provider I/O failure; never contains a request or draft."""
+
+
 def safe_error_message(exc: Exception, *, context: str) -> str:
     """A stable, non-leaking description of an upstream failure."""
     # Deliberately drop the exception's stringified args (which may contain the
