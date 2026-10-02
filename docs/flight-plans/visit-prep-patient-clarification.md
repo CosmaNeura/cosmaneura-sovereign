@@ -2,7 +2,7 @@
 
 This branch adds the bounded patient clarification generator to Sovereign and
 reuses its existing model client and Core usage reporting. It supports the
-approved five-topic Visit Prep interview without installing a patient route,
+approved five-topic Visit Prep interview through a dormant Core-workload receiver,
 changing provider Session Prep or authorizing live analysis. Core continues to
 own sources, proposals, patient decisions, the provider package and retention.
 
@@ -24,23 +24,34 @@ that supplied text passed Core's clinical de-identifier. Its eventual host must
 prove those facts. The existing non-PHI tripwire is defense in depth, not an
 alternative to Core protection.
 
-## Paired Core work and remaining connection
+## Paired Core connection
 
 Core's paired branch selects current context under the existing patient
 authority, applies Core clinical de-identification outside database locks and
 maps accepted excerpts back only through unchanged original words. Core's
 ordinary proposal and explicit patient-decision commands remain authoritative.
 
-The dedicated Core to Sovereign authenticated transport and patient context
-and usage lineage contract remain unfinished. The provider Companion display
-contract is not permission for conversational analysis. Neither a generic
-`/chat` call nor a fabricated provider mount is substituted. Browser generation
-and controlled service acceptance follow the actual connection.
+The dedicated receiver accepts only a signed app-only Core workload with the
+configured Entra tenant/audience/client and `VisitPrep.Clarify` role. It verifies
+RS256 through bounded public-key transport, claims a one-use Core request bound
+to the exact protected payload and calls the existing model client. Its distinct
+patient accounting subject carries no provider interaction or mount credential.
+Content-free usage returns to Core's single ledger before the reply is returned.
+Core remains responsible for fresh source checks, grounded proposal persistence
+and the patient's explicit accept/edit action. Generic `/chat`, provider tokens
+and the companion display capability grant no access to this rail.
+
+Core supplies generated migration `dd93e7a689f1` after `6c5c8f775016` for its
+request fence and additive usage origin. Receiver-first release requires that
+Core expand and callback implementation before this Sovereign sender is enabled.
+The new wire/capability still requires canonical architecture reconciliation,
+actual model/privacy-service acceptance and a founder-controlled release.
+No live identity, role grant, environment configuration or service is created.
 
 ## Evidence and recovery
 
-Focused checks use invented text, an offline model transport and a synthetic
-usage writer through the actual metered client. They cover bounded questions,
+Focused checks use invented text, actual signed workload JWTs, offline Core/model
+transports and the actual metered client. They cover bounded questions,
 organization, gates, malformed output, privacy tripwire and usage failure. Exact
 commands, tested commits and tool limitations are recorded in the draft PR.
 They are not live model, privacy-provider or clinical qualification.

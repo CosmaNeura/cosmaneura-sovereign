@@ -288,6 +288,10 @@ class Settings(BaseSettings):
     # Total budget for one canonical phase or observational write, including
     # same-key retries. Keep telemetry failure from consuming the chat timeout.
     platform_write_timeout_seconds: float = Field(default=3.0, ge=0.1, le=10.0)
+    # Separate patient rail: these identify the Core workload, not a provider.
+    visit_prep_core_tenant_id: Optional[str] = None
+    visit_prep_core_client_id: Optional[str] = None
+    visit_prep_receiver_audience: Optional[str] = None
 
     # Session Prep's first operational slice is intentionally restricted to one
     # explicitly configured, server-only synthetic staging handle. It must never

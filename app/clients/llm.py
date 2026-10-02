@@ -49,6 +49,7 @@ class LLMClient:
         use_doctrinal_mcp: bool = False,
         usage_call_kind: CallKind = "drafting",
         usage_purpose: str = "response_drafting",
+        usage_workstream: str = "sovereign",
     ) -> str:
         model = model or self.s.reasoning_model
 
@@ -59,6 +60,7 @@ class LLMClient:
             model=model,
             deployment=model if provider == "azure_openai" else None,
             purpose=usage_purpose,
+            workstream=usage_workstream,
         )
         try:
             answer, facts = await self._complete_unreported(

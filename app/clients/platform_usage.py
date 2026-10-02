@@ -14,7 +14,7 @@ import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Literal, Optional
+from typing import Awaitable, Callable, Literal, Optional, Protocol
 from urllib.parse import urlparse
 
 import httpx
@@ -141,8 +141,8 @@ class ModelCallSpan:
 
 @dataclass
 class _UsageContext:
-    turn: PlatformTurn
-    client: "PlatformUsageClient"
+    turn: UsageSubject
+    client: UsageReporter
     next_sequence: int = 1
     receipts: dict[int, str] = field(default_factory=dict)
     failed_sequences: set[int] = field(default_factory=set)
@@ -178,8 +178,18 @@ _USAGE_CONTEXT: ContextVar[Optional[_UsageContext]] = ContextVar(
 )
 
 
+class UsageSubject(Protocol):
+    """Accounting identity only; not a provider interaction or mount grant."""
+    client_turn_id: uuid.UUID
+    trace_id: str
+
+
+class UsageReporter(Protocol):
+    async def report(self, *, turn, request: ModelUsageRequest) -> UsageWriteReceipt: ...
+
+
 def activate_usage_context(
-    *, turn: PlatformTurn, client: "PlatformUsageClient"
+    *, turn: UsageSubject, client: UsageReporter
 ) -> None:
     """Begin one request-local sequence after canonical user acceptance."""
     _USAGE_CONTEXT.set(_UsageContext(turn=turn, client=client))
