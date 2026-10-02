@@ -63,7 +63,9 @@ async def clarify_patient_topic(request: Request):
             )
             digest = hashlib.sha256(
                 json.dumps(
-                    topic.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+                    topic.model_dump(mode="json", exclude_none=True),
+                    sort_keys=True,
+                    separators=(",", ":"),
                 ).encode()
             ).hexdigest()
             authority = PatientAuthorityClient(settings, grant=grant)
