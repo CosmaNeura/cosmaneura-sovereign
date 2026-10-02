@@ -175,6 +175,8 @@ class Settings(BaseSettings):
     anthropic_version: str = "2023-06-01"
     reasoning_model: str = "claude-sonnet-4-6"          # routing-aware reasoning
     fast_model: str = "claude-haiku-4-5-20251001"       # cheap classification
+    # Dormant Visit Prep patient clarification; separate from provider Session Prep.
+    visit_prep_patient_clarification_enabled: bool = False
 
     # Azure OpenAI (llm_provider="azure_openai"). reasoning_model / fast_model
     # are interpreted as Azure *deployment* names (e.g. "gpt-4.1-2025-04-14").

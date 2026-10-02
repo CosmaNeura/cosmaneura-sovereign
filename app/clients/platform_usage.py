@@ -189,6 +189,11 @@ def deactivate_usage_context() -> None:
     _USAGE_CONTEXT.set(None)
 
 
+def usage_context_active() -> bool:
+    """A specialized generator must not run outside canonical usage authority."""
+    return _USAGE_CONTEXT.get() is not None
+
+
 def begin_model_call(
     *,
     call_kind: CallKind,
