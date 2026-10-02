@@ -107,13 +107,21 @@ def _scenario(monkeypatch):
 
     async def model(self, **kwargs):
         calls.append(("model", kwargs))
-        words = json.loads(kwargs["prompt"])["topic"]["reported_words"]
+        topic = json.loads(kwargs["prompt"])["topic"]
+        words = topic.get("explanation_words", topic["reported_words"])
         return json.dumps(
             dict(
                 kind="organize",
                 prompt_code=None,
                 statements=[
-                    dict(source="answer", start=0, end=len(words), quote=words)
+                    dict(
+                        source="explanation"
+                        if "explanation_words" in topic
+                        else "answer",
+                        start=0,
+                        end=len(words),
+                        quote=words,
+                    )
                 ],
             )
         ), ProviderUsageFacts(
@@ -145,14 +153,33 @@ def _scenario(monkeypatch):
     return TestClient(app), topic, headers, calls, analysis, settings
 
 
-def test_signed_core_request_claims_meters_and_returns_bounded_reply(monkeypatch):
+@pytest.mark.parametrize("choice", [False, True])
+def test_signed_core_request_claims_meters_and_returns_bounded_reply(
+    monkeypatch, choice
+):
     client, topic, headers, calls, analysis, _ = _scenario(monkeypatch)
+    if choice:
+        topic.update(
+            kind="choice",
+            reported_words="Most days",
+            explanation_words="My invented explanation.",
+        )
     response = client.post(
         "/service/v1/visit-prep/clarification", headers=headers(), json=topic
     )
     assert response.status_code == 200, response.text
     assert response.json()["analysis_id"] == analysis
-    assert response.json()["reply"]["statements"][0]["quote"] == topic["reported_words"]
+    assert response.json()["reply"]["statements"][0]["quote"] == topic.get(
+        "explanation_words", topic["reported_words"]
+    )
+    import hashlib
+
+    assert (
+        calls[0][1]["topic_digest"]
+        == hashlib.sha256(
+            json.dumps(topic, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
     assert [call[0] for call in calls] == [
         "/service/v1/visit-prep/patient-analysis/claim",
         "model",

@@ -26,7 +26,7 @@ from app.compliance.phi import assert_no_phi
 PROTECTION_PROFILE = "core_azure_deid_surrogate_2024_11_15_v1"
 PROMPT_VERSION = "patient_clarification_quotes_v1"
 PromptCode = Literal["detail", "sequence", "priority", "background"]
-WordSource = Literal["answer", "clarification_1", "clarification_2"]
+WordSource = Literal["answer", "explanation", "clarification_1", "clarification_2"]
 Words = Annotated[str, Field(min_length=1, max_length=2000, strict=True)]
 
 
@@ -61,6 +61,7 @@ class ProtectedTopic(Closed):
     )
     reported_words: Words = Field(repr=False)
     turns: Annotated[tuple[ProtectedTurn, ...], Field(max_length=2)] = Field(repr=False)
+    explanation_words: Words | None = Field(default=None, repr=False)
 
     @field_validator("physician_prompt", "reported_words")
     @classmethod
@@ -71,6 +72,10 @@ class ProtectedTopic(Closed):
     def unique_prompts(self):
         if len({turn.prompt_code for turn in self.turns}) != len(self.turns):
             raise ValueError("invalid_clarification_context")
+        if self.explanation_words is not None:
+            _words(self.explanation_words)
+            if self.kind != "choice":
+                raise ValueError("invalid_clarification_context")
         return self
 
 
@@ -116,6 +121,7 @@ def validate_reply(topic: ProtectedTopic, reply: ClarificationReply) -> None:
         raise ClarificationUnavailable()
     sources = {
         "answer": topic.reported_words,
+        **({"explanation": topic.explanation_words} if topic.explanation_words else {}),
         **{
             f"clarification_{i + 1}": turn.patient_words
             for i, turn in enumerate(topic.turns)
@@ -123,6 +129,9 @@ def validate_reply(topic: ProtectedTopic, reply: ClarificationReply) -> None:
     }
     spans: dict[str, list[tuple[int, int]]] = {}
     for span in reply.statements:
+        # A selected option is context, not patient-authored explanatory prose.
+        if topic.kind == "choice" and span.source == "answer":
+            raise ClarificationUnavailable()
         text = sources.get(span.source)
         if (
             text is None
@@ -162,8 +171,10 @@ start/end offsets, not byte offsets. Preserve doses, numbers, time order,
 uncertainty and contradictions; do not turn an excerpt into a new assertion.
 Do not quote the physician prompt or surrogate names/dates. Never output new
 clinical or conversational prose. A coded answer remains its code; accompanying
-words do not replace it. If unable to stay in scope, return unavailable. Reply
-only with JSON matching the supplied schema, no Markdown or extra keys."""
+words do not replace it. If unable to stay in scope, return unavailable.
+For a choice, organize only explanation or follow-up excerpts; never quote the
+selected option into explanatory prose. With neither, ask a neutral follow-up.
+Reply only with JSON matching the supplied schema, no Markdown or extra keys."""
 
 
 async def generate_clarification(
@@ -192,13 +203,14 @@ async def generate_clarification(
         for text in (
             topic.physician_prompt,
             topic.reported_words,
+            *((topic.explanation_words,) if topic.explanation_words else ()),
             *(turn.patient_words for turn in topic.turns),
         ):
             assert_no_phi(text)
         before = successful_usage_refs()
         prompt = json.dumps(
             {
-                "topic": topic.model_dump(mode="json"),
+                "topic": topic.model_dump(mode="json", exclude_none=True),
                 "reply_schema": ClarificationReply.model_json_schema(),
             },
             ensure_ascii=False,

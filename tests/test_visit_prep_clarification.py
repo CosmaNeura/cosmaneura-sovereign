@@ -16,9 +16,11 @@ from app.clients.platform_usage import (
     deactivate_usage_context,
 )
 from app.clients.visit_prep_clarification import (
+    ClarificationReply,
     ClarificationUnavailable,
     ProtectedTopic,
     generate_clarification,
+    validate_reply,
 )
 from app.config import Settings
 
@@ -166,6 +168,27 @@ def test_followup_then_organization_preserves_exact_patient_words(monkeypatch):
     )
     scenario, _, _ = _run(monkeypatch, topic=topic, output=output)
     assert asyncio.run(scenario).statements[0].source == "clarification_1"
+
+
+def test_choice_organizes_protected_explanation_not_selected_option(monkeypatch):
+    words = "My invented explanatory words."
+    topic = _topic(kind="choice", reported_words="Most days", explanation_words=words)
+    output = json.dumps(
+        {
+            "kind": "organize",
+            "prompt_code": None,
+            "statements": [
+                {"source": "explanation", "start": 0, "end": len(words), "quote": words}
+            ],
+        }
+    )
+    scenario, calls, reports = _run(monkeypatch, topic=topic, output=output)
+    reply = asyncio.run(scenario)
+    assert reply.statements[0].source == "explanation" and len(reports) == 1
+    assert json.loads(calls[0]["prompt"])["topic"]["explanation_words"] == words
+    copied_option = ClarificationReply.model_validate_json(_reply(topic))
+    with pytest.raises(ClarificationUnavailable):
+        validate_reply(topic, copied_option)
 
 
 @pytest.mark.parametrize(
