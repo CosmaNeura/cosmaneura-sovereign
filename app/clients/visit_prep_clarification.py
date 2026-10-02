@@ -214,6 +214,7 @@ async def generate_clarification(
                 use_doctrinal_mcp=False,
                 usage_call_kind="drafting",
                 usage_purpose="visit_prep_patient_clarification",
+                usage_workstream="visit_prep",
             )
         if not (
             usage_reporting_complete()

@@ -25,6 +25,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
+import asyncio
+import json
+from uuid import UUID
+import httpx
 
 from app.compliance.netsec import assert_safe_outbound_url
 from app.config import AuthMode, Persona, Settings, get_settings
@@ -171,3 +175,64 @@ def resolve_principal(
     if not token:
         raise AuthError("missing bearer token")
     return verifier.verify(token)
+
+
+async def verify_visit_prep_core_workload(token: str, settings: Settings) -> None:
+    """Separate app-only Core admission, never patient/provider identity.
+
+    Fixed Entra v2 authority, one client, RS256 and bounded key fetch. Disabled
+    generic/dev auth never bypasses this verifier. Raw claims stay in this module.
+    """
+    try:
+        tenant, audience, client_id = (
+            str(UUID(value or "")) for value in (
+                settings.visit_prep_core_tenant_id, settings.visit_prep_receiver_audience,
+                settings.visit_prep_core_client_id)
+        )
+        if (not settings.visit_prep_patient_clarification_enabled
+            or any(UUID(value).int == 0 for value in (tenant, audience, client_id))
+            or jwt is None or not 1 <= len(token) <= 8192 or not token.isascii()
+            or any(char.isspace() for char in token)):
+            raise ValueError
+        header = jwt.get_unverified_header(token)
+        if (header.get("alg") != "RS256" or header.get("crit")
+            or not isinstance(header.get("kid"), str) or not 1 <= len(header["kid"]) <= 200):
+            raise ValueError
+        issuer = f"https://login.microsoftonline.com/{tenant}/v2.0"
+        async with asyncio.timeout(4):
+            async with httpx.AsyncClient(timeout=4, trust_env=False, follow_redirects=False) as client:
+                async with client.stream("GET", f"https://login.microsoftonline.com/{tenant}/discovery/v2.0/keys",
+                    headers={"Accept-Encoding": "identity"}) as response:
+                    if response.status_code != 200 or response.headers.get("content-encoding", "identity") != "identity":
+                        raise ValueError
+                    body = bytearray()
+                    async for part in response.aiter_bytes():
+                        body.extend(part)
+                        if len(body) > 65536:
+                            raise ValueError
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError
+                result[key] = value
+            return result
+        keys = json.loads(body, object_pairs_hook=unique)["keys"]
+        if not isinstance(keys, list) or len(keys) > 32:
+            raise ValueError
+        matches = [key for key in keys if isinstance(key, dict) and key.get("kid") == header["kid"]]
+        if (len(matches) != 1 or matches[0].get("kty") != "RSA"
+            or matches[0].get("use") not in {None, "sig"} or matches[0].get("alg") not in {None, "RS256"}):
+            raise ValueError
+        claims = jwt.decode(token, jwt.PyJWK.from_dict(matches[0], algorithm="RS256").key,
+            algorithms=["RS256"], issuer=issuer, audience=audience,
+            options={"require": ["sub", "tid", "iat", "nbf", "exp", "aud", "iss"]})
+        bounds = [claims.get(name) for name in ("nbf", "iat", "exp")]
+        if (not all(type(value) is int and 0 <= value <= 253402300799 for value in bounds)
+            or max(bounds[:2]) >= bounds[2] or claims.get("tid") != tenant or claims.get("aud") != audience
+            or claims.get("azp") != client_id or claims.get("idtyp") != "app" or "scp" in claims
+            or not isinstance(claims.get("roles"), list) or "VisitPrep.Clarify" not in claims["roles"]
+            or not all(isinstance(role, str) for role in claims["roles"])):
+            raise ValueError
+    except Exception:
+        raise AuthError("Visit Prep workload unavailable") from None

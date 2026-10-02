@@ -31,6 +31,7 @@ from app.schemas import (ChatRequest, ChatResponse,
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
 from app.security.mount import MountResolutionError
 from app.security.rate_limit import TokenBucketRateLimiter
+from app.routes_visit_prep import router as visit_prep_router
 from app.clients.conversation_read import (
     ConversationReadError, ConversationReadRequest, ConversationReadResponse,
 )
@@ -40,6 +41,7 @@ _settings = get_settings()
 validate_deployment_configuration(_settings)
 
 app = FastAPI(title="CosmaNeura Sovereign", version="0.1.0")
+app.include_router(visit_prep_router)
 _sovereign = Sovereign(_settings)
 _verifier = TokenVerifier(_settings)
 _public_chat_limiter = TokenBucketRateLimiter(
