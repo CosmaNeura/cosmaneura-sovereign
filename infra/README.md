@@ -33,6 +33,47 @@ with `./scripts/init-environment.sh <prod|staging>`; the script and preflight
 prove the backend key, and a prevent-destroy state guard rejects switching an
 initialized state to the other environment.
 
+### Production resource-group and GitHub OIDC bootstrap
+
+The production resource group and GitHub login identity can be bootstrapped
+without planning the broader registry, vault, logging, DeID, or Container Apps
+foundation. Start with the fail-closed production inputs, then create a named,
+saved plan:
+
+```bash
+cp infra/deployment.auto.tfvars.example infra/deployment.auto.tfvars
+./infra/scripts/plan-production-gha-bootstrap.sh
+```
+
+The planner verifies the saved plan contains exactly five creates: the `prod`
+state guard, `cosmaneura-sovereign-prod`, its
+`cosmaneura-sovereign-prod-gha-identity`, the GitHub Environment-scoped
+federated credential, and an RG-scoped `Reader` grant. Reader is the minimum
+bootstrap permission needed for `azure/login` to discover and select the
+subscription; later build and deployment permissions remain scoped to their
+individual resources. The script fails closed on any update, destroy, drift,
+different OIDC subject, or additional planned resource.
+
+The script never applies. Only after a human explicitly names the reviewed
+apply should an operator run the exact saved artifact:
+
+```bash
+tofu -chdir=infra apply sovereign-prod-rg-gha-identity.tfplan
+```
+
+After that apply, set the repository variable from this stack—never from the
+Cosmas app or the staging runtime identity:
+
+```bash
+gh variable set AZURE_CLIENT_ID \
+  --repo CosmaNeura/cosmaneura-sovereign \
+  --body "$(tofu -chdir=infra output -raw gha_identity_client_id)"
+```
+
+This bootstrap only makes the dedicated identity eligible to complete Azure
+OIDC login. It does not create the registry or apps, grant their mutation
+roles, enable a release, dispatch Build & Publish, or make deployment succeed.
+
 ### Phase-2 state-recovery gate
 
 Do not apply the Log Analytics workspaces or Container App Environments until
