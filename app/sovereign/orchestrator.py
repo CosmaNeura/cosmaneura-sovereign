@@ -84,6 +84,7 @@ from app.clients.session_prep_contract import (
     SessionPrepContextReadRequest,
     SessionPrepDetail,
 )
+from app.clients.session_prep_facts_contract import SessionPrepFactsRequest, SessionPrepFactsArguments
 from app.clients.labs import (
     LabsCategory,
     LabsPurpose,
@@ -121,7 +122,7 @@ from app.security.record_grant import (
 from app.compliance.netsec import UpstreamCallError
 from app.sovereign.arbiter import DoctrinalArbiter
 from app.sovereign.router import Router
-from app.session_prep import (SessionPrepOutcome, project_session_prep_result,
+from app.session_prep import (SessionPrepOutcome, project_session_prep_result, project_session_prep_facts,
                               render_session_prep_text)
 
 
@@ -439,6 +440,7 @@ class Sovereign:
         *,
         client_turn_id: uuid.UUID,
         mount_context_token: Optional[str],
+        include_structured_facts: bool = False,
     ) -> SessionPrepOutcome:
         """Read and directly project the brief selected by server-side authority."""
         deactivate_usage_context()
@@ -535,6 +537,10 @@ class Sovereign:
                 detail=SessionPrepDetail.BRIEF,
             ),
         )
+        if include_structured_facts:
+            contract_request = SessionPrepFactsRequest(arguments=SessionPrepFactsArguments(
+                source_turn_ref=accepted.turn_ref, context_snapshot_ref=context_snapshot_ref,
+            ))
         try:
             contract_response = await self.session_prep.read(
                 turn=turn,
@@ -559,7 +565,8 @@ class Sovereign:
                 retryable=error.retryable,
             ) from None
 
-        projection: SessionPrepResponse = project_session_prep_result(
+        projector = project_session_prep_facts if include_structured_facts else project_session_prep_result
+        projection: SessionPrepResponse = projector(
             contract_response.result,
             client_turn_id=resolution.client_turn_id,
         )
@@ -584,7 +591,7 @@ class Sovereign:
                 answer=final_text,
                 outcome=(
                     "unavailable"
-                    if projection.state == "unavailable"
+                    if projection.state == "unavailable" and getattr(projection, "facts_state", None) != "ready"
                     else "completed"
                 ),
                 presentation=presentation.model_dump(mode="json"),

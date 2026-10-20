@@ -65,7 +65,7 @@ async function fixture() {
       disclaimer: "Synthetic", emergency_note: "Call 911 in an emergency.",
       walkthrough_mode: "local_synthetic",
     });
-    assert(url.endsWith("/session-prep"), "unexpected request");
+    assert(url.endsWith("/session-prep/structured-facts"), "unexpected request");
     f.requests.push(options);
     if (f.latency) await new Promise(resolve => setTimeout(resolve, f.latency));
     const mode = f.mode;

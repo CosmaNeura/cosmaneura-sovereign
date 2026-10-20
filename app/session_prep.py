@@ -12,13 +12,26 @@ from app.clients.session_prep_contract import (
     SessionPrepReadyResult,
     SessionPrepRefreshingResult,
 )
+from app.clients.session_prep_facts_contract import SessionPrepFactsResult
+from app.clients.provider_evidence import _literal_markdown
 from app.schemas import (
+    SessionPrepFactsResponse, SessionPrepProjectedFacts, SessionPrepProjectedFact,
+    SessionPrepProjectedCorrection,
     SessionPrepProjectedBrief,
     SessionPrepProjectedPatientReport,
     SessionPrepResponse,
 )
 
 MAX_SESSION_PREP_CANONICAL_CHARS = 19_000
+FACT_LABELS = {
+    "planned": "Planned", "documented_taking": "Taking documented in note",
+    "documented_continued": "Continued in note", "documented_started": "Started in note",
+    "documented_prescribed": "Prescription documented", "documented_listed": "Listed; use not confirmed",
+    "documented_not_taking": "Not taking documented", "stopped": "Stopped in note",
+    "superseded": "Superseded in note", "ordered": "Ordered", "resulted": "Result documented",
+    "cancelled": "Cancelled", "not_ordered": "Not ordered", "order_not_documented": "Order not documented",
+    "result_not_documented": "Result not documented", "measured": "Measurement documented",
+}
 
 @dataclass(frozen=True)
 class SessionPrepOutcome:
@@ -118,7 +131,52 @@ def project_session_prep_result(
     )
 
 
-def render_session_prep_text(response: SessionPrepResponse) -> str:
+def project_session_prep_facts(
+    result: SessionPrepFactsResult | SessionPrepContextReadResult, *, client_turn_id: uuid.UUID,
+) -> SessionPrepFactsResponse:
+    """Project exact observations without exposing any authority/source handles."""
+    preparation = result.preparation if isinstance(result, SessionPrepFactsResult) else result
+    original = project_session_prep_result(preparation, client_turn_id=client_turn_id)
+    source = result.structured_facts if isinstance(result, SessionPrepFactsResult) else None
+    facts = None
+    if source is not None:
+        corrections = {}
+        for fact in source.facts:
+            for prior in fact.supersedes:
+                if prior not in corrections or (corrections[prior].source_at, corrections[prior].start) < (fact.evidence.source_at, fact.evidence.start):
+                    corrections[prior] = fact.correction_evidence
+        facts = SessionPrepProjectedFacts(
+            coverage=source.coverage, source_dates=[item.source_at for item in source.sources],
+            selection_limited=source.selection_limited, facts_limited=source.facts_limited,
+            facts=[SessionPrepProjectedFact(
+                kind=item.kind, subject=item.subject, value=item.value, state=item.state,
+                setting=item.setting, note_date=item.evidence.source_at, section=item.evidence.section,
+                quote=item.evidence.quote, correction=(SessionPrepProjectedCorrection(
+                    note_date=corrections[item.fact_ref].source_at,
+                    section=corrections[item.fact_ref].section,
+                    quote=corrections[item.fact_ref].quote,
+                ) if item.fact_ref in corrections else None),
+            ) for item in source.facts],
+        )
+    response = SessionPrepFactsResponse(
+        **original.model_dump(),
+        facts_state=result.facts_state if isinstance(result, SessionPrepFactsResult) else "unsupported",
+        structured_facts=facts,
+    )
+    # Never show clinical rows which cannot also fit canonical persistence.
+    # Prefer newer observations; the limitation is explicitly displayed.
+    while len(render_session_prep_text(response)) > MAX_SESSION_PREP_CANONICAL_CHARS and facts and facts.facts:
+        facts.facts.pop(0)
+        facts.facts_limited = True
+    if len(render_session_prep_text(response)) > MAX_SESSION_PREP_CANONICAL_CHARS:
+        response = SessionPrepFactsResponse(
+            **_blocked_projection(client_turn_id).model_dump(), facts_state=response.facts_state,
+            structured_facts=facts,
+        )
+    return response
+
+
+def _render_preparation_text(response: SessionPrepResponse) -> str:
     """Render the exact deterministic text stored in canonical history."""
     if response.state == "pending":
         return (
@@ -163,4 +221,36 @@ def render_session_prep_text(response: SessionPrepResponse) -> str:
             brief.patient_reported.label,
             brief.patient_reported.summary,
         ])
+    return "\n".join(lines)
+
+
+def render_session_prep_text(response: SessionPrepResponse) -> str:
+    """Persist the deterministic visible brief and exact quoted observations."""
+    text = _render_preparation_text(response)
+    if not isinstance(response, SessionPrepFactsResponse):
+        return text
+    facts = response.structured_facts
+    if facts is None:
+        return text + ("\n\nDated tables aren’t available here yet." if response.facts_state == "unsupported" else "")
+    if response.state == "pending":
+        text = "The prepared brief is still being generated. Reviewed-source observations are available below."
+    elif response.state == "unavailable":
+        text = "The prepared brief is unavailable. Reviewed-source observations are available below."
+    lines = [text, "", "Reviewed-source observations — bounded explicit mentions",
+             "Note dates: " + ", ".join(value.date().isoformat() for value in facts.source_dates),
+             "These are dated note observations, not a complete medication list or order ledger."]
+    if facts.selection_limited or facts.facts_limited:
+        lines.append("Some sources or observations are omitted by the preparation limits; consult reviewed notes.")
+    if not facts.facts:
+        lines.append("No supported observations are shown; this does not establish absence from the chart.")
+    for fact in facts.facts:
+        label = FACT_LABELS[fact.state]
+        if fact.correction:
+            label += f"; superseded by correction dated {fact.correction.note_date.date().isoformat()}"
+        lines.extend(["", _literal_markdown(f"{fact.kind.title()} · {fact.subject} {fact.value or ''} · {label}"),
+                      _literal_markdown(f"Note {fact.note_date.date().isoformat()} · {fact.section}"),
+                      *["> " + _literal_markdown(line) for line in fact.quote.splitlines()]])
+        if fact.correction:
+            lines.extend([_literal_markdown(f"Correction note {fact.correction.note_date.date().isoformat()} · {fact.correction.section}"),
+                          *["> " + _literal_markdown(line) for line in fact.correction.quote.splitlines()]])
     return "\n".join(lines)

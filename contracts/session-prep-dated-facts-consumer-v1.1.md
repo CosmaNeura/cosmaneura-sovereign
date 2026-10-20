@@ -1,0 +1,85 @@
+# Session Prep dated observations consumer
+
+Risk: Tier 2, provider/PHI path. This is an additive read/display change, with no
+schema migration, automatic chart writes, model calls, auth/cohort changes,
+service grants, new dependencies or changes to the v1 artifact/worker lifecycle.
+
+## Exchange and browser surface
+
+The existing `/session-prep` route, browser response and Core 1.0 request remain
+unchanged. The panel uses `POST /session-prep/structured-facts` with the same
+closed `{client_turn_id}` body and negotiated embed 1.0 headers. Existing current
+mount resolution, provider capability checks, record context, accepted canonical
+`session-prep.open` action and final-response persistence precede delivery.
+The browser cannot select a source, context handle, tool version or visit URL.
+
+The new route explicitly requests Core `session-prep.context.read@1.1.0` and
+returns browser schema 1.1.0: the existing eight brief projection fields plus
+`schema_version`, `facts_state` (ready/unavailable/unsupported), and nullable
+`structured_facts`. Its closed fields are coverage, selected source dates,
+selection/fact limits and dated observation rows. Rows contain kind, subject,
+exact value, documented state, measurement setting, note date, section, literal
+quote, and optional dated correction proof. Source/fact refs, revisions, span
+offsets, snapshot/brief handles, digests and authority fields remain server-only.
+No source URLs are fabricated. Note dates are not inferred start/result dates.
+
+Both server and panel validate the closed shape. The server matches every row's
+source ref/revision/date to the selected metadata and checks exact span lengths,
+subject/value quotation membership, correction entity and strictly earlier
+observations. Equal-date correction links require ordered non-overlapping spans
+in the same exact source revision/section; distinct sections/sources establish
+no ordering. The browser receives the already validated dated proof.
+These checks establish provenance, not clinical truth or semantic entailment.
+
+## Bounds and partial availability
+
+Core 1.1 UTF-8 responses are streamed with a 512 KiB byte bound; Core 1.0 retains
+its 128 KiB bound. Compressed, duplicate, malformed, uncorrelated and future-dated
+responses fail closed. The 80,000-character/48-row/1,200-character-quote fact-set
+bounds are also validated. Visible rows must fit the existing 19,000-character
+canonical-history budget. Older observations are omitted first with an explicit
+limits notice; the exact deterministic displayed content is persisted before
+egress. No source observation is displayed as an unpersisted model draft.
+
+Ready sources can supply observations while a brief is pending/unavailable.
+The panel retains its bounded completion polling and exposes the tables during
+that wait. An empty supported projection never establishes absence of medicine,
+an order or a result. The tables are explicitly limited dated observations,
+not an exhaustive active medication list or order ledger. Earlier rows retain
+original status/date and show exact later supersession evidence separately.
+The UI uses literal DOM text, expandable evidence and column headers, and removes
+old content on record/source changes and access failures.
+
+Only Core's exact correlated 404 unknown-tool problem permits an automatic 1.0
+fallback. That fallback uses a distinct idempotency key within the same 3-call /
+10-second budget. Auth denial, conflict, service failure, malformed responses and
+an unexpected successful 1.0 envelope never trigger fallback. A fallback shows
+the existing brief with an explicit unavailable dated-tables message.
+
+## Deployment and recovery flight plan
+
+1. Review and deploy Core's additive 1.1 receiver, including asserted-patient and
+   subject-bound correction fixes (Core PR790, final candidate d9a4a3d).
+2. Review and deploy this Sovereign consumer after the existing literal citation
+   cards candidate 25f72637. Preserve current workload/mount settings and the
+   provider scope. Verify the additive route from that exact deployment.
+3. Update the Core-hosted pinned panel asset to this reviewed Sovereign commit
+   through the coordinated staging release process. Verify the served panel SHA,
+   rather than assuming that changing the Sovereign service updates Core's copy.
+4. Smoke-test synthetic ready/pending/unavailable brief, a dated correction,
+   revoked/changed source and record switch before wider provider testing.
+
+Recovery is to restore the previously reviewed panel/service revision using the
+existing 1.0 route. Core's additive receiver can remain deployed. Preserve existing
+receipts/artifacts and all Scribe workloads; no migration/backfill is required.
+The existing chart Q&A 1.2 authority and literal reviewed-note citation cards are
+unchanged. Sharing this sidecar with Q&A later requires an explicit new closed
+exchange, rather than silently mutating 1.2 or reusing a Session Prep UI receipt.
+
+Validation: synthetic facts fixture generated by the actual Core d9a4a3d projector;
+ready and unavailable/pending brief projections, same-note correction ordering,
+malformed/future source rejection, narrowly verified fallback, split UTF-8 stream
+bounds, exact canonical persistence without a model call, literal quotation and
+record/source freshness in the real panel JS. Offline Chromium visual review at
+390×844 and 1280×1000 showed all three tables with no horizontal page overflow.
+No real patient data, staging writes or live provider-acceptance claim is involved.

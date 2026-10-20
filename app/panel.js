@@ -90,6 +90,13 @@
     "color:#b9dcef}.cnp-prep-section p{margin:0}",
     ".cnp-prep-section ul,.cnp-prep-section ol{margin:2px 0 0;padding-left:20px}",
     ".cnp-prep-section li+li{margin-top:5px}",
+    ".cnp-facts-table{width:100%;border-collapse:collapse;table-layout:fixed;margin-top:9px}",
+    ".cnp-facts-table caption{text-align:left;font-weight:700;color:#b9dcef;margin:8px 0}",
+    ".cnp-facts-table th,.cnp-facts-table td{padding:6px 4px;text-align:left;vertical-align:top;",
+    "border-bottom:1px solid var(--line);overflow-wrap:anywhere;font-size:11px}",
+    ".cnp-facts-table th{color:var(--muted)}.cnp-facts-table summary{cursor:pointer}",
+    ".cnp-fact-quote{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:5px 0}",
+    ".cnp-fact-correction{color:#efd196}.cnp-facts-notice{font-size:11px;color:var(--muted)}",
     ".cnp-root button:focus-visible,.cnp-root select:focus-visible,.cnp-root textarea:focus-visible,",
     ".cnp-root a:focus-visible,.cnp-root summary:focus-visible,.cnp-prep-view:focus-visible",
     "{outline:2px solid var(--accent2);outline-offset:3px}",
@@ -1139,11 +1146,61 @@
         });
     }
 
+    var prepFactLabels = {
+      planned: "Planned", documented_taking: "Taking documented in note",
+      documented_continued: "Continued in note", documented_started: "Started in note",
+      documented_prescribed: "Prescription documented", documented_listed: "Listed; use not confirmed",
+      documented_not_taking: "Not taking documented", stopped: "Stopped in note",
+      superseded: "Superseded in note", ordered: "Ordered", resulted: "Result documented",
+      cancelled: "Cancelled", not_ordered: "Not ordered", order_not_documented: "Order not documented",
+      result_not_documented: "Result not documented", measured: "Measurement documented",
+    };
+    var prepFactStates = {
+      medication: ["planned", "documented_taking", "documented_continued", "documented_started",
+        "documented_prescribed", "documented_listed", "documented_not_taking", "stopped", "superseded"],
+      order: ["ordered", "resulted", "cancelled", "not_ordered", "order_not_documented", "result_not_documented"],
+      vital: ["measured"],
+    };
+    function prepDate(value) {
+      return typeof value === "string" && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+        !isNaN(Date.parse(value));
+    }
+    function prepString(value, max) {
+      // Python contract bounds count Unicode characters; JS uses UTF-16 units.
+      return typeof value === "string" && Array.from(value).length > 0 &&
+        Array.from(value).length <= max;
+    }
+    function governedPrepFacts(value) {
+      if (!closedObject(value, ["coverage", "source_dates", "selection_limited", "facts_limited", "facts"]) ||
+          value.coverage !== "bounded_explicit_mentions" || !Array.isArray(value.source_dates) ||
+          value.source_dates.length < 1 || value.source_dates.length > 5 ||
+          !value.source_dates.every(prepDate) || typeof value.selection_limited !== "boolean" ||
+          typeof value.facts_limited !== "boolean" || !Array.isArray(value.facts) || value.facts.length > 48) return false;
+      return value.facts.every(function (fact) {
+        if (!closedObject(fact, ["kind", "subject", "value", "state", "setting", "note_date", "section", "quote", "correction"]) ||
+            !Object.prototype.hasOwnProperty.call(prepFactStates, fact.kind) || prepFactStates[fact.kind].indexOf(fact.state) < 0 ||
+            !prepString(fact.subject, 120) || (fact.value !== null && !prepString(fact.value, 120)) ||
+            !prepString(fact.section, 160) || !prepString(fact.quote, 1200) || !prepDate(fact.note_date) ||
+            value.source_dates.indexOf(fact.note_date) < 0 ||
+            (fact.kind === "vital" ? ["office", "home", "unspecified"].indexOf(fact.setting) < 0 || fact.value === null : fact.setting !== null)) return false;
+        var correction = fact.correction;
+        return correction === null || (closedObject(correction, ["note_date", "section", "quote"]) &&
+          prepDate(correction.note_date) && value.source_dates.indexOf(correction.note_date) >= 0 &&
+          Date.parse(correction.note_date) >= Date.parse(fact.note_date) &&
+          prepString(correction.section, 160) && prepString(correction.quote, 1200));
+      });
+    }
+
     function governedSessionPrep(value) {
       var keys = [
         "client_turn_id", "state", "freshness", "current_through", "source_count",
         "prepared_brief", "retry_after_seconds", "reason_code",
       ];
+      if (value && value.schema_version === "1.1.0") {
+        keys = keys.concat(["schema_version", "facts_state", "structured_facts"]);
+        if (["ready", "unavailable", "unsupported"].indexOf(value.facts_state) < 0 ||
+            (value.facts_state === "ready" ? !governedPrepFacts(value.structured_facts) : value.structured_facts !== null)) return null;
+      }
       if (!closedObject(value, keys) || typeof value.client_turn_id !== "string" ||
           !UUID_V4.test(value.client_turn_id) ||
           ["ready", "refreshing", "pending", "unavailable"].indexOf(value.state) < 0 ||
@@ -1215,6 +1272,61 @@
       prepView.appendChild(section);
     }
 
+    function prepFactTables(value) {
+      var facts = value.structured_facts;
+      if (!facts) {
+        if (value.facts_state === "unsupported") prepSection("Dated observations", ["Dated tables aren’t available here yet."]);
+        return;
+      }
+      var notice = document.createElement("p"); notice.className = "cnp-facts-notice";
+      notice.textContent = "Dated observations from reviewed notes. This is not a complete medication list or order ledger. Note dates: " +
+        facts.source_dates.map(function (date) { return date.slice(0, 10); }).join(", ") + ".";
+      if (facts.selection_limited || facts.facts_limited)
+        notice.textContent += " Some sources or observations are omitted by preparation limits; consult reviewed notes.";
+      prepView.appendChild(notice);
+      [ ["medication", "Medication observations"], ["order", "Order observations"], ["vital", "Measurements"] ].forEach(function (group) {
+        var rows = facts.facts.filter(function (fact) { return fact.kind === group[0]; });
+        if (!rows.length) return;
+        var table = document.createElement("table"); table.className = "cnp-facts-table";
+        var caption = document.createElement("caption"); caption.textContent = group[1]; table.appendChild(caption);
+        var head = document.createElement("thead"), headings = document.createElement("tr");
+        ["Observation", "Status in note", "Note date"].forEach(function (label) {
+          var cell = document.createElement("th"); cell.setAttribute("scope", "col");
+          cell.textContent = label; headings.appendChild(cell);
+        });
+        head.appendChild(headings); table.appendChild(head);
+        var body = document.createElement("tbody");
+        rows.forEach(function (fact) {
+          var row = document.createElement("tr");
+          [fact.subject + (fact.value ? " " + fact.value : "") + (fact.setting ? " (" + fact.setting + ")" : ""),
+            prepFactLabels[fact.state], fact.note_date.slice(0, 10)].forEach(function (label) {
+            var cell = document.createElement("td"); cell.textContent = label; row.appendChild(cell);
+          });
+          if (fact.correction) {
+            var changed = document.createElement("div"); changed.className = "cnp-fact-correction";
+            changed.textContent = "Superseded by correction dated " + fact.correction.note_date.slice(0, 10);
+            row.children[1].appendChild(changed);
+          }
+          body.appendChild(row);
+          var proofRow = document.createElement("tr"), proofCell = document.createElement("td"); proofCell.colSpan = 3;
+          var details = document.createElement("details"), summary = document.createElement("summary");
+          summary.textContent = "Source evidence · " + fact.section; details.appendChild(summary);
+          var quote = document.createElement("pre"); quote.className = "cnp-fact-quote";
+          quote.textContent = fact.quote; details.appendChild(quote);
+          if (fact.correction) {
+            var label = document.createElement("p"); label.className = "cnp-fact-correction";
+            label.textContent = "Correction · " + fact.correction.note_date.slice(0, 10) + " · " + fact.correction.section;
+            details.appendChild(label);
+            var correctionQuote = document.createElement("pre"); correctionQuote.className = "cnp-fact-quote";
+            correctionQuote.textContent = fact.correction.quote; details.appendChild(correctionQuote);
+          }
+          proofCell.appendChild(details); proofRow.appendChild(proofCell); body.appendChild(proofRow);
+        });
+        table.appendChild(body); prepView.appendChild(table);
+      });
+      if (!facts.facts.length) prepSection("Dated observations", ["No supported observations are shown. This does not establish absence from the chart."]);
+    }
+
     function currentPrep(cycle) {
       return cycle && state.prepCycle === cycle &&
         state.open && !document.hidden &&
@@ -1270,7 +1382,7 @@
         return;
       }
       cycle.lastRender = fingerprint;
-      if (value.state === "ready" && cycle.focusWhenReady) {
+      if ((value.state === "ready" || value.facts_state === "ready") && cycle.focusWhenReady) {
         state.prepFocused = true; cycle.focusWhenReady = false;
       }
       prepGo.textContent = value.state === "ready" ? "Update Session Prep" : "Open Session Prep";
@@ -1279,10 +1391,12 @@
           if (currentPrep(cycle)) return opts.onSessionPrepStateChange(value.state);
         }).catch(function () {});
       prepProgress.textContent = value.state === "ready"
-        ? "Your prepared brief is ready." : "Session Prep is unavailable.";
+        ? "Your prepared brief is ready." : value.facts_state === "ready"
+          ? "Reviewed-source observations are ready; the brief is " + value.state + "."
+          : "Session Prep is unavailable.";
       prepView.innerHTML = "";
       prepView.hidden = false;
-      state.prepHasBrief = value.state === "ready" || value.state === "refreshing";
+      state.prepHasBrief = value.state === "ready" || value.state === "refreshing" || value.facts_state === "ready";
       if (!state.prepHasBrief) state.prepCollapsed = false;
       syncPrepDisclosure();
       var stateLabel = document.createElement("div"); stateLabel.className = "cnp-prep-state";
@@ -1293,11 +1407,12 @@
       if (value.state === "pending" || value.state === "unavailable") {
         var empty = document.createElement("p");
         empty.textContent = value.state === "pending"
-          ? "The prepared brief is still being generated. No clinical content is available yet."
-          : value.reason_code === "no_eligible_sources"
+          ? value.facts_state === "ready" ? "The prepared brief is still being generated. Reviewed-source observations are available below." : "The prepared brief is still being generated. No clinical content is available yet."
+          : value.facts_state === "ready" ? "The prepared brief is unavailable. Reviewed-source observations are available below." : value.reason_code === "no_eligible_sources"
             ? "No eligible finalized notes are available for this encounter."
             : "We couldn’t load a prepared brief for this encounter. Try again; if the problem continues, contact support with the request reference below.";
         prepView.appendChild(empty);
+        prepFactTables(value);
         if (value.state === "unavailable" && value.reason_code !== "no_eligible_sources") {
           var reference = document.createElement("div"); reference.className = "cnp-prep-meta";
           reference.textContent = "Request reference: " + value.client_turn_id; prepView.appendChild(reference);
@@ -1340,6 +1455,7 @@
       prepSection("Cautions", brief.cautions);
       prepSection("Open threads", brief.open_threads);
       prepSection("Recap", [brief.recap]);
+      prepFactTables(value);
       prepSection("What changed since the last visit", brief.trajectory_and_material_changes);
       prepSection("Talking points", brief.talking_points);
       prepSection("Suggested outline", brief.suggested_outline, true);
@@ -1509,7 +1625,7 @@
       try {
         var clientTurnId = freshClientTurnId();
         return await runSessionPrepAttempt({
-          url: url + "/session-prep", cycle: cycle, clientTurnId: clientTurnId,
+          url: url + "/session-prep/structured-facts", cycle: cycle, clientTurnId: clientTurnId,
           background: background === true,
           body: JSON.stringify({ client_turn_id: clientTurnId }),
         });
