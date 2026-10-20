@@ -43,11 +43,18 @@
     ".cnp-fab{position:fixed;right:18px;bottom:18px;z-index:99998;width:52px;height:52px;",
     "border-radius:14px;border:1px solid var(--line);cursor:pointer;font-weight:800;font-size:20px;",
     "background:linear-gradient(135deg,var(--accent),#9c7a2f);color:#1a130a;box-shadow:0 6px 22px rgba(0,0,0,.4)}",
-    ".cnp-rail{position:fixed;top:0;right:0;bottom:0;z-index:99999;width:400px;max-width:96vw;",
+    ".cnp-rail{position:fixed;top:0;right:0;bottom:0;z-index:99999;width:460px;max-width:96vw;",
     "box-sizing:border-box;max-height:100dvh;overflow:hidden;",
     "display:none;flex-direction:column;background:var(--bg);border-left:1px solid var(--line);",
     "box-shadow:-12px 0 34px rgba(0,0,0,.45)}",
     ".cnp-rail.cnp-open{display:flex}",
+    ".cnp-rail.cnp-prep-focused{width:720px}.cnp-prep-focused .cnp-prep{flex:1 1 0;max-height:none}",
+    ".cnp-prep-focused .cnp-thread,.cnp-prep-focused .cnp-chips{display:none}",
+    ".cnp-record-context{flex-shrink:0;padding:0 14px;border-bottom:1px solid var(--line);font-size:12px}",
+    ".cnp-record-context:empty{display:none}.cnp-record-context a{color:#9bd5f5}",
+    ".cnp-record-context details[open]{max-height:160px;overflow-y:auto;overscroll-behavior:contain}",
+    ".cnp-history-stale{margin:10px 0;border:1px solid var(--line);border-radius:9px;padding:8px}",
+    ".cnp-history-stale summary{cursor:pointer;color:var(--muted);font-size:12px}",
     ".cnp-head,.cnp-chips,.cnp-foot{flex-shrink:0}",
     ".cnp-head{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line)}",
     ".cnp-logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#9c7a2f);",
@@ -58,7 +65,7 @@
     "letter-spacing:.45px;text-transform:uppercase}",
     ".cnp-sandbox[hidden]{display:none}",
     ".cnp-x{margin-left:auto;background:none;border:none;color:var(--muted);font-size:19px;cursor:pointer}",
-    ".cnp-prep{display:flex;flex-direction:column;flex:0 1 auto;min-height:0;max-height:45%;",
+    ".cnp-prep{display:flex;flex-direction:column;flex:0 1 auto;min-height:0;max-height:65%;",
     "box-sizing:border-box;overflow:hidden;padding:10px 14px;border-bottom:1px solid var(--line);background:#111a26}",
     ".cnp-prep[hidden]{display:none}.cnp-prep-actions{display:flex;gap:6px;flex-shrink:0}",
     ".cnp-prep-go{flex:1;min-width:0;background:var(--panel2);",
@@ -66,16 +73,22 @@
     "font-weight:700;cursor:pointer}.cnp-prep-go:disabled{opacity:.5}",
     ".cnp-prep-toggle{flex-shrink:0;background:var(--panel);border:1px solid var(--line);",
     "color:var(--ink);border-radius:9px;padding:6px 8px;font-size:11px;cursor:pointer}",
-    ".cnp-prep-toggle[hidden]{display:none}",
+    ".cnp-prep-toggle[hidden],.cnp-prep-focus[hidden]{display:none}",
+    ".cnp-prep-focus{background:var(--panel);border:1px solid var(--line);color:var(--ink);",
+    "border-radius:9px;padding:6px 8px;font-size:11px;cursor:pointer}",
     ".cnp-prep-view{margin-top:9px;padding:10px;border:1px solid var(--line);border-radius:9px;",
     "min-height:0;overflow-y:auto;overscroll-behavior:contain;",
     "background:var(--panel)}.cnp-prep-view[hidden]{display:none}",
     ".cnp-prep-state{font-size:10px;text-transform:uppercase;letter-spacing:.55px;",
     "color:var(--accent);font-weight:800}.cnp-prep-meta{font-size:10.5px;color:var(--muted);margin-top:3px}",
     ".cnp-prep-progress{flex-shrink:0;font-size:11px;color:var(--muted);margin-top:5px}",
-    ".cnp-prep-section{margin-top:9px}.cnp-prep-section h4{font-size:11px;margin:0 0 3px;",
-    "color:#b9dcef;text-transform:uppercase;letter-spacing:.4px}.cnp-prep-section p{margin:0}",
-    ".cnp-prep-section ul{margin:2px 0 0;padding-left:18px}",
+    ".cnp-prep-section{margin-top:12px}.cnp-prep-section h4{font-size:13px;margin:0 0 4px;",
+    "color:#b9dcef}.cnp-prep-section p{margin:0}",
+    ".cnp-prep-section ul,.cnp-prep-section ol{margin:2px 0 0;padding-left:20px}",
+    ".cnp-prep-section li+li{margin-top:5px}",
+    ".cnp-root button:focus-visible,.cnp-root select:focus-visible,.cnp-root textarea:focus-visible,",
+    ".cnp-root a:focus-visible,.cnp-root summary:focus-visible,.cnp-prep-view:focus-visible",
+    "{outline:2px solid var(--accent2);outline-offset:3px}",
     ".cnp-thread{flex:1 1 0;min-height:0;overflow-y:auto;padding:14px}",
     ".cnp-msg{margin:10px 0;display:flex}.cnp-msg.cnp-u{justify-content:flex-end}",
     ".cnp-b{max-width:88%;padding:10px 13px;border-radius:12px;background:var(--panel);",
@@ -112,6 +125,7 @@
     ".cnp-chip{font:inherit;font-size:11.5px;color:var(--muted);background:var(--panel);border:1px solid var(--line);",
     "border-radius:999px;padding:4px 10px;cursor:pointer}.cnp-chip:hover{color:var(--ink);border-color:var(--accent2)}",
     ".cnp-foot{border-top:1px solid var(--line);padding:10px 14px}",
+    ".cnp-format-help{font-size:11px;color:var(--muted);margin:5px 0 0}.cnp-format-help[hidden]{display:none}",
     ".cnp-row{display:flex;gap:7px;align-items:flex-end}",
     ".cnp-in{flex:1;min-width:0;box-sizing:border-box;resize:none;background:var(--panel);border:1px solid var(--line);color:var(--ink);",
     "border-radius:10px;padding:9px 11px;font:inherit;font-size:13.5px;max-height:110px;outline:none}",
@@ -441,7 +455,7 @@
       accessGranted: false, localFixture: false,
       recordReady: false, recordHeaders: null,
       sessionPrepAvailable: false, prepBusy: false, prepCycle: null,
-      prepHasBrief: false, prepCollapsed: false,
+      prepHasBrief: false, prepCollapsed: false, prepFocused: false, prepUpdateNeeded: false,
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
       recordController: null, chatController: null, prepController: null,
       retryAttempt: null,
@@ -457,25 +471,28 @@
     root.className = "cnp-root";
     root.innerHTML =
       '<div class="cnp-gate" role="status">Sovereign named beta · unavailable</div>' +
-      '<button class="cnp-fab" title="Sovereign assistant" hidden>C</button>' +
+      '<button class="cnp-fab" title="Sovereign assistant" aria-label="Open Sovereign assistant" hidden>C</button>' +
       '<div class="cnp-rail" role="complementary" aria-label="Sovereign assistant" hidden>' +
       '  <div class="cnp-head"><div class="cnp-logo">C</div>' +
       '    <div><div class="cnp-title">Sovereign</div>' +
       '    <div class="cnp-sub">Named beta · access required</div>' +
       '    <div class="cnp-sandbox" hidden></div></div>' +
-      '    <button class="cnp-x" title="Close">×</button></div>' +
+      '    <button class="cnp-x" title="Close" aria-label="Close Sovereign assistant">×</button></div>' +
+      '  <div class="cnp-record-context"></div>' +
       '  <div class="cnp-prep" hidden><div class="cnp-prep-actions">' +
       '    <button class="cnp-prep-go" type="button">Open Session Prep</button>' +
-      '    <button class="cnp-prep-toggle" type="button" aria-expanded="false" hidden>Show brief</button></div>' +
+      '    <button class="cnp-prep-toggle" type="button" aria-expanded="false" hidden>Show brief</button>' +
+      '    <button class="cnp-prep-focus" type="button" aria-pressed="false" hidden>Read full brief</button></div>' +
       '    <div class="cnp-prep-progress" role="status" aria-live="polite"></div>' +
       '    <div class="cnp-prep-view" hidden></div></div>' +
       '  <div class="cnp-thread"></div>' +
       '  <div class="cnp-chips"></div>' +
       '  <div class="cnp-foot"><div class="cnp-row">' +
-      '    <select class="cnp-fmt"><option value="chat">Chat</option>' +
+      '    <select class="cnp-fmt" aria-label="Answer format"><option value="chat">Chat</option>' +
       '      <option value="document">Document</option></select>' +
-      '    <textarea class="cnp-in" rows="1" placeholder="Ask a question…"></textarea>' +
-      '    <button class="cnp-send">Send</button></div></div></div>';
+      '    <textarea class="cnp-in" aria-label="Ask Sovereign a question" rows="1" placeholder="Ask a question…"></textarea>' +
+      '    <button class="cnp-send">Send</button></div>' +
+      '    <p class="cnp-format-help" hidden>Document mode requests a draft from this record. For example: draft a visit summary. Review the draft before use.</p></div></div>';
     (opts.target || document.body).appendChild(root);
 
     // Hosts often already own the bottom-right corner (support widgets, bug
@@ -487,10 +504,11 @@
         fab = root.querySelector(".cnp-fab"), rail = root.querySelector(".cnp-rail"),
         thread = root.querySelector(".cnp-thread"), chips = root.querySelector(".cnp-chips"),
         input = root.querySelector(".cnp-in"), send = root.querySelector(".cnp-send"),
-        fmt = root.querySelector(".cnp-fmt"), sandboxBadge = root.querySelector(".cnp-sandbox"),
+        fmt = root.querySelector(".cnp-fmt"), formatHelp = root.querySelector(".cnp-format-help"), sandboxBadge = root.querySelector(".cnp-sandbox"),
         sub = root.querySelector(".cnp-sub"), prep = root.querySelector(".cnp-prep"),
         prepGo = root.querySelector(".cnp-prep-go"),
         prepToggle = root.querySelector(".cnp-prep-toggle"),
+        prepFocus = root.querySelector(".cnp-prep-focus"),
         prepProgress = root.querySelector(".cnp-prep-progress"),
         prepView = root.querySelector(".cnp-prep-view");
     prepView.id = "cnp-prep-view-" + (++panelSequence);
@@ -498,19 +516,35 @@
     prepView.setAttribute("role", "region");
     prepView.setAttribute("aria-label", "Session Prep brief");
     prepToggle.setAttribute("aria-controls", prepView.id);
+    formatHelp.id = "cnp-format-help-" + panelSequence;
+    input.setAttribute("aria-describedby", formatHelp.id);
+
+    function syncFormatHelp() {
+      formatHelp.hidden = fmt.value !== "document";
+      input.placeholder = state.localFixture ? "Use a synthetic guided prompt…"
+        : fmt.value === "document" ? "Draft a document from the open record…"
+        : state.persona === "provider" ? "Ask about the open record…"
+        : "Ask a health or values question…";
+    }
 
     function syncPrepDisclosure() {
       var expanded = state.prepHasBrief && !state.prepCollapsed;
       prepToggle.hidden = !state.prepHasBrief;
+      prepFocus.hidden = !state.prepHasBrief;
+      prepFocus.setAttribute("aria-pressed", String(state.prepFocused));
+      prepFocus.textContent = state.prepFocused ? "Show conversation" : "Read full brief";
+      rail.classList.toggle("cnp-prep-focused", state.prepFocused);
+      if (state.open && typeof savedPad === "string")
+        document.body.style.paddingRight = rail.offsetWidth + "px";
       prepToggle.setAttribute("aria-expanded", String(expanded));
       prepToggle.textContent = expanded ? "Hide brief" : "Show brief";
       if (state.prepHasBrief) prepView.hidden = state.prepCollapsed;
     }
 
-    function bubble(cls) {
+    function bubble(cls, target) {
       var w = document.createElement("div"); w.className = "cnp-msg " + (cls === "u" ? "cnp-u" : "");
       var b = document.createElement("div"); b.className = "cnp-b";
-      w.appendChild(b); thread.appendChild(w); thread.scrollTop = thread.scrollHeight;
+      w.appendChild(b); (target || thread).appendChild(w); thread.scrollTop = thread.scrollHeight;
       return b;
     }
 
@@ -533,9 +567,12 @@
       abort(state.prepController);
       state.prepController = null;
       state.prepBusy = false;
+      state.prepUpdateNeeded = false;
+      prepGo.textContent = "Open Session Prep";
       prepProgress.textContent = "";
       state.prepHasBrief = false;
       state.prepCollapsed = false;
+      state.prepFocused = false;
       prepView.innerHTML = "";
       prepView.hidden = true;
       prepView.scrollTop = 0;
@@ -705,12 +742,23 @@
       state.localFixture = w.walkthrough_mode === "local_synthetic" && service.loopback;
       state.sessionPrepAvailable = state.persona === "provider" &&
         (w.paths || []).some(function (path) { return path.intent === "session_prep"; });
+      // Provider-facing naming comes only from the server-resolved welcome,
+      // never a browser role hint, chart question, or the requested intent.
+      var provider = state.persona === "provider";
+      root.querySelector(".cnp-title").textContent = provider ? "Session Prep" : "Sovereign";
+      root.querySelector(".cnp-logo").textContent = provider ? "SP" : "C";
+      fab.textContent = provider ? "SP" : "C";
+      fab.setAttribute("title", provider ? "Session Prep" : "Sovereign assistant");
+      fab.setAttribute("aria-label", provider ? "Open Session Prep" : "Open Sovereign assistant");
+      rail.setAttribute("aria-label", provider ? "Session Prep" : "Sovereign assistant");
+      root.querySelector(".cnp-x").setAttribute("aria-label", provider ? "Close Session Prep" : "Close Sovereign assistant");
+      input.setAttribute("aria-label", provider ? "Ask about this visit" : "Ask Sovereign a question");
+      gate.textContent = provider ? "Session Prep · unavailable" : "Sovereign named beta · unavailable";
       input.readOnly = state.localFixture;
       if (state.localFixture) fmt.value = "chat";
       sub.textContent = state.localFixture ? "Local synthetic walkthrough"
-        : "Your personal AI assistant";
-      input.placeholder = state.localFixture ? "Use a synthetic guided prompt…" : state.persona === "provider"
-        ? "Ask about the open record…" : "Ask a health or values question…";
+        : provider ? "Your visit preparation assistant" : "Your personal AI assistant";
+      syncFormatHelp();
       syncControls();
     }
 
@@ -817,8 +865,8 @@
         if (history !== null && !loaded)
           throw new Error("governed history is invalid");
         state.history = loaded;
-        function restoreMessage(m) {
-          var b = bubble(m.role === "user" ? "u" : "a");
+        function restoreMessage(m, target) {
+          var b = bubble(m.role === "user" ? "u" : "a", target);
           if (m.role === "user") b.textContent = m.content || "";
           else render(b, {
             answer: m.content,
@@ -835,18 +883,25 @@
           notice.textContent = "Recent encounter conversation · up to six turns";
           thread.appendChild(notice);
           conversation.turns.forEach(function (turn) {
+            var target = thread;
+            if (turn.state === "stale") {
+              target = document.createElement("details"); target.className = "cnp-history-stale";
+              var summary = document.createElement("summary");
+              summary.textContent = "Earlier question · no longer current · " + fdate(turn.recorded_at);
+              target.appendChild(summary); thread.appendChild(target);
+            }
             conversation.history.messages.filter(function (m) {
               return m.client_turn_id === turn.client_turn_id;
-            }).forEach(restoreMessage);
+            }).forEach(function (message) { restoreMessage(message, target); });
             if (turn.state === "completed") return;
             var user = conversation.history.messages.find(function (m) {
               return m.client_turn_id === turn.client_turn_id && m.role === "user";
             });
             var attempt = { clientTurnId: turn.client_turn_id, recordId: recordId,
               generation: generation, text: user ? user.content : "" };
-            paintReadStatus(bubble("a"), attempt, turn.state);
+            paintReadStatus(bubble("a", target), attempt, turn.state);
           });
-        } else (loaded ? loaded.messages : []).forEach(restoreMessage);
+        } else (loaded ? loaded.messages : []).forEach(function (message) { restoreMessage(message); });
         state.recordReady = true;
         if (loaded && typeof opts.onHistoryUpdated === "function") {
           Promise.resolve().then(function () {
@@ -908,7 +963,7 @@
       } catch (error) {
         if (currentGeneration(generation) && error.name !== "AbortError") {
           state.welcomeRenderGeneration = null;
-          bubble("a").innerHTML = "<p>Assistant unavailable — check the Sovereign service.</p>";
+          bubble("a").innerHTML = "<p>The assistant is temporarily unavailable. Try reconnecting from this visit.</p>";
         }
       }
     }
@@ -919,8 +974,8 @@
       var suppressed = new Set(presentation.suppress);
       var html = "";
       setGovernedChrome(presentation);
-      if (state.localFixture && d.intent)
-        html += '<div class="cnp-route">Sovereign route · ' +
+      if (state.localFixture && !suppressed.has("intent_badge") && d.intent)
+        html += '<div class="cnp-route">' + (state.persona === "provider" ? "Session Prep" : "Sovereign") + ' route · ' +
           esc(String(d.intent).replace(/_/g, " ")) +
           (d.doctrinal_review ? " · final review recorded" : "") + "</div>";
       if (presentation.mode === "emergency") {
@@ -1105,16 +1160,19 @@
       return value;
     }
 
-    function prepSection(title, values) {
+    function prepSection(title, values, ordered) {
+      if (ordered && values.length === 1 && /(?:^|\s)2[.)]\s+/.test(values[0]))
+        values = values[0].split(/(?:^|\s)\d{1,2}[.)]\s+/).map(function (value) { return value.trim(); }).filter(Boolean);
+      if (ordered) values = values.map(function (value) { return value.replace(/^\s*\d{1,2}[.)]\s+/, ""); });
       if (!values.length) return;
       var section = document.createElement("div"); section.className = "cnp-prep-section";
       var heading = document.createElement("h4"); heading.textContent = title;
       section.appendChild(heading);
-      if (values.length === 1) {
+      if (values.length === 1 && !ordered) {
         var paragraph = document.createElement("p"); paragraph.textContent = values[0];
         section.appendChild(paragraph);
       } else {
-        var list = document.createElement("ul");
+        var list = document.createElement(ordered ? "ol" : "ul");
         values.forEach(function (value) {
           var item = document.createElement("li"); item.textContent = value;
           list.appendChild(item);
@@ -1179,6 +1237,14 @@
         return;
       }
       cycle.lastRender = fingerprint;
+      if (value.state === "ready" && cycle.focusWhenReady) {
+        state.prepFocused = true; cycle.focusWhenReady = false;
+      }
+      prepGo.textContent = value.state === "ready" ? "Update Session Prep" : "Open Session Prep";
+      if (typeof opts.onSessionPrepStateChange === "function")
+        Promise.resolve().then(function () {
+          if (currentPrep(cycle)) return opts.onSessionPrepStateChange(value.state);
+        }).catch(function () {});
       prepProgress.textContent = value.state === "ready"
         ? "Your prepared brief is ready." : "Session Prep is unavailable.";
       prepView.innerHTML = "";
@@ -1197,8 +1263,24 @@
           ? "The prepared brief is still being generated. No clinical content is available yet."
           : value.reason_code === "no_eligible_sources"
             ? "No eligible finalized notes are available for this encounter."
-            : "Session Prep is not available for this encounter.";
+            : "We couldn’t load a prepared brief for this encounter. Try again; if the problem continues, contact support with the request reference below.";
         prepView.appendChild(empty);
+        if (value.state === "unavailable" && value.reason_code !== "no_eligible_sources") {
+          var reference = document.createElement("div"); reference.className = "cnp-prep-meta";
+          reference.textContent = "Request reference: " + value.client_turn_id; prepView.appendChild(reference);
+          var retry = document.createElement("button"); retry.className = "cnp-retry";
+          retry.textContent = "Try Session Prep again";
+          retry.onclick = function () { if (currentPrep(cycle)) return requestSessionPrep(true); };
+          prepView.appendChild(retry);
+          var support = document.createElement("button"); support.className = "cnp-retry";
+          support.textContent = "Contact support";
+          support.onclick = function () {
+            if (!currentPrep(cycle)) return;
+            Promise.resolve(opts.onHumanContact({ label: "Contact support", action_id: "human-contact",
+              fallback_text: "Contact platform support with the Session Prep request reference." })).catch(function () {});
+          };
+          prepView.appendChild(support);
+        }
         if (value.state === "pending") {
           schedulePrepCheck(value, cycle);
           var check = document.createElement("button"); check.className = "cnp-retry";
@@ -1222,12 +1304,12 @@
         prepView.appendChild(stale);
       }
       var brief = value.prepared_brief;
-      prepSection("Recap", [brief.recap]);
-      prepSection("Trajectory and material changes", brief.trajectory_and_material_changes);
-      prepSection("Talking points", brief.talking_points);
-      prepSection("Open threads", brief.open_threads);
       prepSection("Cautions", brief.cautions);
-      prepSection("Suggested outline", brief.suggested_outline);
+      prepSection("Open threads", brief.open_threads);
+      prepSection("Recap", [brief.recap]);
+      prepSection("What changed since the last visit", brief.trajectory_and_material_changes);
+      prepSection("Talking points", brief.talking_points);
+      prepSection("Suggested outline", brief.suggested_outline, true);
       if (brief.patient_reported)
         prepSection(brief.patient_reported.label, [brief.patient_reported.summary]);
       if (value.state === "refreshing") {
@@ -1374,7 +1456,7 @@
       }
     }
 
-    async function requestSessionPrep() {
+    async function requestSessionPrep(focusWhenReady) {
       if (state.busy || state.prepBusy || state.switching || state.destroyed ||
           !state.open || document.hidden || !state.sessionPrepAvailable ||
           !state.recordReady || state.clientId === null) return;
@@ -1383,7 +1465,7 @@
       clearSessionPrep();
       var cycle = {
         recordId: state.clientId, generation: state.generation,
-        deadline: Date.now() + 180000, checks: 0, timer: null,
+        deadline: Date.now() + 180000, checks: 0, timer: null, focusWhenReady: focusWhenReady === true,
       };
       state.prepCycle = cycle;
       return loadSessionPrep(cycle);
@@ -1634,6 +1716,10 @@
       var text = input.value.trim();
       if (!text || state.busy || state.switching || state.destroyed ||
           !state.recordReady || state.clientId === null) return;
+      // A valid question always reveals its conversation, including any
+      // failure response. Switching presentation leaves the brief and draft
+      // intact; it never starts a preparation request or changes authority.
+      state.prepFocused = false; syncPrepDisclosure();
       var generation = state.generation;
       var b = null;
       var handedOff = false;
@@ -1736,11 +1822,24 @@
     }
 
     fab.onclick = function () { setOpen(!state.open); };
+    prepFocus.onclick = function () {
+      if (!state.prepHasBrief || !currentPrep(state.prepCycle)) return;
+      state.prepFocused = !state.prepFocused;
+      state.prepCollapsed = false;
+      syncPrepDisclosure();
+      setOpen(true);
+      if (state.prepFocused) prepView.focus();
+    };
+    listen(document, "keydown", function (event) {
+      if (event.key !== "Escape" || !state.open) return;
+      event.preventDefault(); setOpen(false); fab.focus();
+    });
     root.querySelector(".cnp-x").onclick = function () { setOpen(false); };
-    prepGo.onclick = requestSessionPrep;
+    prepGo.onclick = function () { return requestSessionPrep(true); };
     prepToggle.onclick = function () {
       if (!state.prepHasBrief || !currentPrep(state.prepCycle)) return;
       state.prepCollapsed = !state.prepCollapsed;
+      if (state.prepCollapsed) state.prepFocused = false;
       if (state.prepCollapsed && prepView.contains(document.activeElement)) prepToggle.focus();
       syncPrepDisclosure();
     };
@@ -1748,6 +1847,7 @@
       if (document.hidden) { clearSessionPrep(); syncControls(); }
     });
     send.onclick = ask;
+    listen(fmt, "change", syncFormatHelp);
     listen(input, "keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
     });
@@ -1758,6 +1858,33 @@
 
     return {
       open: function () { setOpen(true); },
+      openSessionPrep: function () {
+        if (!state.accessGranted || !state.recordReady || !state.sessionPrepAvailable) return;
+        setOpen(true);
+        return requestSessionPrep(true);
+      },
+      invalidateSessionPrep: function (recordId) {
+        if (!state.recordReady || state.clientId !== recordId || !state.accessGranted) return;
+        // A host-observed source change is only a freshness hint. Clear the
+        // old brief and cancel late generation results; the next request still
+        // reacquires server authority and determines the eligible source set.
+        clearSessionPrep();
+        state.prepUpdateNeeded = true;
+        prepGo.textContent = "Update Session Prep";
+        prepView.hidden = false;
+        var label = document.createElement("div"); label.className = "cnp-prep-state";
+        label.textContent = "Session Prep update needed"; prepView.appendChild(label);
+        var notice = document.createElement("p");
+        notice.textContent = "Reviewed prior notes changed. Update Session Prep before using this encounter’s brief.";
+        prepView.appendChild(notice); prepProgress.textContent = "Reviewed sources changed.";
+        if (typeof opts.onSessionPrepStateChange === "function")
+          Promise.resolve().then(function () {
+            if (state.clientId === recordId && state.prepUpdateNeeded && !state.destroyed)
+              return opts.onSessionPrepStateChange("update_needed");
+          }).catch(function () {});
+        syncControls();
+      },
+      recordPresentationTarget: root.querySelector(".cnp-record-context"),
       close: function () { setOpen(false); },
       // Call whenever the open record changes — clears the thread, reloads
       // that record's history, and re-renders it. Prevents one patient's

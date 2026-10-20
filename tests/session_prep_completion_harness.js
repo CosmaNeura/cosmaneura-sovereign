@@ -83,8 +83,8 @@ async function fixture() {
       source_count: content ? 1 : 0,
       prepared_brief: content ? {
         recap: "Synthetic completed brief", trajectory_and_material_changes: [],
-        talking_points: ["Review interval changes"], open_threads: [], cautions: [],
-        suggested_outline: ["Discuss prior plan"], patient_reported: null,
+        talking_points: ["Review interval changes"], open_threads: ["Review missing result"], cautions: ["Verify corrected dose"],
+        suggested_outline: ["1. Discuss prior plan. 2. Confirm interval symptoms."], patient_reported: null,
       } : null,
       retry_after_seconds: ["pending", "refreshing"].includes(mode) ? f.retryAfter : null,
       reason_code: mode === "pending" ? "generation_pending" :
@@ -130,6 +130,64 @@ async function fixture() {
 }
 
 async function main() {
+  // Host source refresh is a display hint, never an authority/request input.
+  {
+    const f = await fixture(); f.mode = "ready";
+    assert(f.panel.root.querySelector(".cnp-title").textContent === "Session Prep" &&
+      f.panel.root.querySelector(".cnp-fab").getAttribute("aria-label") === "Open Session Prep", "server-resolved provider brand was not applied");
+    await f.panel.openSessionPrep();
+    assert(f.has("Session Prep ready"), "direct preparation entry did not prepare");
+    const requests = f.requests.length;
+    f.panel.invalidateSessionPrep("record_other");
+    assert(f.has("Session Prep ready"), "foreign source hint changed this record");
+    f.panel.invalidateSessionPrep(f.record);
+    assert(f.has("Session Prep update needed"), "reviewed-source change did not qualify readiness");
+    assert(!f.has("Synthetic completed brief") && !f.has("Session Prep ready"), "old brief survived source update");
+    assert(f.requests.length === requests, "source hint dispatched a request");
+    await f.panel.openSessionPrep();
+    assert(f.has("Session Prep ready"), "explicit source update did not recover");
+    f.requests.forEach(request => assert(Object.keys(JSON.parse(request.body)).join() === "client_turn_id", "display source hint leaked into request"));
+    const focus = f.panel.root.querySelector(".cnp-prep-focus");
+    assert(f.panel.root.querySelector(".cnp-rail").className.includes("cnp-prep-focused"), "direct entry did not focus the ready brief");
+    const sections = f.view.children.filter(node => node.className === "cnp-prep-section");
+    assert(sections[0].children[0].textContent === "Cautions" && sections[1].children[0].textContent === "Open threads", "priority review sections are not first");
+    const outline = find(f.view, node => node.tagName === "ol");
+    assert(outline && outline.children.length === 2 && outline.children[0].textContent === "Discuss prior plan.", "numbered outline rendered as run-on text");
+    focus.click(); focus.click();
+    assert(f.panel.root.querySelector(".cnp-rail").className.includes("cnp-prep-focused"), "full brief mode did not expand");
+    assert(focus.getAttribute("aria-pressed") === "true", "reading mode accessibility state absent");
+    const input = f.panel.root.querySelector(".cnp-in");
+    input.value = "Keep this clinician follow-up draft";
+    const asking = f.panel.root.querySelector(".cnp-send").click(); await flush();
+    assert(!f.panel.root.querySelector(".cnp-rail").className.includes("cnp-prep-focused"), "valid question kept its response hidden in reading mode");
+    assert(f.has("Synthetic completed brief"), "asking discarded the prepared brief");
+    f.chatRelease(); await asking;
+    assert(input.value === "Keep this clinician follow-up draft", "failed question lost its exact draft");
+    let prevented = false;
+    document._listeners.find(([event]) => event === "keydown")[1]({ key: "Escape", preventDefault() { prevented = true; } });
+    assert(prevented && !f.panel.root.querySelector(".cnp-rail").className.includes("cnp-open"), "Escape did not close the assistant");
+    f.end();
+  }
+  // A source change cancels pending work, including non-cooperative late data.
+  {
+    const f = await fixture(); f.mode = "hang";
+    const pending = f.panel.openSessionPrep(); await flush();
+    f.panel.invalidateSessionPrep(f.record); f.release(); await pending;
+    assert(f.has("Session Prep update needed") && !f.has("Synthetic completed brief"), "late previous-source brief painted after refresh");
+    f.end();
+  }
+  // Context-unavailable is an actionable, qualified failure, without inventing
+  // a worker reason. A retry is explicit and has a new request identity.
+  {
+    const f = await fixture(); f.mode = "unavailable";
+    await f.panel.openSessionPrep();
+    assert(f.has("We couldn’t load") && f.has("Request reference:"), "unavailable preparation lacks recovery context");
+    const previous = JSON.parse(f.requests[0].body).client_turn_id;
+    f.mode = "ready"; await f.button("Try Session Prep again").click();
+    assert(f.has("Session Prep ready"), "explicit preparation retry failed to recover");
+    assert(JSON.parse(f.requests[1].body).client_turn_id !== previous, "new preparation action reused an earlier completed request identity");
+    f.end();
+  }
   // Async completion uses new logical turns, fresh authority, and server pacing.
   for (const initial of ["pending", "refreshing"]) {
     const f = await fixture();

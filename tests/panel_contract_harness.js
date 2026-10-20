@@ -40,8 +40,8 @@ class FakeElement {
     this.children = [];
     if (this.className === "cnp-root" && value.includes("cnp-rail")) {
       const names = ["cnp-gate", "cnp-fab", "cnp-rail", "cnp-thread", "cnp-chips", "cnp-in",
-                     "cnp-send", "cnp-fmt", "cnp-sandbox", "cnp-sub", "cnp-x",
-                     "cnp-prep", "cnp-prep-go", "cnp-prep-toggle", "cnp-prep-view", "cnp-prep-progress"];
+                     "cnp-send", "cnp-fmt", "cnp-format-help", "cnp-sandbox", "cnp-sub", "cnp-title", "cnp-logo", "cnp-x",
+                     "cnp-prep", "cnp-prep-go", "cnp-prep-toggle", "cnp-prep-focus", "cnp-record-context", "cnp-prep-view", "cnp-prep-progress"];
       this._mountNodes = {};
       names.forEach(name => {
         const node = new FakeElement(
@@ -483,7 +483,7 @@ async function main() {
   assert(!("history" in sent) && !("persona" in sent), "first send replayed raw browser state");
   assert(find(controller.root, node => node.innerHTML.includes("Governed answer")),
          "successful governed answer was not rendered");
-  assert(find(controller.root, node => node.innerHTML.includes("Sovereign route")),
+  assert(find(controller.root, node => node.innerHTML.includes("Session Prep route")),
          "local walkthrough did not expose the routed orchestrator path");
   assert(find(controller.root, node => node.textContent === "Fixture Provider"),
          "structured directory option was not rendered");
@@ -526,8 +526,8 @@ async function main() {
   revokedInput.value = "turn after role revocation";
   await revokedSend.onclick();
   revoked.open();
-  assert(revokedGate.hidden === false && revokedGate.textContent.includes("named beta"),
-         "403 did not restore named-beta unavailable copy");
+  assert(revokedGate.hidden === false && revokedGate.textContent.includes("Session Prep"),
+         "403 did not preserve provider-facing unavailable copy");
   assert(revokedFab.hidden === true && revokedRail.hidden === true && revokedSend.disabled === true,
          "403 left the orchestrator available");
   assert(revoked.root.querySelector(".cnp-thread").children.length === 0,
@@ -780,6 +780,13 @@ async function main() {
            "pending/stale history exposed an assistant answer");
     assert(find(recovery.root, node => node.innerHTML.includes(status === "pending"
       ? "no recorded response yet" : "no longer current")), "missing governed turn status");
+    if (status === "stale") {
+      const disclosure = find(recovery.root, node => node.className === "cnp-history-stale");
+      assert(disclosure && disclosure.tagName === "details" && disclosure.getAttribute("open") === null,
+             "stale encounter history was not collapsed by default");
+      assert(find(disclosure, node => node.tagName === "summary" && node.textContent.includes("no longer current")),
+             "stale disclosure lacks a dated status label");
+    }
   }
   hydrationState = "pending";
   await recovery.setRecord(currentRecord);

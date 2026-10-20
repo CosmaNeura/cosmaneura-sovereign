@@ -874,6 +874,36 @@ class Sovereign:
             self.audit.record(trace_id=trace_id, profile=profile, event="routed",
                               details={"intent": intent.value, "sensitivity": sensitivity.value})
 
+            # A mixed medication/order lookup can be mislabeled as the hidden
+            # external labs skill. Only a source-fact question on the canonical
+            # provider record grant may use the already-enabled answer lane.
+            # This selection does not enable labs, bypass authority, or pretend
+            # to have fulfilled a live EHR/tool request.
+            needs_context: bool | None = None
+            if (
+                intent == Intent.LAB_REVIEW and self.s.feature_session_prep
+                and platform_turn is not None and profile.persona == Persona.PROVIDER
+                and mount.surface == "provider_assistant" and mount.auth_tier == "provider"
+                and {"education:answer", "session-prep:read"}.issubset(mount.capabilities)
+            ):
+                try:
+                    needs_context = await self.router.needs_provider_context(request, intent)
+                except UpstreamCallError:
+                    raise
+                except Exception:
+                    deactivate_usage_context()
+                    raise MountResolutionError(
+                        status_code=503, code="PROVIDER_CONTEXT_SELECTION_UNAVAILABLE",
+                        retryable=False,
+                    ) from None
+                if needs_context:
+                    intent = Intent.ENGAGEMENT
+                    self.audit.record(
+                        trace_id=trace_id, profile=profile, event="reviewed_note_question_routed",
+                        details={"classified_intent": Intent.LAB_REVIEW.value,
+                                 "answer_intent": intent.value},
+                    )
+
             # 2b) Capability gate. This is deliberately after classification but
             # before every agent/direct answer. An unknown future intent has no map
             # entry and is denied by default.
@@ -908,7 +938,8 @@ class Sovereign:
                 and intent in {Intent.ENGAGEMENT, Intent.VISIT_PREP, Intent.ETHICS_CONSULT}
             ):
                 try:
-                    needs_context = await self.router.needs_provider_context(request, intent)
+                    if needs_context is None:
+                        needs_context = await self.router.needs_provider_context(request, intent)
                 except UpstreamCallError:
                     raise
                 except Exception:
@@ -935,7 +966,8 @@ class Sovereign:
                             turn=platform_turn,
                             request=ProviderQuestionRequest(arguments=ProviderQuestionArguments(
                                 source_turn_ref=user_receipt.turn_ref,
-                            )),
+                                detail="reviewed_sources",
+                            ), tool_version="1.2.0"),
                         )
                     except SessionPrepDeliveryError as error:
                         deactivate_usage_context()
@@ -1216,6 +1248,11 @@ class Sovereign:
                 if notice:
                     answer += "\n\n" + notice
 
+            if provider_context is not None:
+                # The actual retrieval scope survives any doctrinal replacement
+                # and enters the canonical answer without private source handles.
+                answer += "\n\n" + provider_context.source_notice()
+
             citations = list(result.citations) + list(verdict.citations)
             return await self._finalize(answer, intent, profile, trace_id,
                                   audit_turn=audit_turn,
@@ -1223,6 +1260,10 @@ class Sovereign:
                                   user_receipt=user_receipt,
                                   history_context_ref=history_context_ref,
                                   provider_context_ref=provider_context_ref,
+                                  record_fact_presentation=(
+                                      provider_context is not None
+                                      and intent in {Intent.ENGAGEMENT, Intent.VISIT_PREP}
+                                  ),
                                   citations=citations,
                                   doctrinal=verdict, structured=result.data)
         except UpstreamCallError:
@@ -1446,6 +1487,7 @@ class Sovereign:
         user_receipt: Optional[ConversationReceipt] = None,
         provider_context_ref: Optional[str] = None,
         history_context_ref: Optional[str] = None,
+        record_fact_presentation: bool = False,
     ) -> ChatResponse:
         upstream_unavailable = safety_notice == "upstream_unavailable"
         unavailable = upstream_unavailable or safety_notice == "provider_context_unavailable"
@@ -1453,6 +1495,12 @@ class Sovereign:
             raise ValueError("an unrouted response must be unavailable")
         if sensitive_mode and intent != Intent.SENSITIVE_DISCLOSURE:
             raise ValueError("sensitive mode requires sensitive-disclosure intent")
+        if record_fact_presentation and (
+            profile.persona != Persona.PROVIDER
+            or intent not in {Intent.ENGAGEMENT, Intent.VISIT_PREP}
+            or provider_context_ref is None or safety_notice is not None
+        ):
+            raise ValueError("record fact presentation requires a grounded provider answer")
         if sensitive_mode:
             final = answer
             presentation = _sensitive_presentation()
@@ -1462,7 +1510,8 @@ class Sovereign:
             presentation = StandardPresentation(
                 mode="standard",
                 suppress=(["intent_badge", "doctrinal_badge", "citations", "structured_cards"]
-                          if upstream_unavailable else []),
+                          if upstream_unavailable else
+                          ["intent_badge", "doctrinal_badge"] if record_fact_presentation else []),
                 human_contact=None,
             )
         if platform_turn is not None:

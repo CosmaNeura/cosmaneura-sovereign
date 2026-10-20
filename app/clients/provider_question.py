@@ -23,9 +23,33 @@ class ProviderQuestionClient(SessionPrepClient):
         self, *, turn: PlatformTurn, request: ProviderQuestionRequest,
     ) -> ProviderQuestionResponse:
         deadline = self._clock() + self._total_timeout_seconds
+        versions = {"1.2.0": ("1.2.0", "1.1.0", "1.0.0"),
+                    "1.1.0": ("1.1.0", "1.0.0"), "1.0.0": ("1.0.0",)}
+        for version in versions[request.tool_version]:
+            current = ProviderQuestionRequest(
+                tool_version=version,
+                arguments=request.arguments.model_copy(update={
+                    "detail": "prep_summary" if version == "1.0.0" else "reviewed_sources",
+                }),
+            )
+            try:
+                return await self._read_once(turn=turn, request=current, deadline=deadline)
+            except _UnsupportedReviewedSourceVersion:
+                # Old Core rejects an unregistered version before creating a
+                # receipt. Only that explicit rejection permits the next older
+                # read. Auth, conflicts, outages and invalid data never downgrade.
+                continue
+        raise SessionPrepDeliveryError("schema", status_code=503, retryable=False)
+
+    async def _read_once(
+        self, *, turn: PlatformTurn, request: ProviderQuestionRequest, deadline: float,
+    ) -> ProviderQuestionResponse:
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise SessionPrepDeliveryError("unavailable", status_code=504, retryable=True)
         try:
             token = await asyncio.wait_for(
-                self._workload_token_provider(), timeout=self._total_timeout_seconds,
+                self._workload_token_provider(), timeout=remaining,
             )
         except asyncio.TimeoutError:
             raise SessionPrepDeliveryError(
@@ -49,17 +73,29 @@ class ProviderQuestionClient(SessionPrepClient):
                     "X-Cosmaneura-Interaction-Ref": turn.interaction_ref,
                     "X-Cosmaneura-Client-Turn-ID": str(turn.client_turn_id),
                     "Idempotency-Key": derive_operation_token(
-                        turn.client_turn_id, "provider-question.context.read",
+                        turn.client_turn_id, "provider-question.context.read"
+                        + (f".{request.tool_version}" if request.tool_version != "1.0.0" else ""),
                     ),
                     "X-Trace-ID": turn.trace_id,
                 },
                 payload=request.model_dump(mode="json"), timeout_seconds=remaining,
+                # Core's reviewed-source wire is byte-bounded separately from
+                # its character budgets. Keep legacy summary reads at 128 KiB.
+                response_limit=128 * 1024 if request.tool_version == "1.0.0" else 600 * 1024,
             )
         except (httpx.TransportError, asyncio.TimeoutError):
             raise SessionPrepDeliveryError(
                 "unavailable", status_code=503, retryable=True,
             ) from None
         if response.status_code != 200:
+            if request.tool_version != "1.0.0" and response.status_code == 404:
+                try:
+                    body = json.loads(response.content, object_pairs_hook=_closed_json_object)
+                    if (isinstance(body, dict) and body.get("code") == "RESOURCE_NOT_FOUND"
+                            and body.get("detail") == "The requested tool is not available."):
+                        raise _UnsupportedReviewedSourceVersion
+                except (TypeError, ValueError, RecursionError):
+                    pass
             raise SessionPrepDeliveryError(
                 _failure_category(response.status_code),
                 status_code=response.status_code if 400 <= response.status_code <= 599 else 503,
@@ -80,10 +116,17 @@ class ProviderQuestionClient(SessionPrepClient):
                 or response.headers["idempotency-replayed"].casefold() not in {"true", "false"}
             ):
                 raise ValueError
-            return ProviderQuestionResponse.model_validate(json.loads(
+            parsed = ProviderQuestionResponse.model_validate(json.loads(
                 response.content, object_pairs_hook=_closed_json_object,
             ))
+            if parsed.result.schema_version != request.tool_version:
+                raise ValueError("provider question response version mismatch")
+            return parsed
         except (KeyError, TypeError, ValueError, RecursionError):
             raise SessionPrepDeliveryError(
                 "schema", status_code=503, retryable=False,
             ) from None
+
+
+class _UnsupportedReviewedSourceVersion(Exception):
+    """An old Core rejected the new tool before accepting a context read."""

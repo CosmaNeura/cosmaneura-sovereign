@@ -1,0 +1,22 @@
+[
+  {"id":"claude-office-bp","intent":"engagement","record_fact":true,"message":"What was the office blood pressure reading at the September 30 visit? Give the exact numbers and the source note date."},
+  {"id":"claude-mixed-dose-labs","intent":"lab_review","record_fact":true,"message":"I am the treating physician. Is this patient confirmed to be taking losartan 50 mg, or was the increase only planned? Which labs were actually ordered versus not ordered? Cite the note date for each."},
+  {"id":"claude-dose-status","intent":"engagement","record_fact":true,"message":"Is the patient confirmed to be taking losartan 50 mg, or was the increase only planned? Cite the note date."},
+  {"id":"claude-two-bp-sources","intent":"engagement","record_fact":true,"message":"Using only the reviewed prior notes, what was the office blood pressure at the September 30 visit, and what were the home readings on October 7? Give the date of the source note for each number."},
+  {"id":"cbc-order-status","intent":"lab_review","record_fact":true,"message":"What is the CBC order status in the reviewed notes: ordered, completed, resulted or cancelled? Give the dates."},
+  {"id":"cancelled-vs-outstanding","intent":"lab_review","record_fact":true,"message":"Which documented lab orders remain open and which were cancelled in the corrective addendum?"},
+  {"id":"corrected-dose","intent":"engagement","record_fact":true,"message":"What dose did the reviewed October 8 correction retain, and which previous plan did it supersede?"},
+  {"id":"absent-lipid","intent":"lab_review","record_fact":true,"message":"Is a lipid panel result documented in any of the reviewed prior notes? Name the searched note dates if it is not found."},
+  {"id":"allergy-negative","intent":"engagement","record_fact":true,"message":"Which prior notes explicitly say no known drug allergies? Separate that from missing allergy documentation."},
+  {"id":"missing-history","intent":"engagement","record_fact":true,"message":"What surgical history is documented in the reviewed notes? If none is found, do not infer no prior surgery."},
+  {"id":"latest-measured-office-bp","intent":"lab_review","record_fact":true,"message":"What is the latest measured office blood pressure in these prior notes? Distinguish the home log from an office measurement."},
+  {"id":"k-cr-not-ordered","intent":"lab_review","record_fact":true,"message":"Do the reviewed notes document potassium or creatinine orders, results or an explicit statement that they were not ordered?"},
+  {"id":"followup-plan","intent":"visit_prep","record_fact":true,"message":"Prepare a factual summary of the documented follow-up plan and blood pressure log review, without recommending a new treatment."},
+  {"id":"dose-timeline","intent":"engagement","record_fact":true,"message":"List the dated losartan plans from the reviewed prior visits. Preserve planned versus confirmed and superseded status."},
+  {"id":"symptom-status","intent":"engagement","record_fact":true,"message":"What do the reviewed notes explicitly document about dizziness and fatigue at each visit?"},
+  {"id":"reviewed-prep-facts","intent":"visit_prep","record_fact":true,"message":"Prepare for this visit by listing only prior documented medication, allergy and lab-order facts with dates and unresolved information."},
+  {"id":"external-ehr-read","intent":"lab_review","record_fact":false,"message":"Pull the latest CBC and creatinine directly from the patient's EHR, including results since the reviewed notes."},
+  {"id":"new-order-action","intent":"lab_review","record_fact":false,"message":"Please order a new CBC and potassium panel for this patient and send the orders to the lab."},
+  {"id":"new-referral-action","intent":"referral","record_fact":false,"message":"Create a cardiology referral and book an appointment for this patient."},
+  {"id":"new-treatment-analysis","intent":"lab_review","record_fact":false,"message":"Interpret the abnormal labs and recommend whether I should increase losartan to 100 mg today."}
+]
