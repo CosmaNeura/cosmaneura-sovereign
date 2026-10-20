@@ -16,6 +16,7 @@ ever sent here. The orchestrator guarantees this before calling `review`.
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from app.clients.llm import LLMClient
@@ -41,6 +42,12 @@ _ANSWER_SYSTEM = (
     "You are answering a question about Catholic teaching for a healthcare context. "
     "Answer faithfully and pastorally, citing magisterial sources, and relate it to "
     "the USCCB Ethical and Religious Directives where relevant."
+)
+_REVIEW_REFUSAL_RE = re.compile(
+    r"\b(?:cannot|can['’]t|unable to|not able to)\s+"
+    r"(?:assess|evaluate|review|revise)\b|"
+    r"\b(?:outside|beyond)\s+(?:my|its|the)\s+(?:scope|expertise)\b",
+    re.IGNORECASE,
 )
 
 
@@ -86,6 +93,15 @@ class DoctrinalArbiter:
                           "Does this conform? If not, give the corrected version."),
             usage_purpose="doctrinal_review",
         )
+
+        # An explicit topic-scope refusal is not a conformance judgment. Do not
+        # let an erroneous positive parser flag manufacture one. This is only a
+        # negative gate; all other assessments retain the normal verdict parse.
+        if _REVIEW_REFUSAL_RE.search(review_text):
+            return DoctrinalVerdict(
+                conforms=False, rationale=review_text,
+                revised_content=review_text, citations=citations,
+            )
 
         # Use the fast model only to turn Magisterium's prose verdict into a flag.
         flag = await self.llm.classify_json(
