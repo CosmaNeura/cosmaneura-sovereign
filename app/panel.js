@@ -31,7 +31,6 @@
 (function () {
   "use strict";
   if (window.CosmaNeuraPanel) return;
-
   var CSS = [
     ".cnp-root{--bg:#0f1620;--panel:#16202c;--panel2:#1d2a38;--line:#27384a;--ink:#eaf1f8;",
     "--muted:#93a6ba;--accent:#c9a24b;--accent2:#6fb1d6;--ok:#8fc7a5;",
@@ -155,7 +154,6 @@
     "@keyframes cnpb{0%,60%,100%{opacity:.3}30%{opacity:1}}",
     "@media(max-height:600px){.cnp-prep{max-height:35%}}",
   ].join("");
-
   var SUPPRESSION_NAMES = [
     "disclaimer", "intent_badge", "doctrinal_badge", "citations",
     "structured_cards", "feature_actions", "guided_paths",
@@ -163,7 +161,6 @@
   var OPAQUE_REF = /^[A-Za-z0-9._~-]{8,160}$/;
   var UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   var panelSequence = 0;
-
   function freshClientTurnId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function")
       return window.crypto.randomUUID();
@@ -179,7 +176,6 @@
     return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" +
       hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
   }
-
   // Escapes quotes too — escaped text can land inside HTML attributes, where
   // an unescaped quote is an XSS breakout.
   function esc(s) {
@@ -188,7 +184,6 @@
                '"': "&quot;", "'": "&#39;" }[c];
     });
   }
-
   function md(t) {
     // This canonical evidence envelope contains server-escaped literal
     // Markdown, rather than generated prose. History retains the answer but
@@ -230,14 +225,12 @@
     if (inList) html += "</ul>";
     return html;
   }
-
   // The verified-calculations box is the trust centerpiece for clinicians, so
   // it must read like clinical values, not like a JSON dump. Known keys get
   // formatted; anything new falls back to a readable key: value line.
   function num(n) {
     return typeof n === "number" ? n.toLocaleString("en-US") : String(n);
   }
-
   function formatComputed(comp) {
     var out = [];
     if (comp.bmi != null) out.push("BMI: " + comp.bmi);
@@ -263,25 +256,21 @@
     });
     return out;
   }
-
   // ---- analyte trend chart -------------------------------------------------
   // Single series over time: 2px line, dot markers with a 2px surface ring,
   // emphasized endpoint with a direct value label, clinical reference range as
   // a subtle band, per-point hover tooltips. No legend — the title names the
   // one series. Line color #3b9ce6 validated against the dark surface.
   var LINE = "#3b9ce6", SURFACE = "#16202c";
-
   function fdate(iso) {
     var d = new Date(iso);
     if (isNaN(d)) return String(iso || "").slice(0, 10);
     return (d.getMonth() + 1) + "/" + d.getDate() + "/" + String(d.getFullYear()).slice(2);
   }
-
   function parseRange(txt) {
     var m = /(-?\d+(?:\.\d+)?)\s*[-–]\s*(-?\d+(?:\.\d+)?)/.exec(String(txt || ""));
     return m ? [parseFloat(m[1]), parseFloat(m[2])] : null;
   }
-
   function trendChart(trend, tipHost, ownedTips, listen) {
     var pts = (trend.points || []).map(function (p) {
       var v = parseFloat(p.value), t = Date.parse(p.observed_at || "");
@@ -289,7 +278,6 @@
     }).filter(Boolean);
     if (pts.length < 2) return null;
     var timed = pts.every(function (d) { return !isNaN(d.t); });
-
     var W = 320, H = 96, mL = 8, mR = 44, mT = 10, mB = 18;
     var iw = W - mL - mR, ih = H - mT - mB;
     var last = pts[pts.length - 1];
@@ -306,7 +294,6 @@
       return mL + (pts.length === 1 ? iw / 2 : i / (pts.length - 1) * iw);
     };
     var y = function (v) { return mT + (hi - v) / (hi - lo) * ih; };
-
     var ns = "http://www.w3.org/2000/svg";
     var box = document.createElement("div"); box.className = "cnp-chart";
     var title = document.createElement("div"); title.className = "cnp-chart-t";
@@ -318,7 +305,6 @@
     svg.setAttribute("viewBox", "0 0 " + W + " " + H);
     svg.setAttribute("role", "img");
     svg.setAttribute("aria-label", title.textContent + ", " + pts.length + " points");
-
     function el(tag, attrs) {
       var e = document.createElementNS(ns, tag);
       Object.keys(attrs).forEach(function (k) { e.setAttribute(k, attrs[k]); });
@@ -350,7 +336,6 @@
     var ax2 = el("text", { x: mL + iw, y: H - 4, fill: "#93a6ba",
       "font-size": 9, "text-anchor": "end" });
     ax2.textContent = fdate(last.p.observed_at);
-
     // Hover layer: oversized hit targets, one shared tooltip.
     var tip = document.createElement("div"); tip.className = "cnp-tip";
     tipHost.appendChild(tip); ownedTips.push(tip);
@@ -371,7 +356,6 @@
     box.appendChild(svg);
     return box;
   }
-
   function exactServiceOrigin(value, allowLoopbackHttp) {
     if (typeof value !== "string" || !value) throw new Error("sovereignUrl is required");
     var parsed;
@@ -387,7 +371,6 @@
       throw new Error("sovereignUrl must be an exact HTTPS origin or same-origin loopback HTTP");
     return { origin: parsed.origin, loopback: loopback };
   }
-
   function closedObject(value, keys) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     var actual = Object.keys(value).sort();
@@ -396,7 +379,6 @@
       return key === expected[index];
     });
   }
-
   function validHumanContact(action) {
     return closedObject(action, ["label", "action_id", "fallback_text"]) &&
       typeof action.label === "string" && action.label.length >= 1 && action.label.length <= 120 &&
@@ -404,7 +386,6 @@
       typeof action.fallback_text === "string" &&
       action.fallback_text.length >= 1 && action.fallback_text.length <= 240;
   }
-
   function governedPresentation(value) {
     if (!closedObject(value, ["mode", "suppress", "human_contact"]) ||
         ["standard", "emergency", "sensitive_disclosure"].indexOf(value.mode) < 0 ||
@@ -419,7 +400,6 @@
          SUPPRESSION_NAMES.some(function (name) { return !unique.has(name); }))) return null;
     return value;
   }
-
   function governedHistory(value) {
     if (!closedObject(value, ["thread_ref", "messages", "next_cursor"]) ||
         typeof value.thread_ref !== "string" || !OPAQUE_REF.test(value.thread_ref) ||
@@ -442,7 +422,6 @@
     }
     return value;
   }
-
   function governedConversation(value) {
     if (!closedObject(value, ["schema_version", "history", "turns"]) ||
         value.schema_version !== "1.0.0" || !governedHistory(value.history) ||
@@ -474,7 +453,6 @@
     }
     return position === value.history.messages.length ? value : null;
   }
-
   function mount(opts) {
     opts = opts || {};
     if (opts.embedVersion !== "1.0")
@@ -502,11 +480,9 @@
     };
     var ownedTips = [];
     var listeners = [];
-
     var style = document.createElement("style");
     style.textContent = CSS;
     document.head.appendChild(style);
-
     var root = document.createElement("div");
     root.className = "cnp-root";
     root.innerHTML =
@@ -534,12 +510,10 @@
       '    <button class="cnp-send">Send</button></div>' +
       '    <p class="cnp-format-help" hidden>Document mode requests a draft from this record. For example: draft a visit summary. Review the draft before use.</p></div></div>';
     (opts.target || document.body).appendChild(root);
-
     // Hosts often already own the bottom-right corner (support widgets, bug
     // reporters). Let them place the launcher instead of colliding with it.
     if (opts.fabBottom) root.querySelector(".cnp-fab").style.bottom = opts.fabBottom;
     if (opts.fabRight) root.querySelector(".cnp-fab").style.right = opts.fabRight;
-
     var gate = root.querySelector(".cnp-gate"),
         fab = root.querySelector(".cnp-fab"), rail = root.querySelector(".cnp-rail"),
         thread = root.querySelector(".cnp-thread"), chips = root.querySelector(".cnp-chips"),
@@ -558,7 +532,6 @@
     prepToggle.setAttribute("aria-controls", prepView.id);
     formatHelp.id = "cnp-format-help-" + panelSequence;
     input.setAttribute("aria-describedby", formatHelp.id);
-
     function syncFormatHelp() {
       formatHelp.hidden = fmt.value !== "document";
       input.placeholder = state.localFixture ? "Use a synthetic guided prompt…"
@@ -566,7 +539,6 @@
         : state.persona === "provider" ? "Ask about the open record…"
         : "Ask a health or values question…";
     }
-
     function syncPrepDisclosure() {
       var expanded = state.prepHasBrief && !state.prepCollapsed;
       prepToggle.hidden = !state.prepHasBrief;
@@ -580,27 +552,22 @@
       prepToggle.textContent = expanded ? "Hide brief" : "Show brief";
       if (state.prepHasBrief) prepView.hidden = state.prepCollapsed;
     }
-
     function bubble(cls, target) {
       var w = document.createElement("div"); w.className = "cnp-msg " + (cls === "u" ? "cnp-u" : "");
       var b = document.createElement("div"); b.className = "cnp-b";
       w.appendChild(b); (target || thread).appendChild(w); thread.scrollTop = thread.scrollHeight;
       return b;
     }
-
     function currentGeneration(generation) {
       return !state.destroyed && generation === state.generation;
     }
-
     function abort(controller) {
       if (controller) controller.abort();
     }
-
     function clearOwnedTips() {
       ownedTips.forEach(function (tip) { tip.remove(); });
       ownedTips.length = 0;
     }
-
     function clearSessionPrep() {
       if (state.prepCycle) clearTimeout(state.prepCycle.timer);
       state.prepCycle = null;
@@ -618,14 +585,12 @@
       prepView.scrollTop = 0;
       syncPrepDisclosure();
     }
-
     function listen(target, event, handler, scope) {
       target.addEventListener(event, handler);
       listeners.push({
         target: target, event: event, handler: handler, scope: scope || "mount",
       });
     }
-
     function clearEventHandlers(scope) {
       var retained = [];
       listeners.forEach(function (item) {
@@ -642,7 +607,6 @@
         root.querySelectorAll("*").forEach(function (node) { node.onclick = null; });
       }
     }
-
     function syncControls() {
       var disabled = state.destroyed || state.busy || state.prepBusy || state.switching ||
         !state.accessGranted || !state.recordReady || state.clientId === null;
@@ -651,7 +615,6 @@
       prep.hidden = !state.sessionPrepAvailable;
       prepGo.disabled = disabled || state.prepBusy;
     }
-
     function setNamedBetaAccess(granted) {
       var wasGranted = state.accessGranted;
       state.accessGranted = granted === true;
@@ -664,7 +627,6 @@
         Promise.resolve(opts.onAccessChange(state.accessGranted)).catch(function () {});
     }
     setNamedBetaAccess(false);
-
     function lockNamedBeta() {
       if (state.destroyed) return;
       state.generation += 1;
@@ -687,7 +649,6 @@
       sub.textContent = "Named beta · access required";
       setGovernedChrome(null); setNamedBetaAccess(false);
     }
-
     async function freshBearerHeaders() {
       var token;
       try {
@@ -708,7 +669,6 @@
         "x-cosmaneura-embed-version": embedVersion,
       };
     }
-
     function setGovernedChrome(presentation) {
       var suppressed = new Set(presentation ? presentation.suppress : []);
       root.querySelectorAll(".cnp-welcome-disc").forEach(function (notice) {
@@ -716,7 +676,6 @@
       });
       chips.hidden = suppressed.has("guided_paths");
     }
-
     function welcomeData(headers, generation) {
       if (!state.welcomePromise) {
         if (!headers || !currentGeneration(generation))
@@ -742,7 +701,6 @@
       }
       return state.welcomePromise;
     }
-
     function governedContext(value, recordId) {
       var allowed = ["clientId", "thread_ref", "digest_ref", "terminology", "care_model"];
       if (!value || typeof value !== "object" || Array.isArray(value) ||
@@ -766,7 +724,6 @@
       }
       return clean;
     }
-
     function governedChatMetadata(context, outputFormat) {
       // Generic chat receives only independently governed host context hints.
       var meta = { output_format: outputFormat };
@@ -776,7 +733,6 @@
         });
       return meta;
     }
-
     function applyWelcomeUX(w) {
       state.persona = w.persona === "provider" ? "provider" : "patient";
       state.localFixture = w.walkthrough_mode === "local_synthetic" && service.loopback;
@@ -801,7 +757,6 @@
       syncFormatHelp();
       syncControls();
     }
-
     function applyEnvironmentLabel(w) {
       if (state.localFixture) {
         sandboxBadge.textContent = "Local synthetic fixture · no live records";
@@ -825,7 +780,6 @@
         sandboxBadge.hidden = false;
       }
     }
-
     // Welcome is mount-resolved by the server: the browser sends no persona.
     // The response drives tone and the persistent sandbox badge even when a
     // restored record history means no welcome bubble is rendered.
@@ -833,7 +787,6 @@
     // never acquired at mount time because it would not yet be record-bound.
     sandboxBadge.textContent = "Environment not verified";
     sandboxBadge.hidden = false;
-
     // Record-scoped threads. A monotonically increasing generation plus an
     // AbortController protects against both cooperative and non-cooperative
     // history loaders. A late A load can never paint after record B is active.
@@ -869,14 +822,12 @@
       thread.innerHTML = ""; chips.innerHTML = "";
       setNamedBetaAccess(false);
       setGovernedChrome(null); clearOwnedTips(); syncControls();
-
       if (recordId === null) {
         state.recordController = null;
         sub.textContent = "Open a record to use the assistant";
         if (invalidRecordId) throw new Error("record identifier is invalid");
         return generation;
       }
-
       try {
         // Authenticate the named provider before asking the host for even an
         // opaque record reference. Every late result is discarded if the host
@@ -974,7 +925,6 @@
       return currentGeneration(generation) && !state.switching && state.recordReady
         ? generation : null;
     }
-
     async function loadWelcome(generation) {
       if (state.welcomeRenderGeneration === generation) return;
       state.welcomeRenderGeneration = generation;
@@ -1007,7 +957,6 @@
         }
       }
     }
-
     function render(b, d, recordId, generation, hydrated) {
       var presentation = governedPresentation(d.presentation);
       if (!presentation) throw new Error("assistant presentation is invalid");
@@ -1115,7 +1064,6 @@
       }
       if (bar.children.length) b.appendChild(bar);
     }
-
     async function safeProblem(response) {
       try {
         var value = await response.json();
@@ -1138,14 +1086,12 @@
       } catch (_error) {}
       return null;
     }
-
     function validPrepTextList(value, minimum) {
       return Array.isArray(value) && value.length >= minimum && value.length <= 8 &&
         value.every(function (item) {
           return typeof item === "string" && item.length >= 1 && item.length <= 1000;
         });
     }
-
     var prepFactLabels = {
       planned: "Planned", documented_taking: "Taking documented in note",
       documented_continued: "Continued in note", documented_started: "Started in note",
@@ -1190,7 +1136,6 @@
           prepString(correction.section, 160) && prepString(correction.quote, 1200));
       });
     }
-
     function governedSessionPrep(value) {
       var keys = [
         "client_turn_id", "state", "freshness", "current_through", "source_count",
@@ -1249,7 +1194,6 @@
            brief.patient_reported.summary.length > 2000)) return null;
       return value;
     }
-
     function prepSection(title, values, ordered) {
       if (ordered && values.length === 1 && /(?:^|\s)2[.)]\s+/.test(values[0]))
         values = values[0].split(/(?:^|\s)\d{1,2}[.)]\s+/).map(function (value) { return value.trim(); }).filter(Boolean);
@@ -1271,7 +1215,6 @@
       }
       prepView.appendChild(section);
     }
-
     function prepFactTables(value) {
       var facts = value.structured_facts;
       if (!facts) {
@@ -1326,19 +1269,16 @@
       });
       if (!facts.facts.length) prepSection("Dated observations", ["No supported observations are shown. This does not establish absence from the chart."]);
     }
-
     function currentPrep(cycle) {
       return cycle && state.prepCycle === cycle &&
         state.open && !document.hidden &&
         currentGeneration(cycle.generation) && state.clientId === cycle.recordId;
     }
-
     function focusChatInput() {
       // Polling defers to a focused input. Do not manufacture that signal when
       // the provider is only reading an answer while preparation is pending.
       if (!state.prepCycle || state.prepCycle.timer === null) input.focus();
     }
-
     function schedulePrepCheck(value, cycle) {
       var delay = value.retry_after_seconds * 1000;
       function writing() {
@@ -1369,7 +1309,6 @@
       }
       schedule();
     }
-
     function renderSessionPrep(value, cycle) {
       if (!currentPrep(cycle)) return;
       var presentation = Object.assign({}, value);
@@ -1471,7 +1410,6 @@
         prepView.appendChild(refresh);
       }
     }
-
     function paintPrepFailure(attempt, message, allowRetry) {
       if (!currentPrep(attempt.cycle)) return;
       clearTimeout(attempt.cycle.timer);
@@ -1499,12 +1437,10 @@
       };
       prepView.appendChild(retry);
     }
-
     function currentPrepAttempt(attempt, controller) {
       return currentPrep(attempt.cycle) && state.prepController === controller &&
         !controller.signal.aborted;
     }
-
     async function prepHeadersForAttempt(attempt, controller) {
       var headers = await freshBearerHeaders();
       if (!currentPrepAttempt(attempt, controller))
@@ -1521,7 +1457,6 @@
       headers["x-cosmaneura-client-turn-id"] = attempt.clientTurnId;
       return headers;
     }
-
     async function runSessionPrepAttempt(attempt) {
       if (!currentPrep(attempt.cycle) || state.busy || state.prepBusy || state.switching) return;
       state.prepBusy = true; syncControls();
@@ -1604,7 +1539,6 @@
         }
       }
     }
-
     async function requestSessionPrep(focusWhenReady) {
       if (state.busy || state.prepBusy || state.switching || state.destroyed ||
           !state.open || document.hidden || !state.sessionPrepAvailable ||
@@ -1619,7 +1553,6 @@
       state.prepCycle = cycle;
       return loadSessionPrep(cycle);
     }
-
     async function loadSessionPrep(cycle, background) {
       if (!currentPrep(cycle)) return;
       try {
@@ -1633,7 +1566,6 @@
         paintPrepFailure({ cycle: cycle }, "Couldn’t initialize Session Prep for this encounter.", false);
       }
     }
-
     async function headersForAttempt(attempt) {
       var headers;
       if (attempt.initialHeaders) {
@@ -1657,7 +1589,6 @@
       headers["x-cosmaneura-client-turn-id"] = attempt.clientTurnId;
       return headers;
     }
-
     function appendResponseCheck(b, attempt) {
       if (typeof opts.loadHistory !== "function") return;
       var check = document.createElement("button");
@@ -1665,14 +1596,12 @@
       check.onclick = function () { return checkResponse(attempt, b); };
       b.appendChild(check);
     }
-
     function paintReadStatus(b, attempt, status) {
       b.innerHTML = "<p>" + esc(status === "stale"
         ? "This earlier response is no longer current. Ask a new question to use current context."
         : "This turn has no recorded response yet. Checking does not run it again.") + "</p>";
       if (status === "pending") appendResponseCheck(b, attempt);
     }
-
     async function checkResponse(attempt, b) {
       if (state.busy || state.switching || state.destroyed ||
           !currentGeneration(attempt.generation) || state.clientId !== attempt.recordId) return;
@@ -1737,7 +1666,6 @@
         }
       }
     }
-
     function paintAttemptFailure(b, attempt, message, allowRetry) {
       b.innerHTML = "<p>" + esc(message) + "</p>";
       input.value = attempt.text;
@@ -1757,7 +1685,6 @@
       };
       b.appendChild(retry);
     }
-
     async function runAttempt(attempt, b) {
       if (!currentGeneration(attempt.generation) || state.switching) return;
       state.busy = true; syncControls();
@@ -1860,7 +1787,6 @@
         }
       }
     }
-
     async function ask() {
       var text = input.value.trim();
       if (!text || state.busy || state.switching || state.destroyed ||
@@ -1873,7 +1799,6 @@
       var b = null;
       var handedOff = false;
       state.busy = true; state.retryAttempt = null; syncControls();
-
       try {
         var initialHeaders = await freshBearerHeaders();
         if (!currentGeneration(generation)) return;
@@ -1892,7 +1817,6 @@
           message: text,
           metadata: meta,
         });
-
         bubble("u").textContent = text;
         b = bubble("a");
         var attempt = {
@@ -1922,7 +1846,6 @@
         }
       }
     }
-
     // Reflow the host instead of covering its active workspace. Restore the
     // host's own inline value on close, and skip the shift on narrow screens.
     var savedPad = null;
@@ -1945,7 +1868,6 @@
       }
       if (open && state.recordReady) focusChatInput();
     }
-
     function destroy() {
       if (state.destroyed) return;
       state.destroyed = true;
@@ -1969,7 +1891,6 @@
       root.innerHTML = "";
       root.remove(); style.remove();
     }
-
     fab.onclick = function () { setOpen(!state.open); };
     prepFocus.onclick = function () {
       if (!state.prepHasBrief || !currentPrep(state.prepCycle)) return;
@@ -2004,7 +1925,6 @@
       input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 110) + "px";
     });
     syncControls();
-
     return {
       open: function () { setOpen(true); },
       openSessionPrep: function () {
@@ -2043,6 +1963,5 @@
       root: root,
     };
   }
-
   window.CosmaNeuraPanel = { mount: mount };
 })();
