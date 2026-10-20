@@ -188,12 +188,12 @@
     return t.replace(/\\([\\`*_{}\[\]()#!|~])/g, "$1")
       .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
   }
-  function md(t) {
+  function md(t, rawBrief) {
     // This canonical evidence envelope contains server-escaped literal
     // Markdown, rather than generated prose. History retains the answer but
     // omits structured data, so recognize its fixed format in both paths.
     // This changes text formatting only; it grants no authority/capability.
-    if (typeof t === "string" &&
+    if (!rawBrief && typeof t === "string" &&
         t.indexOf("Selected reviewed-note excerpts for your question:\n\n") === 0) {
       var literal = literalMarkdownText(t);
       var evidenceLines = literal.split("\n"), evidenceHtml = "", expected = 1;
@@ -216,10 +216,11 @@
       }
       return evidenceHtml;
     }
-    // Decode only the closed observation suffix; the generated brief is raw.
-    var observations = typeof t === "string" && /\n\nReviewed-source observations — bounded explicit mentions\nNote dates: \d{4}-\d{2}-\d{2}(?:, \d{4}-\d{2}-\d{2}){0,4}\nThese are dated note observations, not a complete medication list or order ledger\.(?:\n|$)/.exec(t);
-    if (observations) {
-      return md(t.slice(0, observations.index)) + esc(literalMarkdownText(t.slice(observations.index)))
+    // Dynamic values escape this marker; the last raw one binds the suffix.
+    // Never re-detect copied literal envelopes inside the raw generated brief.
+    var marker = "\n\n<!-- [reviewed-source-observations:v1] -->\n", observations = !rawBrief && typeof t === "string" ? t.lastIndexOf(marker) : -1;
+    if (observations >= 0 && /^Reviewed-source observations — bounded explicit mentions\nNote dates: \d{4}-\d{2}-\d{2}(?:, \d{4}-\d{2}-\d{2}){0,4}\nThese are dated note observations, not a complete medication list or order ledger\.(?:\n|$)/.test(t.slice(observations + marker.length))) {
+      return md(t.slice(0, observations), true) + esc(literalMarkdownText(t.slice(observations + marker.length)))
         .split("\n").filter(function (line) { return line !== ""; })
         .map(function (line) { return "<p>" + line + "</p>"; }).join("");
     }
