@@ -37,6 +37,15 @@ _SYSTEM = (
     "  - Be warm and non-alarming."
 )
 
+_PROVIDER_RECORD_SYSTEM = (
+    "You help a clinician answer a specific question about the server-supplied "
+    "reviewed-note context. Answer that question first, concisely, with dated "
+    "source attribution. Do not diagnose, stage, score risk, recommend treatments, "
+    "or turn historical plans into new instructions. Preserve uncertainty and "
+    "documented factual status. Add medical education, a question list, or records "
+    "to bring only when the clinician requests them. Be clear and non-alarming."
+)
+
 
 class EngagementAgent(BaseAgent):
     name = "engagement_agent"
@@ -59,21 +68,27 @@ class EngagementAgent(BaseAgent):
         fmt, fmt_rules = self.resolve_output_format(request)
 
         content = await self.llm.complete(
-            system=_SYSTEM + CONVERSATION_RULES + (PROVIDER_CONTEXT_RULES if provider_context else ""),
+            system=(_PROVIDER_RECORD_SYSTEM if provider_context else _SYSTEM)
+            + CONVERSATION_RULES + (PROVIDER_CONTEXT_RULES if provider_context else ""),
             prompt=(f"Audience: {audience}\n"
                     f"Person's message: {request.message}\n"
                     f"Known history/context: {history}\n\n"
                     + conversation_prompt(request.history)
-                    + (f"Prepared summary: {provider_context.prompt_text()}\n"
+                    + (f"Reviewed-note context: {provider_context.prompt_text()}\n"
                        if provider_context else "")
                     + f"Output format requirement: {fmt_rules}\n"
-                    "Produce the plain-language explanation and the question list."),
+                    + ("Answer the specific record question first, using only the "
+                       "server-supplied reviewed-note context. Add education or a question list only if requested."
+                       if provider_context else
+                       "Produce the plain-language explanation and the question list.")),
             max_tokens=1100,
         )
         return AgentResult(
             agent=self.name,
             content=content,
-            citations=[Citation(source="MedlinePlus (suggested reference)",
-                                url="https://medlineplus.gov/")],
+            citations=[] if provider_context else [
+                Citation(source="MedlinePlus (suggested reference)",
+                         url="https://medlineplus.gov/")
+            ],
             data={"output_format": fmt},
         )

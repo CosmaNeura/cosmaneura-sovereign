@@ -101,10 +101,12 @@ class VisitPrepAgent(BaseAgent):
                        if intake_summary else "")
                     + f"<prior_sessions>\n{prior}\n</prior_sessions>\n"
                     + conversation_prompt(request.history)
-                    + (f"Prepared summary: {provider_context.prompt_text()}\n"
+                    + (f"Reviewed-note context: {provider_context.prompt_text()}\n"
                        if provider_context else "")
                     + f"\nOutput format requirement: {fmt_rules}\n"
-                      "Produce the prep sheet."),
+                    + ("Answer the clinician's specific question first, using only "
+                       "the server-supplied reviewed-note context. Include a prep sheet only if requested."
+                       if provider_context else "Produce the prep sheet.")),
             max_tokens=700,
         )
 

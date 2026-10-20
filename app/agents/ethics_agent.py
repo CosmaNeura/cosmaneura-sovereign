@@ -127,7 +127,7 @@ class EthicsConsultAgent(BaseAgent):
             prompt=(f"Clinician's question: {request.message}\n"
                     f"Case context: {case_context}\n"
                     + conversation_prompt(request.history)
-                    + (f"Prepared summary: {provider_context.prompt_text()}\n"
+                    + (f"Reviewed-note context: {provider_context.prompt_text()}\n"
                        if provider_context else "")
                     + literature_context
                     + f"<published_literature>\n{evidence}\n</published_literature>\n"

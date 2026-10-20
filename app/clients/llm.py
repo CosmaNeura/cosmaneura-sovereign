@@ -334,6 +334,8 @@ def _mock_completion(*, system: str, prompt: str) -> str:
         return json.dumps({"requires_prepared_context": any(term in low for term in (
             "prior visit", "previous visit", "prior note", "recorded history",
             "documented", "this patient's history", "this patient's record",
+            "confirmed to be taking", "only planned", "actually ordered",
+            "order status", "which orders", "office blood pressure", "home readings",
         ))})
     if "classify the user request" in system.lower():
         # Classify on the user's words only -- ignore metadata and any injected
