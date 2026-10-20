@@ -46,10 +46,10 @@ def test_valid_unicode_reviewed_context_over_legacy_byte_cap_is_accepted(version
         result["provenance"].append(provenance)
         result["reviewed_sources"].append({
             "source_ref": provenance["source_ref"], "source_version": provenance["source_version"],
-            "source_at": provenance["source_at"], "sections": {"Objective": "é" * 15_000},
+            "source_at": provenance["source_at"], "sections": {"Objective": "😀" * 15_000},
         })
     body = json.dumps(raw, ensure_ascii=False).encode()
-    assert 128 * 1024 < len(body) < 256 * 1024
+    assert 256 * 1024 < len(body) < 600 * 1024
     response = read(lambda _: httpx.Response(200, headers=headers(), content=body), version)
     assert len(response.result.reviewed_sources) == 5
 
@@ -60,7 +60,7 @@ class NeverRead(httpx.AsyncByteStream):
         yield b""
 
 
-@pytest.mark.parametrize("version,limit", [("1.0.0", 128 * 1024), ("1.1.0", 256 * 1024), ("1.2.0", 256 * 1024)])
+@pytest.mark.parametrize("version,limit", [("1.0.0", 128 * 1024), ("1.1.0", 600 * 1024), ("1.2.0", 600 * 1024)])
 def test_each_version_rejects_declared_oversize_before_body_read(version, limit):
     def handler(_):
         return httpx.Response(200, headers={**headers(), "content-length": str(limit + 1)}, stream=NeverRead())
@@ -73,7 +73,7 @@ def test_reviewed_context_stream_cannot_exceed_cap_without_content_length():
         closed = False
 
         async def __aiter__(self):
-            yield b"x" * (256 * 1024 + 1)
+            yield b"x" * (600 * 1024 + 1)
             raise AssertionError("Reader must stop at its byte bound")
 
         async def aclose(self):

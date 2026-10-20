@@ -16,8 +16,10 @@ Each source carries `source_ref`, `source_version`, an aware `source_at`, and
 exactly; pending/unavailable results contain an empty source array. Up to five
 notes are allowed. Each note has 1–64 nonblank section titles, no NULs, at least
 one nonblank text, and at most 18,000 characters in its canonical JSON section
-serialization; the aggregate cap is 90,000. The existing 256-KiB HTTP response
-ceiling also applies. There is no transcript or whole-chart read.
+serialization; the aggregate cap is 90,000. These are character budgets; UTF-8
+source text and the optional brief can exceed 256 KiB. The consumer enforces a
+600-KiB streamed response ceiling for reviewed-source versions and retains the
+128-KiB ceiling for legacy summary reads. There is no transcript or whole-chart read.
 
 Sovereign sends the dated sections and brief only to its existing BAA drafting
 path. Private references and source digests are removed from model prompts and
