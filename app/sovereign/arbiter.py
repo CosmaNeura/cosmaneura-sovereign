@@ -44,8 +44,13 @@ _ANSWER_SYSTEM = (
     "the USCCB Ethical and Religious Directives where relevant."
 )
 _REVIEW_REFUSAL_RE = re.compile(
-    r"\b(?:cannot|can['’]t|unable to|not able to)\s+"
-    r"(?:assess|evaluate|review|revise)\b|"
+    r"\b(?:cannot|can['’]t|unable to|not able to|not qualified to|not equipped to|"
+    r"do not|don['’]t)\s+"
+    r"(?:(?:assess|evaluate|review|revise|edit|analy[sz]e|answer|respond|comment)\b|"
+    r"(?:provide|offer|give|perform|make)\s+(?:[\w'-]+\s+){0,6}"
+    r"(?:assessments?|evaluations?|reviews?|revisions?|analys(?:is|es)|answers?|"
+    r"responses?|opinions?|feedback|"
+    r"(?:medical|clinical)\s+(?:[\w'-]+\s+){0,3}(?:advice|guidance|assistance))\b)|"
     r"\b(?:outside|beyond)\s+(?:my|its|the)\s+(?:scope|expertise)\b",
     re.IGNORECASE,
 )

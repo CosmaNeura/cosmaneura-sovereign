@@ -184,6 +184,10 @@
                '"': "&quot;", "'": "&#39;" }[c];
     });
   }
+  function literalMarkdownText(t) {
+    return t.replace(/\\([\\`*_{}\[\]()#!|~])/g, "$1")
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  }
   function md(t) {
     // This canonical evidence envelope contains server-escaped literal
     // Markdown, rather than generated prose. History retains the answer but
@@ -191,9 +195,7 @@
     // This changes text formatting only; it grants no authority/capability.
     if (typeof t === "string" &&
         t.indexOf("Selected reviewed-note excerpts for your question:\n\n") === 0) {
-      var literal = t.replace(/\\([\\`*_{}\[\]()#!|~])/g, "$1")
-        .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-        .replace(/&amp;/g, "&");
+      var literal = literalMarkdownText(t);
       var evidenceLines = literal.split("\n"), evidenceHtml = "", expected = 1;
       for (var e = 0; e < evidenceLines.length; e++) {
         var label = evidenceLines[e].match(/^\[(\d+)\] (.+)$/);
@@ -213,6 +215,13 @@
         if (evidenceLines[e] !== "") evidenceHtml += "<p>" + esc(evidenceLines[e]) + "</p>";
       }
       return evidenceHtml;
+    }
+    // Decode only the closed observation suffix; the generated brief is raw.
+    var observations = typeof t === "string" && /\n\nReviewed-source observations — bounded explicit mentions\nNote dates: \d{4}-\d{2}-\d{2}(?:, \d{4}-\d{2}-\d{2}){0,4}\nThese are dated note observations, not a complete medication list or order ledger\.(?:\n|$)/.exec(t);
+    if (observations) {
+      return md(t.slice(0, observations.index)) + esc(literalMarkdownText(t.slice(observations.index)))
+        .split("\n").filter(function (line) { return line !== ""; })
+        .map(function (line) { return "<p>" + line + "</p>"; }).join("");
     }
     var lines = esc(t).split("\n"), html = "", inList = false, m;
     for (var i = 0; i < lines.length; i++) {

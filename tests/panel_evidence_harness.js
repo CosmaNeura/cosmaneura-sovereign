@@ -22,8 +22,13 @@ async function main() {
   let requests = 0;
   global.fetch = async (url, options) => {
     if (url.endsWith("/welcome")) return response(200, {
-      persona: "provider", greeting: "Hello", paths: [], disclaimer: "Fictional disclaimer",
+      persona: "provider", greeting: "Hello", disclaimer: "Fictional disclaimer",
+      paths: input.preparation ? [{ intent: "session_prep", label: "Open Session Prep", message: "Open Session Prep" }] : [],
     });
+    if (input.preparation && url.endsWith("/session-prep/structured-facts")) {
+      requests += 1;
+      return response(200, { ...input.preparation, client_turn_id: JSON.parse(options.body).client_turn_id });
+    }
     assert(url.endsWith("/chat"), "unexpected request");
     requests += 1;
     assert(JSON.parse(options.body).metadata.output_format === "chat", "format changed");
@@ -48,14 +53,18 @@ async function main() {
   });
   await panel.setRecord("record_fictional");
   if (!input.hydrated) {
-    panel.root.querySelector(".cnp-in").value = "A factual question.";
-    await panel.root.querySelector(".cnp-send").click();
+    if (input.preparation) await panel.openSessionPrep();
+    else {
+      panel.root.querySelector(".cnp-in").value = "A factual question.";
+      await panel.root.querySelector(".cnp-send").click();
+    }
   }
   assert(requests === (input.hydrated ? 0 : 1), "rendering issued extra chat requests");
   const bubbles = panel.root.querySelectorAll(".cnp-b");
   assert(bubbles.length > 0, "answer did not render");
   const html = bubbles[bubbles.length - 1].innerHTML;
-  process.stdout.write(JSON.stringify({ html }));
+  const literalTexts = panel.root.querySelector(".cnp-prep-view").querySelectorAll("*").map(node => node.textContent);
+  process.stdout.write(JSON.stringify({ html, literalTexts }));
   panel.destroy();
 }
 

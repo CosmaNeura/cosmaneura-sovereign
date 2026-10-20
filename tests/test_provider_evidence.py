@@ -315,7 +315,7 @@ class RenderedEvidence(HTMLParser):
             self.active[-1] += data
 
 
-def panel_render(answer, *, hydrated, structured=None):
+def panel_render_data(answer, *, hydrated, structured=None, preparation=None):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the real panel render harness")
@@ -328,11 +328,17 @@ def panel_render(answer, *, hydrated, structured=None):
         "presentation": {"mode": "standard", "suppress": ["intent_badge", "doctrinal_badge"],
                          "human_contact": None},
     }}
+    if preparation is not None:
+        payload["preparation"] = preparation
     result = subprocess.run(
         [node, str(root / "tests/panel_evidence_harness.js"), str(root / "app/panel.js")],
         input=json.dumps(payload), text=True, capture_output=True, check=True,
     )
-    return json.loads(result.stdout)["html"]
+    return json.loads(result.stdout)
+
+
+def panel_render(answer, *, hydrated, structured=None):
+    return panel_render_data(answer, hydrated=hydrated, structured=structured)["html"]
 
 
 @pytest.mark.parametrize("hydrated", [False, True])

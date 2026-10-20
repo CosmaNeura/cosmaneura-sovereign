@@ -80,6 +80,27 @@ def test_none_classification_cannot_skip_review_for_neutral_chart_excerpts():
 
 
 @pytest.mark.parametrize("where", ["question", "selected_source", "other_source", "high"])
+def test_real_arbiter_is_called_when_full_review_vetoes_the_neutral_projection(where):
+    extra = " Historical note discussed IVF." if where == "selected_source" else ""
+    sensitivity = DoctrinalSensitivity.HIGH if where == "high" else DoctrinalSensitivity.NONE
+    service, read, conversation = setup(sensitivity, extra)
+    if where == "other_source":
+        raw = read.read.return_value.model_dump(mode="json")
+        raw["result"]["reviewed_sources"][0]["sections"]["OTHER"] = "Historical abortion discussion."
+        read.read.return_value = ProviderQuestionResponse.model_validate(raw)
+    service.arbiter = DoctrinalArbiter(service.s, llm=service.llm)
+    service.arbiter.magisterium.ask = AsyncMock(return_value=("The quotation conforms.", []))
+    service.llm.classify_json = AsyncMock(return_value={"conforms": True, "needs_revision": False})
+    question = FAILED_QUESTION + (" Explain Catholic teaching." if where == "question" else "")
+    response = handle(service, question)
+    service.arbiter.magisterium.ask.assert_called_once()
+    reviewed = service.arbiter.magisterium.ask.call_args.kwargs["user_content"]
+    assert "potassium" in reviewed and "neutral historical quotation" not in reviewed
+    assert response.doctrinal_review.conforms is True
+    assert conversation.write_final_response.call_args.kwargs["outcome"] == "completed"
+
+
+@pytest.mark.parametrize("where", ["question", "selected_source", "other_source", "high"])
 def test_moral_or_high_inputs_keep_full_deidentified_review(where):
     extra = " Historical note discussed IVF." if where == "selected_source" else ""
     sensitivity = DoctrinalSensitivity.HIGH if where == "high" else DoctrinalSensitivity.LOW
@@ -162,7 +183,17 @@ def test_refusal_or_nonconformance_still_blocks_the_historical_quote(conforms, r
 
 
 @pytest.mark.parametrize("refusal", [SCOPE_REFUSAL, "I cannot review this medical wording.",
-                                    "That is outside my scope."])
+                                    "That is outside my scope.",
+                                    "I cannot provide a clinical assessment.",
+                                    "I am unable to offer an assessment of the medical record.",
+                                    "I am not qualified to give a medical evaluation.",
+                                    "I can't perform a professional clinical review.",
+                                    "I do not provide clinical assessments.",
+                                    "I’m unable to answer this clinical question.",
+                                    "I don't offer medical opinions.",
+                                    "I cannot provide medical advice.",
+                                    "I am unable to offer clinical guidance.",
+                                    "I cannot give feedback on a medical record."])
 def test_explicit_scope_refusal_is_not_conformance_even_if_parser_would_pass(refusal):
     arbiter = DoctrinalArbiter(Settings(_env_file=None, mock_mode=True))
     arbiter.magisterium.ask = AsyncMock(return_value=(refusal, []))
@@ -187,4 +218,19 @@ def test_genuine_doctrinal_judgments_retain_the_existing_parse_and_revision(conf
     ))
     assert verdict.conforms is conforms
     assert verdict.revised_content == (None if conforms else text)
+    arbiter.llm.classify_json.assert_called_once()
+
+
+@pytest.mark.parametrize("text", [
+    "Catholic teaching cannot endorse IVF. The draft must be revised.",
+    "The Church cannot provide approval for direct abortion. Revise the endorsement.",
+    "I cannot recommend contraception. Frame the response according to Catholic teaching.",
+])
+def test_doctrinal_prohibitions_are_not_mistaken_for_task_scope_refusals(text):
+    arbiter = DoctrinalArbiter(Settings(_env_file=None, mock_mode=True))
+    arbiter.magisterium.ask = AsyncMock(return_value=(text, []))
+    arbiter.llm.classify_json = AsyncMock(return_value={"conforms": False, "needs_revision": True})
+    verdict = asyncio.run(arbiter.review(deidentified_draft="Synthetic ethical case.",
+                                      intent=Intent.ETHICS_CONSULT, sensitivity=DoctrinalSensitivity.HIGH))
+    assert verdict.conforms is False and verdict.revised_content == text
     arbiter.llm.classify_json.assert_called_once()

@@ -1271,6 +1271,11 @@ class Sovereign:
             # deterministic policy projection derived from the actual answer, on
             # the normal routed LOW/HIGH review. Other lanes retain the existing
             # de-identification boundary before Magisterium.
+            if (result.data.get("record_evidence_status") == "validated_excerpts"
+                    and sensitivity == DoctrinalSensitivity.NONE):
+                # The minimum applies before either review-input choice. A moral
+                # veto must never route a validated excerpt into NONE's bypass.
+                sensitivity = DoctrinalSensitivity.LOW
             if intent == Intent.LAB_REVIEW:
                 safe_lab_projection = _value_safe_lab_review_projection(
                     result.content, result.data
@@ -1289,8 +1294,6 @@ class Sovereign:
                 # reviewer about that policy posture without sending medical
                 # wording for it to edit. A refusal still fails closed below.
                 arbiter_input = deidentify(_neutral_record_review_projection()).text
-                if sensitivity == DoctrinalSensitivity.NONE:
-                    sensitivity = DoctrinalSensitivity.LOW
                 self.audit.record(
                     trace_id=trace_id, profile=profile,
                     event="record_excerpts_withheld_from_non_baa_arbiter",

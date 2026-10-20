@@ -56,7 +56,7 @@ synthetic correction evidence and covers fixed-projection non-leakage,
 minimum sensitivity, moral/HIGH/source vetoes, untouched synthesis/ethics,
 invalid selections, refusals with erroneous positive parser flags and genuine
 doctrinal revisions. The focused provider/evidence/labs/ethics/conversation/
-emergency/mount/panel/facts suite passes 509 tests on the consumer-71 stack.
+emergency/mount/panel/facts/context suite passes 637 tests on the consumer-71 stack.
 Ruff and diff checks pass.
 
 These are deterministic regressions, not proof that the live reviewer will
@@ -67,10 +67,32 @@ the live refusal as fixed until that replay succeeds.
 
 Independent review must cover the exact final commit before merge. Reconcile
 the deployed Sovereign revision before deployment. This fix is stacked on
-consumer commit `671419476064b160796496e34d7b29f197696710` and retains its
-exact panel blob `e84200e7892a6c7b7b6bad3ff1fe3e3e5c2c65ab`. A later Core
-pin can reference the combined final reviewed Sovereign commit; this fix does
-not modify Core's current pin or a previously deployed source pair.
+consumer commit `671419476064b160796496e34d7b29f197696710`. The follow-up
+repair also fixes that consumer's literal restored-history observation suffix,
+so a later Core pin must use this combined final reviewed source and new panel
+digest. This change does not modify Core's current pin or a deployed source pair.
+
+## Independent-review repairs
+
+The minimum LOW sensitivity now applies before selecting either review input.
+Actual-arbiter regressions verify that routed NONE plus a moral question,
+quoted source or unquoted source section makes a real Magisterium transport
+call; HIGH remains unchanged. This closes the full-input branch's former NONE
+bypass rather than checking only a mocked review method invocation.
+
+The negative refusal guard covers direct review verbs and inability to
+provide/offer/give assessments, evaluations, reviews, opinions and medical
+advice/guidance. Alternative task-refusal wording fails closed even with an
+incorrect positive parser flag. Genuine doctrinal prohibitions still follow
+their original judgment/revision path; no refusal creates conformance.
+
+Canonical dated observations now share the literal decoder with quoted
+evidence. Only a closed observation suffix header is decoded once and HTML
+escaped once. Its preceding generated brief keeps the original Markdown
+rendering and is not unescaped. Actual Core-shaped response validation,
+projection, canonical text and public live/history panel mounts verify the
+same visible section labels, inequalities, ampersands and source punctuation.
+Source HTML/links remain inert, and malformed headers cannot activate decoding.
 
 Recovery: revert this fix to restore the previous review input. Preparation
 artifacts, receipt digests and database state require no rollback or cleanup.
