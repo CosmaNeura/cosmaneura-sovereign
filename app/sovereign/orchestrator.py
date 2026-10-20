@@ -73,6 +73,7 @@ from app.clients.provider_question import ProviderQuestionClient
 from app.clients.provider_evidence import EVIDENCE_REVIEW_UNAVAILABLE
 from app.clients.provider_question_contract import (
     ProviderQuestionArguments, ProviderQuestionRequest, ProviderQuestionResult,
+    ReviewedProviderQuestionResult,
 )
 from app.clients.session_prep import (
     SessionPrepClient,
@@ -1189,7 +1190,15 @@ class Sovereign:
                         required=True,
                     )
             elif provider_context is not None:
-                result = await agent.run(request, profile, provider_context=provider_context)
+                if (intent == Intent.ENGAGEMENT
+                        and isinstance(provider_context, ReviewedProviderQuestionResult)):
+                    # Specific chart questions use source evidence. The generated
+                    # overview, ethics and summary-only fallback keep synthesis.
+                    result = await agent.run(
+                        request, profile, provider_context=provider_context, exact_evidence=True,
+                    )
+                else:
+                    result = await agent.run(request, profile, provider_context=provider_context)
             else:
                 result = await agent.run(request, profile)
             self.audit.record(trace_id=trace_id, profile=profile, event="agent_complete",

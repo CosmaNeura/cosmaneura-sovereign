@@ -1,11 +1,13 @@
 # Reviewed-note evidence mode
 
-Risk: Tier 2, provider context. Owner: Session Prep engineering. Status: dark,
-not dispatched by the public endpoint and not activated in staging. This is
-an explicit server-only agent argument; browser metadata cannot enable it.
-The provider-facing choice between synthesis and evidence excerpts remains
-with the user. Existing synthesis, ethics consultation and v1.0/v1.1/v1.2 Core
-contracts remain unchanged.
+Risk: Tier 2, provider context. Owner: Session Prep engineering. Status:
+implemented, not yet deployed to staging. The user selected dated excerpt
+cards for specific chart questions while retaining the generated preparation
+brief as the overview. The server enables exact evidence for ENGAGEMENT
+answers only when the existing authorized lane supplies full reviewed-note
+sources. Browser metadata cannot choose this mode or its sources. General
+education, Visit Prep synthesis, ethics consultation, summary-only fallback,
+the generated brief and v1.0/v1.1/v1.2 Core contracts remain unchanged.
 
 ## Deployable outcome
 
@@ -25,9 +27,15 @@ mode. No evidence is salvaged from an invalid selection.
 The model sees disposable zero-based indices, not Core source handles or
 version digests. Dates and labels derive from authorized metadata. There is
 no authorized visit route in Core v1.2, so this mode does not invent links.
-Untrusted quoted markup is rendered literally. Existing de-identification
+The panel renders compact dated section cards without displaying the model
+indices. Untrusted quoted markup is rendered literally. Existing de-identification
 still runs before doctrinal arbitration; no doctrinal MCP is enabled on the
-BAA drafting call.
+BAA drafting call. The canonical answer contains safe literal Markdown for
+exports. A fixed evidence envelope lets the panel reverse that encoding once,
+HTML-escape once and preserve source punctuation and whitespace in both live
+responses and restored history. The envelope controls formatting only; it
+cannot grant authority or validate model claims by itself. Multiline source
+titles are flattened into one label line so they cannot manufacture cards.
 
 ## Limits
 
@@ -36,8 +44,10 @@ that all later corrections were selected, that a historical plan became the
 current regimen, or that the whole question was answered. The answer states
 this limitation and preserves the actual source-read notice. This is not a
 semantic clinical-claim validator or an evaluation of live model selection
-quality. Until the UX choice is resolved, normal synthesized answers do not
-gain any new machine-validation claim from this change.
+quality. The preserved summary-only fallback does not gain any new
+machine-validation claim from this change. Future clickable source citations
+require an independently authorized Core route contract; date/section labels
+do not imply that those links currently exist.
 
 ## Recovery and authority
 
@@ -56,21 +66,28 @@ existing final-acceptance authority/freshness check can still reject corrected,
 revoked or mismatched context before answer egress. No schema, migrations,
 configuration, dependency, browser ingress or permission changes are required.
 
-Recovery: remove any future explicit server dispatch of `exact_evidence=True`
-to restore normal synthesis; this PR itself has no active dispatch to remove.
-If reverting this primitive, revert the implementation commit. No data cleanup
-or database rollback is required.
+Recovery: remove the explicit ENGAGEMENT dispatch of `exact_evidence=True` to
+restore prior synthesis without changing preparation artifacts. If reverting
+the primitive and panel renderer, revert this PR's implementation commits.
+No data cleanup or database rollback is required. Deployment remains within
+the existing Session Prep feature/authorized staging cohort; no new flag,
+account, permission or cohort is enabled by this change.
 
 ## Validation
 
 `tests/test_provider_evidence.py` covers exact old/new note attribution,
 unknown fields and model dates/URLs, foreign indices, duplicate keys,
 unbounded output, partial-text status distortion, markup, corrected source
-text, dark/default behavior, summary fallback refusal, de-identification,
+text, server-owned dispatch, summary fallback refusal, de-identification,
 arbitration replacement and canonical rejection. Existing provider context,
 source readiness, routing, ethics, conversation, emergency, sensitive
-disclosure and mount tests exercise unchanged behavior.
+disclosure and mount tests exercise unchanged behavior. A harness mounts the
+actual panel and verifies exact visible inequalities, ampersands/entities,
+Markdown punctuation, backslashes and multiline text in both network replies
+and restored history. Its HTML output cannot create source-supplied scripts,
+images, links, headings or lists. Existing synthesis Markdown remains intact.
 
 An independent agent reviews the final exact commit before any PR merge.
-Staging activation and synthetic live selection evaluation are separate steps
-after the provider UX choice; production is outside this change.
+Sovereign receiver/renderer deployment precedes a new reviewed Core panel pin.
+Do not reuse or amend an older merged pin. Synthetic live selection evaluation
+follows staging activation; production is outside this change.

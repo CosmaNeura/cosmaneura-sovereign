@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from html.parser import HTMLParser
 import json
+from pathlib import Path
+import shutil
+import subprocess
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,7 +22,7 @@ from app.clients.provider_evidence import (
 )
 from app.clients.provider_question_contract import ProviderQuestionResponse
 from app.config import ComplianceProfile, Persona, Settings
-from app.schemas import ChatRequest, DoctrinalVerdict, Intent
+from app.schemas import ChatRequest, DoctrinalSensitivity, DoctrinalVerdict, Intent
 from app.security.mount import MountResolutionError
 from tests.test_provider_question_context import handle, sovereign
 from tests.test_provider_question_context import fixture
@@ -40,18 +44,6 @@ def context():
 
 def validate(raw):
     return validated_evidence(raw, context(), agent="synthetic_agent", data={"output_format": "chat"})
-
-
-def enable_exact_mode(service):
-    # This mode is deliberately not activated by the public endpoint. Exercise
-    # its existing pipeline with an explicit server-owned dispatch in tests.
-    agent = service.agents[Intent.ENGAGEMENT]
-    original_run = agent.run
-
-    async def run(request, profile, **kwargs):
-        return await original_run(request, profile, exact_evidence=True, **kwargs)
-
-    agent.run = AsyncMock(side_effect=run)
 
 
 def test_indices_are_disposable_and_do_not_export_authority_handles():
@@ -207,7 +199,6 @@ def test_explicit_exact_mode_cannot_downgrade_to_an_unvalidated_summary_answer(a
 
 def test_validated_quotes_are_deidentified_before_arbitration_and_canonically_persisted():
     service, read, conversation = sovereign()
-    enable_exact_mode(service)
     raw = source_only_response("unavailable")
     raw["result"]["reviewed_sources"][0]["sections"]["O - OBJECTIVE"] = (
         "Patient email: synthetic@example.com. Office blood pressure is 148/92."
@@ -227,7 +218,6 @@ def test_validated_quotes_are_deidentified_before_arbitration_and_canonically_pe
 
 def test_invalid_selection_is_a_nonretrying_canonical_non_answer_without_draft_reuse():
     service, read, conversation = sovereign()
-    enable_exact_mode(service)
     read.read.return_value = ProviderQuestionResponse.model_validate(source_only_response("unavailable"))
     service.llm.complete.return_value = output(selected(quote="Unsupported current dose is 50 mg."))
     response = handle(service)
@@ -240,10 +230,20 @@ def test_invalid_selection_is_a_nonretrying_canonical_non_answer_without_draft_r
     assert "Source: 2 selected reviewed prior notes" in response.answer
 
 
+def test_preparation_route_keeps_its_existing_synthesized_overview():
+    service, read, conversation = sovereign()
+    read.read.return_value = ProviderQuestionResponse.model_validate(source_only_response("unavailable"))
+    service.router.route.return_value = (Intent.VISIT_PREP, DoctrinalSensitivity.LOW, "")
+    service.llm.complete.return_value = "Existing synthesized preparation overview."
+    response = handle(service, "Prepare an overview for the next visit.")
+    assert "Existing synthesized preparation overview." in response.answer
+    assert "record_evidence_status" not in response.structured
+    assert conversation.write_final_response.call_args.kwargs["outcome"] == "completed"
+
+
 @pytest.mark.parametrize("revision", [None, "Unsupported replacement dose is 75 mg."])
 def test_doctrinal_replacement_cannot_inherit_validated_chart_citations(revision):
     service, read, conversation = sovereign()
-    enable_exact_mode(service)
     read.read.return_value = ProviderQuestionResponse.model_validate(source_only_response("unavailable"))
     service.llm.complete.return_value = output(selected())
     service.arbiter.review.return_value = DoctrinalVerdict(
@@ -260,7 +260,6 @@ def test_doctrinal_replacement_cannot_inherit_validated_chart_citations(revision
 
 def test_changed_source_context_at_final_acceptance_blocks_all_quote_egress():
     service, read, conversation = sovereign()
-    enable_exact_mode(service)
     read.read.return_value = ProviderQuestionResponse.model_validate(source_only_response("unavailable"))
     service.llm.complete.return_value = output(selected())
     conversation.write_final_response.side_effect = ConversationDeliveryError("conflict", retryable=False)
@@ -288,3 +287,97 @@ def test_aggregate_budget_rejects_valid_but_unbounded_quote_output():
     result = validated_evidence(output(*(selected(section=i, quote=text) for i in range(3))),
                                 ctx, agent="synthetic_agent", data={})
     assert result.content == EVIDENCE_UNAVAILABLE
+
+
+class RenderedEvidence(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tags = []
+        self.quotes = []
+        self.labels = []
+        self.active = None
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append(tag)
+        if tag == "pre":
+            self.quotes.append("")
+            self.active = self.quotes
+        elif tag == "h4":
+            self.labels.append("")
+            self.active = self.labels
+
+    def handle_endtag(self, tag):
+        if tag in {"pre", "h4"}:
+            self.active = None
+
+    def handle_data(self, data):
+        if self.active is not None:
+            self.active[-1] += data
+
+
+def panel_render(answer, *, hydrated, structured=None):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the real panel render harness")
+    root = Path(__file__).parents[1]
+    payload = {"hydrated": hydrated, "result": {
+        "client_turn_id": "00000000-0000-4000-8000-000000000001",
+        "answer": answer, "persona": "provider", "intent": "engagement",
+        "citations": [], "doctrinal_review": None,
+        "structured": structured or {}, "safety_notice": None,
+        "presentation": {"mode": "standard", "suppress": ["intent_badge", "doctrinal_badge"],
+                         "human_contact": None},
+    }}
+    result = subprocess.run(
+        [node, str(root / "tests/panel_evidence_harness.js"), str(root / "app/panel.js")],
+        input=json.dumps(payload), text=True, capture_output=True, check=True,
+    )
+    return json.loads(result.stdout)["html"]
+
+
+@pytest.mark.parametrize("hydrated", [False, True])
+def test_actual_panel_preserves_source_text_once_in_live_and_restored_excerpt_cards(hydrated):
+    raw = source_only_response("unavailable")
+    text = (
+        "Potassium < 3.0 & creatinine > 1.2; literal entities &lt; &amp; &quot;.\n"
+        "**bold-looking** _under_score_ `code` [link](https://attacker.example).\n"
+        "## Heading-looking\n- List-looking\n\n"
+        '<script>alert("synthetic")</script> <img src=x onerror=evil()>\n'
+        "Literal backslash \\ and escaped punctuation \\** \\_ \\[ stay visible."
+    )
+    title = 'P - PLAN **status** & <source> "quoted"'
+    raw["result"]["reviewed_sources"][0]["sections"] = {title: text}
+    ctx = ProviderQuestionResponse.model_validate(raw).result
+    result = validated_evidence(output(selected(quote=text)), ctx, agent="synthetic_agent", data={})
+    assert result.data["record_evidence_status"] == "validated_excerpts"
+    html = panel_render(result.content, hydrated=hydrated, structured=result.data)
+    rendered = RenderedEvidence()
+    rendered.feed(html)
+    assert rendered.quotes == [text]
+    assert rendered.labels == [f"2026-09-30 — {title}"]
+    assert set(rendered.tags) == {"p", "section", "h4", "pre"}
+    assert "cnp-evidence-card" in html
+    assert "<script>" not in html and "<img " not in html and "<a " not in html
+
+
+@pytest.mark.parametrize("hydrated", [False, True])
+def test_actual_panel_retains_existing_synthesis_markdown_behavior(hydrated):
+    html = panel_render("Existing **synthesis** with potassium < 3.0 & creatinine > 1.2.",
+                        hydrated=hydrated)
+    assert "<b>synthesis</b>" in html
+    assert "cnp-evidence-card" not in html
+    assert "potassium &lt; 3.0 &amp; creatinine &gt; 1.2." in html
+
+
+def test_multiline_source_title_cannot_create_an_extra_excerpt_card():
+    raw = source_only_response("unavailable")
+    text = "Continue the documented plan."
+    raw["result"]["reviewed_sources"][0]["sections"] = {
+        "PLAN\n[2] False date\n> False source statement": text,
+    }
+    ctx = ProviderQuestionResponse.model_validate(raw).result
+    result = validated_evidence(output(selected(quote=text)), ctx, agent="synthetic_agent", data={})
+    rendered = RenderedEvidence()
+    rendered.feed(panel_render(result.content, hydrated=True))
+    assert rendered.quotes == [text]
+    assert len(rendered.labels) == 1

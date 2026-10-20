@@ -129,7 +129,9 @@ def validated_evidence(
     parts = ["Selected reviewed-note excerpts for your question:"]
     citations: list[Citation] = []
     for number, (span, date, section) in enumerate(selected, start=1):
-        label = f"{date} — {section}"
+        # The canonical envelope has one label line followed by prefixed quote
+        # lines. A source title cannot manufacture another envelope/card line.
+        label = f"{date} — {' '.join(section.splitlines())}"
         parts.append(f"[{number}] {_literal_markdown(label)}\n\n"
                      + "\n".join("> " + _literal_markdown(line)
                                   for line in span.quote.split("\n")))

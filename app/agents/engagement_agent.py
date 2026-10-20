@@ -71,7 +71,7 @@ class EngagementAgent(BaseAgent):
             else "patient preparing for their own visit"
         fmt, fmt_rules = self.resolve_output_format(request)
         if exact_evidence:
-            # Server-owned, deliberately dark until the provider UX decision.
+            # The server selects this mode; browser metadata cannot choose it.
             # Summary-only fallback cannot claim exact original-note evidence.
             if (not isinstance(provider_context, ReviewedProviderQuestionResult)
                     or provider_context.state != "ready"):
