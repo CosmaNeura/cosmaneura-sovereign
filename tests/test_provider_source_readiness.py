@@ -148,4 +148,3 @@ def test_v12_auth_failure_never_falls_back():
     with pytest.raises(SessionPrepDeliveryError):
         asyncio.run(scenario())
     assert len(sent) == 1
-

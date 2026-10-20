@@ -137,7 +137,9 @@ class SessionPrepClient:
         payload: dict[str, object],
         timeout_seconds: float,
         endpoint: Optional[str] = None,
+        response_limit: Optional[int] = None,
     ) -> httpx.Response:
+        limit = self._response_limit if response_limit is None else response_limit
         async def send(client: httpx.AsyncClient) -> httpx.Response:
             request = client.build_request(
                 "POST", endpoint or self._endpoint, headers=headers, json=payload,
@@ -161,20 +163,20 @@ class SessionPrepClient:
                         declared_size = int(declared[0])
                     except ValueError:
                         declared_size = -1
-                    if not 0 <= declared_size <= self._response_limit:
+                    if not 0 <= declared_size <= limit:
                         raise SessionPrepDeliveryError(
                             "schema", status_code=503, retryable=False,
                         )
                 body = bytearray()
                 if response.is_stream_consumed:
-                    if len(response.content) > self._response_limit:
+                    if len(response.content) > limit:
                         raise SessionPrepDeliveryError(
                             "schema", status_code=503, retryable=False,
                         )
                     body.extend(response.content)
                 else:
                     async for chunk in response.aiter_raw():
-                        if len(chunk) > self._response_limit - len(body):
+                        if len(chunk) > limit - len(body):
                             raise SessionPrepDeliveryError(
                                 "schema", status_code=503, retryable=False,
                             )

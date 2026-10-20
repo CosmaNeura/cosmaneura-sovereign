@@ -79,6 +79,9 @@ class ProviderQuestionClient(SessionPrepClient):
                     "X-Trace-ID": turn.trace_id,
                 },
                 payload=request.model_dump(mode="json"), timeout_seconds=remaining,
+                # Core's reviewed-source wire is byte-bounded separately from
+                # its character budgets. Keep legacy summary reads at 128 KiB.
+                response_limit=128 * 1024 if request.tool_version == "1.0.0" else 256 * 1024,
             )
         except (httpx.TransportError, asyncio.TimeoutError):
             raise SessionPrepDeliveryError(

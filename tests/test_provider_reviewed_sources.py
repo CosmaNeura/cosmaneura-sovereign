@@ -275,4 +275,3 @@ def test_actual_read_scope_survives_doctrinal_replacement_and_canonical_acceptan
     assert "Full notes were not read" in canonical if not full_sources else "Full notes were not read" not in canonical
     assert "Source:" in response.answer
     assert "note_synthetic_" not in response.model_dump_json()
-
