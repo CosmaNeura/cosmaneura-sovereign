@@ -20,7 +20,10 @@ from __future__ import annotations
 
 from app.agents.base import BaseAgent
 from app.clients.conversation_read import CONVERSATION_RULES, conversation_prompt
-from app.clients.provider_question_contract import PROVIDER_CONTEXT_RULES, ProviderQuestionResult
+from app.clients.provider_evidence import EVIDENCE_UNAVAILABLE, select_reviewed_evidence
+from app.clients.provider_question_contract import (
+    PROVIDER_CONTEXT_RULES, ProviderQuestionResult, ReviewedProviderQuestionResult,
+)
 from app.config import ComplianceProfile, Persona
 from app.schemas import AgentResult, ChatRequest, Citation
 
@@ -51,7 +54,8 @@ class EngagementAgent(BaseAgent):
     name = "engagement_agent"
 
     async def run(self, request: ChatRequest, profile: ComplianceProfile, *,
-                  provider_context: ProviderQuestionResult | None = None) -> AgentResult:
+                  provider_context: ProviderQuestionResult | None = None,
+                  exact_evidence: bool = False) -> AgentResult:
         # NB: we deliberately do NOT scrub here — this agent's LLM call is the
         # BAA-covered path, and the explanation needs the real context. The
         # orchestrator guarantees this content is not forwarded to non-BAA hops.
@@ -66,6 +70,19 @@ class EngagementAgent(BaseAgent):
         audience = "clinician preparing for a visit" if profile.persona == Persona.PROVIDER \
             else "patient preparing for their own visit"
         fmt, fmt_rules = self.resolve_output_format(request)
+        if exact_evidence:
+            # Server-owned, deliberately dark until the provider UX decision.
+            # Summary-only fallback cannot claim exact original-note evidence.
+            if (not isinstance(provider_context, ReviewedProviderQuestionResult)
+                    or provider_context.state != "ready"):
+                return AgentResult(
+                    agent=self.name, content=EVIDENCE_UNAVAILABLE,
+                    data={"output_format": fmt, "record_evidence_status": "unavailable"},
+                )
+            return await select_reviewed_evidence(
+                llm=self.llm, context=provider_context, question=request.message,
+                agent=self.name, data={"output_format": fmt},
+            )
 
         content = await self.llm.complete(
             system=(_PROVIDER_RECORD_SYSTEM if provider_context else _SYSTEM)

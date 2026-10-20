@@ -70,6 +70,7 @@ from app.clients.platform_usage import (
     usage_reporting_complete,
 )
 from app.clients.provider_question import ProviderQuestionClient
+from app.clients.provider_evidence import EVIDENCE_REVIEW_UNAVAILABLE
 from app.clients.provider_question_contract import (
     ProviderQuestionArguments, ProviderQuestionRequest, ProviderQuestionResult,
 )
@@ -1231,12 +1232,23 @@ class Sovereign:
             # never discard it — we append the doctrinal note. For content answers
             # (engagement/concierge) a non-conforming draft is replaced outright.
             answer = result.content
-            if not verdict.conforms and verdict.revised_content:
-                if intent == Intent.REFERRAL:
+            record_evidence = result.data.get("record_evidence_status")
+            evidence_unavailable = record_evidence == "unavailable"
+            result_citations = list(result.citations)
+            result_data = result.data
+            if not verdict.conforms:
+                if record_evidence is not None:
+                    # The replacement is not validated source evidence. Do not
+                    # attach chart citations to its unvalidated clinical prose.
+                    answer = EVIDENCE_REVIEW_UNAVAILABLE
+                    evidence_unavailable = True
+                    result_citations = []
+                    result_data = {"record_evidence_status": "review_unavailable"}
+                elif verdict.revised_content and intent == Intent.REFERRAL:
                     answer = (result.content
                               + "\n\n*A note in keeping with Catholic teaching:* "
                               + verdict.revised_content)
-                else:
+                elif verdict.revised_content:
                     answer = (
                         "A note in keeping with Catholic teaching: " + verdict.revised_content
                     )
@@ -1253,7 +1265,7 @@ class Sovereign:
                 # and enters the canonical answer without private source handles.
                 answer += "\n\n" + provider_context.source_notice()
 
-            citations = list(result.citations) + list(verdict.citations)
+            citations = result_citations + list(verdict.citations)
             return await self._finalize(answer, intent, profile, trace_id,
                                   audit_turn=audit_turn,
                                   platform_turn=platform_turn,
@@ -1263,9 +1275,12 @@ class Sovereign:
                                   record_fact_presentation=(
                                       provider_context is not None
                                       and intent in {Intent.ENGAGEMENT, Intent.VISIT_PREP}
+                                      and not evidence_unavailable
                                   ),
+                                  safety_notice=("record_evidence_unavailable"
+                                                 if evidence_unavailable else None),
                                   citations=citations,
-                                  doctrinal=verdict, structured=result.data)
+                                  doctrinal=verdict, structured=result_data)
         except UpstreamCallError:
             self.audit.record(trace_id=trace_id, profile=profile, event="upstream_unavailable")
             # Never reuse any draft, citations or document marker from the failed
@@ -1490,7 +1505,9 @@ class Sovereign:
         record_fact_presentation: bool = False,
     ) -> ChatResponse:
         upstream_unavailable = safety_notice == "upstream_unavailable"
-        unavailable = upstream_unavailable or safety_notice == "provider_context_unavailable"
+        unavailable = upstream_unavailable or safety_notice in {
+            "provider_context_unavailable", "record_evidence_unavailable",
+        }
         if intent is None and not upstream_unavailable:
             raise ValueError("an unrouted response must be unavailable")
         if sensitive_mode and intent != Intent.SENSITIVE_DISCLOSURE:
