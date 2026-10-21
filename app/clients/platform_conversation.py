@@ -31,16 +31,33 @@ _DERIVATION_PREFIX = b"cosmaneura.agent-api.v1\0"
 
 WorkloadTokenProvider = Callable[[], Awaitable[str]]
 ConversationOutcome = Literal["completed", "refused", "unavailable"]
-DeliveryCategory = Literal["auth", "conflict", "schema", "unavailable"]
+DeliveryCategory = Literal["auth", "conflict", "schema", "unavailable", "rate_limited"]
 
 
 class ConversationDeliveryError(RuntimeError):
     """A value-free canonical-persistence failure."""
 
-    def __init__(self, category: DeliveryCategory, *, retryable: bool):
+    def __init__(self, category: DeliveryCategory, *, retryable: bool,
+                 retry_after_seconds: int | None = None):
         super().__init__(f"canonical conversation {category}")
         self.category = category
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
+
+
+def _admission_retry_after(response: httpx.Response) -> int:
+    """Accept only the fixed Core rate contract; no upstream content retained."""
+    try:
+        body = response.json()
+        delay = body["retry_after_seconds"]
+        if (body["code"] != "RATE_LIMITED" or body["status"] != 429
+                or body["retryable"] is not True or type(delay) is not int
+                or not 1 <= delay <= 60
+                or response.headers.get("Retry-After") != str(delay)):
+            raise ValueError
+    except (ValueError, TypeError, KeyError):
+        raise ConversationDeliveryError("schema", retryable=False) from None
+    return delay
 
 
 def derive_operation_token(client_turn_id: uuid.UUID, operation: str) -> str:
@@ -263,6 +280,14 @@ class PlatformConversationClient:
                 should_retry, delay = True, (0.05, 0.2)[min(attempt, 1)]
             else:
                 transport_failure = False
+                if (phase == "user_accepted" and payload.get("ingress_kind") == "chat_text"
+                        and response.status_code == 429):
+                    # A known rejected admission is not an ambiguous write.
+                    # No hidden retry, accepted phase or model work follows it.
+                    delay = _admission_retry_after(response)
+                    raise ConversationDeliveryError(
+                        "rate_limited", retryable=True, retry_after_seconds=delay,
+                    )
                 should_retry, delay = safe_retry_directive(response)
             if response is not None and response.status_code == 201:
                 break
