@@ -242,6 +242,13 @@ _AFFIRMATIVE_OR_DIRECTIVE_RE = re.compile(
     r"offer(?:ed)?|provide(?:d)?|use|start|should|must)\b",
     re.IGNORECASE,
 )
+_RECORD_MORAL_REVIEW_RE = re.compile(
+    # Conservative vetoes supplement the existing doctrinal vocabulary. This
+    # is not a moral classifier: HIGH routing always keeps the full review.
+    r"\b(?:ethic\w*|licit|illicit|embryo\w*|fertility|steril\w*|"
+    r"assisted death|life support|end[ -]of[ -]life|religio\w*|spiritual\w*)\b",
+    re.IGNORECASE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -291,6 +298,53 @@ def _value_safe_lab_review_projection(answer: str, structured: dict) -> str:
             + " affirmative or directive language."
         )
     return " ".join(rendered)
+
+
+def _neutral_record_projection_allowed(
+    *, question: str, answer: str, intent: Intent,
+    sensitivity: DoctrinalSensitivity, result_data: dict,
+    context: ProviderQuestionResult | None,
+) -> bool:
+    """Only validated historical quotation gets the value-free review task.
+
+    The full reviewed source set is checked, not just a model-selected quote.
+    No browser hint, lossy summary or free-prose synthesis can enter this path.
+    Any detected moral topic or HIGH route retains the existing full review.
+    """
+    if (
+        intent != Intent.ENGAGEMENT or sensitivity == DoctrinalSensitivity.HIGH
+        or result_data.get("record_evidence_status") != "validated_excerpts"
+        or not isinstance(context, ReviewedProviderQuestionResult)
+        or context.state != "ready"
+    ):
+        return False
+    source_text = [question, answer]
+    for source in context.reviewed_sources:
+        for title, text in source.sections.items():
+            source_text.extend((title, text))
+    return not any(
+        _MORAL_CLAIM_RE.search(text) or _RECORD_MORAL_REVIEW_RE.search(text)
+        for text in source_text
+    )
+
+
+def _neutral_record_review_projection() -> str:
+    """A fixed policy question; never asks the non-BAA reviewer for medicine."""
+    return (
+        "Doctrinal review task: neutral historical quotation, not medical editing. "
+        "The proposed clinician-facing response consists only of verbatim excerpts "
+        "from reviewed historical clinician-note sections, with server-derived "
+        "source attribution. The assistant adds no new diagnosis, treatment "
+        "recommendation, medication order or religious guidance. The quotation "
+        "is attributed historical documentation, not endorsement of a plan or "
+        "an instruction to perform it. It explicitly warns that quoted text "
+        "does not establish the current regimen, outstanding orders or complete "
+        "answer coverage; the clinician must review the surrounding notes and "
+        "later corrections. All patient-specific text, values and dates are "
+        "withheld from this projection. Review only whether this neutral "
+        "historical-reporting posture conforms to Catholic teaching. You are "
+        "not asked to assess clinical accuracy or revise medical-document wording."
+    )
 
 
 def _without_authority_metadata(metadata: dict) -> dict:
@@ -1217,6 +1271,11 @@ class Sovereign:
             # deterministic policy projection derived from the actual answer, on
             # the normal routed LOW/HIGH review. Other lanes retain the existing
             # de-identification boundary before Magisterium.
+            if (result.data.get("record_evidence_status") == "validated_excerpts"
+                    and sensitivity == DoctrinalSensitivity.NONE):
+                # The minimum applies before either review-input choice. A moral
+                # veto must never route a validated excerpt into NONE's bypass.
+                sensitivity = DoctrinalSensitivity.LOW
             if intent == Intent.LAB_REVIEW:
                 safe_lab_projection = _value_safe_lab_review_projection(
                     result.content, result.data
@@ -1226,6 +1285,18 @@ class Sovereign:
                     trace_id=trace_id,
                     profile=profile,
                     event="lab_values_withheld_from_non_baa_arbiter",
+                )
+            elif _neutral_record_projection_allowed(
+                question=request.message, answer=result.content, intent=intent,
+                sensitivity=sensitivity, result_data=result.data, context=provider_context,
+            ):
+                # Historical quotation is not a new clinical action. Ask the
+                # reviewer about that policy posture without sending medical
+                # wording for it to edit. A refusal still fails closed below.
+                arbiter_input = deidentify(_neutral_record_review_projection()).text
+                self.audit.record(
+                    trace_id=trace_id, profile=profile,
+                    event="record_excerpts_withheld_from_non_baa_arbiter",
                 )
             else:
                 deid = deidentify(result.content)

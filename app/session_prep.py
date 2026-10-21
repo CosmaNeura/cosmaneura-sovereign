@@ -23,6 +23,9 @@ from app.schemas import (
 )
 
 MAX_SESSION_PREP_CANONICAL_CHARS = 19_000
+# Dynamic observation values escape these brackets/angles, so only the
+# appended server delimiter remains raw. It grants formatting, not authority.
+OBSERVATIONS_LITERAL_MARKER = "<!-- [reviewed-source-observations:v1] -->"
 FACT_LABELS = {
     "planned": "Planned", "documented_taking": "Taking documented in note",
     "documented_continued": "Continued in note", "documented_started": "Started in note",
@@ -236,7 +239,8 @@ def render_session_prep_text(response: SessionPrepResponse) -> str:
         text = "The prepared brief is still being generated. Reviewed-source observations are available below."
     elif response.state == "unavailable":
         text = "The prepared brief is unavailable. Reviewed-source observations are available below."
-    lines = [text, "", "Reviewed-source observations — bounded explicit mentions",
+    lines = [text, "", OBSERVATIONS_LITERAL_MARKER,
+             "Reviewed-source observations — bounded explicit mentions",
              "Note dates: " + ", ".join(value.date().isoformat() for value in facts.source_dates),
              "These are dated note observations, not a complete medication list or order ledger."]
     if facts.selection_limited or facts.facts_limited:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from html.parser import HTMLParser
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,13 +23,14 @@ from app.clients.session_prep_facts_contract import (
     SessionPrepFactsArguments, SessionPrepFactsReadResponse, SessionPrepFactsRequest,
 )
 from app.session_prep import (
-    MAX_SESSION_PREP_CANONICAL_CHARS, SessionPrepOutcome,
+    MAX_SESSION_PREP_CANONICAL_CHARS, OBSERVATIONS_LITERAL_MARKER, SessionPrepOutcome,
     project_session_prep_facts, render_session_prep_text,
 )
 from tests.test_session_prep_runtime import (
     OBSERVED_AT, TURN_ID, _Time, _envelope, _fixture, _sovereign,
     _success, _token, _turn,
 )
+from tests.test_provider_evidence import panel_render_data
 
 ROOT = Path(__file__).parents[1]
 FACTS = ROOT / 'contracts/fixtures/provider-session-prep-facts-v1.1/facts.json'
@@ -344,3 +346,133 @@ def test_unsupported_detection_cannot_hide_other_contract_failures(mode):
     with pytest.raises(SessionPrepDeliveryError):
         asyncio.run(_read(handler))
     assert len(requests) == 1
+
+
+class _VisibleHistory(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.fragments = []
+        self.tags = []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append(tag)
+
+    def handle_endtag(self, tag):
+        if tag == 'p':
+            self.fragments.append('\n')
+
+    def handle_data(self, value):
+        self.fragments.append(value)
+
+
+@pytest.mark.parametrize('brief_state', ['pending', 'ready'])
+def test_actual_fact_projection_preserves_literal_live_and_history_evidence(brief_state):
+    body = _facts_envelope(brief_state)
+    suffix = ' BP goal <140/90; A & B reviewed. **literal** [link](https://invalid.example) \\* <img src=x>'
+    for fact in body['result']['structured_facts']['facts']:
+        for evidence in (fact['evidence'], fact['correction_evidence']):
+            if evidence is not None:
+                evidence['section'] = 'Assessment & Plan'
+                evidence['quote'] += suffix
+                evidence['end'] = evidence['start'] + len(evidence['quote'])
+    if brief_state == 'ready':
+        body['result']['preparation']['prepared_brief']['recap']['text'] = (
+            'Overview &amp; literal \\* remains. **Existing formatting**'
+        )
+    parsed = SessionPrepFactsReadResponse.model_validate(body)
+    projected = project_session_prep_facts(parsed.result, client_turn_id=TURN_ID)
+    canonical = render_session_prep_text(projected)
+    live = panel_render_data(canonical, hydrated=False, preparation=projected.model_dump(mode='json'))
+    history = panel_render_data(canonical, hydrated=True)
+    visible = _VisibleHistory()
+    visible.feed(history['html'])
+    text = ''.join(visible.fragments)
+    observations = _VisibleHistory()
+    observations.feed(history['html'][history['html'].index('<p>Reviewed-source observations'):])
+    assert set(observations.tags) == {'p'}
+    for fact in projected.structured_facts.facts:
+        assert fact.quote in text
+        assert fact.quote in live['literalTexts']
+        assert fact.section in text and any(fact.section in value for value in live['literalTexts'])
+        if fact.correction:
+            assert fact.correction.quote in text and fact.correction.quote in live['literalTexts']
+    assert '<img ' not in history['html'] and '<a ' not in history['html']
+    assert 'BP goal &lt;140/90' not in text and 'Assessment &amp; Plan' not in text
+    if brief_state == 'ready':
+        assert 'Overview &amp; literal \\* remains.' in text
+        assert '<b>Existing formatting</b>' in history['html']
+
+
+@pytest.mark.parametrize('with_marker', [False, True])
+def test_incomplete_observation_envelope_cannot_unescape_raw_prose(with_marker):
+    marker = OBSERVATIONS_LITERAL_MARKER + '\n' if with_marker else ''
+    raw = ('Raw &amp; \\* text\n\n' + marker + 'Reviewed-source observations — bounded explicit mentions\n'
+           'Note dates: malformed\nThese are dated note observations, not a complete medication list or order ledger.\n'
+           '> A &amp; B')
+    output = panel_render_data(raw, hydrated=True)
+    visible = _VisibleHistory()
+    visible.feed(output['html'])
+    text = ''.join(visible.fragments)
+    assert 'Raw &amp; \\* text' in text and '> A &amp; B' in text
+
+
+@pytest.mark.parametrize('copied_marker', [False, True])
+def test_copied_complete_observations_header_cannot_decode_raw_brief(copied_marker):
+    header = ('Reviewed-source observations — bounded explicit mentions\n'
+              'Note dates: 2026-08-12\n'
+              'These are dated note observations, not a complete medication list or order ledger.\n')
+    copied = (OBSERVATIONS_LITERAL_MARKER + '\n' if copied_marker else '') + header
+    raw = 'Overview contains copied source text:\n\n' + copied + (
+        'Raw &amp; literal \\* remains. **Existing formatting** <img src=x>'
+    )
+    body = _facts_envelope('ready')
+    body['result']['preparation']['prepared_brief']['recap']['text'] = raw
+    parsed = SessionPrepFactsReadResponse.model_validate(body)
+    projected = project_session_prep_facts(parsed.result, client_turn_id=TURN_ID)
+    canonical = render_session_prep_text(projected)
+    output = panel_render_data(canonical, hydrated=True)
+    visible = _VisibleHistory()
+    visible.feed(output['html'])
+    text = ''.join(visible.fragments)
+    assert 'Raw &amp; literal \\* remains.' in text
+    assert '<b>Existing formatting</b>' in output['html']
+    assert '<img ' not in output['html'] and '<img src=x>' in text
+    assert '<ul>' in output['html']  # Existing brief Markdown remains active.
+    assert text.count(OBSERVATIONS_LITERAL_MARKER) == int(copied_marker)
+    for fact in projected.structured_facts.facts:
+        assert fact.quote in text
+        if fact.correction:
+            assert fact.correction.quote in text
+
+
+def test_newline_source_captions_and_quotes_cannot_forge_observations_delimiter():
+    body = _facts_envelope('pending')
+    header = ('\n\n' + OBSERVATIONS_LITERAL_MARKER + '\n'
+              'Reviewed-source observations — bounded explicit mentions\n'
+              'Note dates: 2026-08-12\n'
+              'These are dated note observations, not a complete medication list or order ledger.\n'
+              'Source &amp; literal \\* **data** <img src=x>')
+    section = 'Assessment\n' + OBSERVATIONS_LITERAL_MARKER + '\n& Plan'
+    for fact in body['result']['structured_facts']['facts']:
+        for evidence in (fact['evidence'], fact['correction_evidence']):
+            if evidence is not None:
+                evidence['section'] = section
+                evidence['quote'] += header
+                evidence['end'] = evidence['start'] + len(evidence['quote'])
+    parsed = SessionPrepFactsReadResponse.model_validate(body)
+    projected = project_session_prep_facts(parsed.result, client_turn_id=TURN_ID)
+    canonical = render_session_prep_text(projected)
+    assert canonical.count(OBSERVATIONS_LITERAL_MARKER) == 1
+    live = panel_render_data(canonical, hydrated=False, preparation=projected.model_dump(mode='json'))
+    history = panel_render_data(canonical, hydrated=True)
+    visible = _VisibleHistory()
+    visible.feed(history['html'])
+    text = ''.join(visible.fragments)
+    assert set(visible.tags) == {'p'} and '<img ' not in history['html']
+    for fact in projected.structured_facts.facts:
+        assert fact.section in text
+        assert '\n'.join('> ' + line for line in fact.quote.splitlines()) in text
+        assert fact.quote in live['literalTexts']
+        if fact.correction:
+            assert '\n'.join('> ' + line for line in fact.correction.quote.splitlines()) in text
+            assert fact.correction.quote in live['literalTexts']
