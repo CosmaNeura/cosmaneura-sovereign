@@ -32,78 +32,43 @@
   "use strict";
   if (window.CosmaNeuraPanel) return;
   var CSS = [
-    ".cnp-root{--bg:#0f1620;--panel:#16202c;--panel2:#1d2a38;--line:#27384a;--ink:#eaf1f8;",
-    "--muted:#93a6ba;--accent:#c9a24b;--accent2:#6fb1d6;--ok:#8fc7a5;",
-    "font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--ink)}",
-    ".cnp-gate{position:fixed;right:18px;bottom:18px;z-index:99998;padding:10px 14px;",
-    "border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--muted);",
-    "box-shadow:0 6px 22px rgba(0,0,0,.3);font-size:12px;font-weight:700}",
-    ".cnp-gate[hidden],.cnp-fab[hidden],.cnp-rail[hidden]{display:none}",
-    ".cnp-fab{position:fixed;right:18px;bottom:18px;z-index:99998;width:52px;height:52px;",
-    "border-radius:14px;border:1px solid var(--line);cursor:pointer;font-weight:800;font-size:20px;",
-    "background:linear-gradient(135deg,var(--accent),#9c7a2f);color:#1a130a;box-shadow:0 6px 22px rgba(0,0,0,.4)}",
-    ".cnp-rail{position:fixed;top:0;right:0;bottom:0;z-index:99999;width:460px;max-width:96vw;",
-    "box-sizing:border-box;max-height:100dvh;overflow:hidden;",
-    "display:none;flex-direction:column;background:var(--bg);border-left:1px solid var(--line);",
-    "box-shadow:-12px 0 34px rgba(0,0,0,.45)}",
-    ".cnp-rail.cnp-open{display:flex}",
-    ".cnp-rail.cnp-prep-focused{width:720px}.cnp-prep-focused .cnp-prep{flex:1 1 0;max-height:none}",
-    ".cnp-prep-focused .cnp-thread,.cnp-prep-focused .cnp-chips{display:none}",
-    ".cnp-record-context{flex-shrink:0;padding:0 14px;border-bottom:1px solid var(--line);font-size:12px}",
-    ".cnp-record-context:empty{display:none}.cnp-record-context a{color:#9bd5f5}",
-    ".cnp-record-context details[open]{max-height:160px;overflow-y:auto;overscroll-behavior:contain}",
-    ".cnp-history-stale{margin:10px 0;border:1px solid var(--line);border-radius:9px;padding:8px}",
-    ".cnp-history-stale summary{cursor:pointer;color:var(--muted);font-size:12px}",
-    ".cnp-evidence-card{margin:10px 0;padding:10px;border:1px solid var(--line);",
-    "border-radius:9px;background:var(--panel)}",
-    ".cnp-evidence-source{margin:0 0 7px;font-size:12px;color:var(--muted);font-weight:700}",
-    ".cnp-evidence-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.55}",
-    ".cnp-evidence-additional{margin-top:8px}.cnp-evidence-additional summary{cursor:pointer;color:var(--muted)}",
-    ".cnp-evidence-additional summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}",
-    ".cnp-head,.cnp-chips,.cnp-foot{flex-shrink:0}",
-    ".cnp-head{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line)}",
-    ".cnp-logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#9c7a2f);",
-    "display:grid;place-items:center;font-weight:800;color:#1a130a;font-size:13px}",
-    ".cnp-title{font-weight:700;font-size:14px}.cnp-sub{font-size:11px;color:var(--muted)}",
-    ".cnp-sandbox{display:inline-block;margin-top:3px;padding:1px 7px;border-radius:999px;",
-    "border:1px solid #d8b75d;color:#ffe6a0;background:#3b3015;font-size:9px;font-weight:800;",
-    "letter-spacing:.45px;text-transform:uppercase}",
-    ".cnp-sandbox[hidden]{display:none}",
-    ".cnp-x{margin-left:auto;background:none;border:none;color:var(--muted);font-size:19px;cursor:pointer}",
-    ".cnp-prep{display:flex;flex-direction:column;flex:0 1 auto;min-height:0;max-height:65%;",
-    "box-sizing:border-box;overflow:hidden;padding:10px 14px;border-bottom:1px solid var(--line);background:#111a26}",
-    ".cnp-prep[hidden]{display:none}.cnp-prep-actions{display:flex;gap:6px;flex-shrink:0}",
-    ".cnp-prep-go{flex:1;min-width:0;background:var(--panel2);",
-    "border:1px solid var(--accent2);color:var(--ink);border-radius:9px;padding:8px 11px;",
-    "font-weight:700;cursor:pointer}.cnp-prep-go:disabled{opacity:.5}",
-    ".cnp-prep-toggle{flex-shrink:0;background:var(--panel);border:1px solid var(--line);",
-    "color:var(--ink);border-radius:9px;padding:6px 8px;font-size:11px;cursor:pointer}",
-    ".cnp-prep-toggle[hidden],.cnp-prep-focus[hidden]{display:none}",
-    ".cnp-prep-focus{background:var(--panel);border:1px solid var(--line);color:var(--ink);",
-    "border-radius:9px;padding:6px 8px;font-size:11px;cursor:pointer}",
-    ".cnp-prep-view{margin-top:9px;padding:10px;border:1px solid var(--line);border-radius:9px;",
-    "min-height:0;overflow-y:auto;overscroll-behavior:contain;",
-    "background:var(--panel)}.cnp-prep-view[hidden]{display:none}",
-    ".cnp-prep-state{font-size:10px;text-transform:uppercase;letter-spacing:.55px;",
-    "color:var(--accent);font-weight:800}.cnp-prep-meta{font-size:10.5px;color:var(--muted);margin-top:3px}",
-    ".cnp-prep-progress{flex-shrink:0;font-size:11px;color:var(--muted);margin-top:5px}",
-    ".cnp-prep-section{margin-top:12px}.cnp-prep-section h4{font-size:13px;margin:0 0 4px;",
-    "color:#b9dcef}.cnp-prep-section p{margin:0}",
-    ".cnp-prep-section ul,.cnp-prep-section ol{margin:2px 0 0;padding-left:20px}",
-    ".cnp-prep-section li+li{margin-top:5px}",
-    ".cnp-facts-table{width:100%;border-collapse:collapse;table-layout:fixed;margin-top:9px}",
-    ".cnp-facts-table caption{text-align:left;font-weight:700;color:#b9dcef;margin:8px 0}",
-    ".cnp-facts-table th,.cnp-facts-table td{padding:6px 4px;text-align:left;vertical-align:top;",
-    "border-bottom:1px solid var(--line);overflow-wrap:anywhere;font-size:11px}",
-    ".cnp-facts-table th{color:var(--muted)}.cnp-facts-table summary{cursor:pointer}",
-    ".cnp-fact-quote{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:5px 0}",
-    ".cnp-fact-correction{color:#efd196}.cnp-facts-notice{font-size:11px;color:var(--muted)}",
-    ".cnp-root button:focus-visible,.cnp-root select:focus-visible,.cnp-root textarea:focus-visible,",
-    ".cnp-root a:focus-visible,.cnp-root summary:focus-visible,.cnp-prep-view:focus-visible",
-    "{outline:2px solid var(--accent2);outline-offset:3px}",
-    ".cnp-thread{flex:1 1 0;min-height:0;overflow-y:auto;padding:14px}",
-    ".cnp-msg{margin:10px 0;display:flex}.cnp-msg.cnp-u{justify-content:flex-end}",
-    ".cnp-b{max-width:88%;padding:10px 13px;border-radius:12px;background:var(--panel);",
+    ".cnp-root{--bg:#0f1620;--panel:#16202c;--panel2:#1d2a38;--line:#27384a;--ink:#eaf1f8;", "--muted:#93a6ba;--accent:#c9a24b;--accent2:#6fb1d6;--ok:#8fc7a5;",
+    "font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--ink)}", ".cnp-gate{position:fixed;right:18px;bottom:18px;z-index:99998;padding:10px 14px;",
+    "border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--muted);", "box-shadow:0 6px 22px rgba(0,0,0,.3);font-size:12px;font-weight:700}",
+    ".cnp-gate[hidden],.cnp-fab[hidden],.cnp-rail[hidden]{display:none}", ".cnp-fab{position:fixed;right:18px;bottom:18px;z-index:99998;width:52px;height:52px;",
+    "border-radius:14px;border:1px solid var(--line);cursor:pointer;font-weight:800;font-size:20px;", "background:linear-gradient(135deg,var(--accent),#9c7a2f);color:#1a130a;box-shadow:0 6px 22px rgba(0,0,0,.4)}",
+    ".cnp-rail{position:fixed;top:0;right:0;bottom:0;z-index:99999;width:460px;max-width:96vw;", "box-sizing:border-box;max-height:100dvh;overflow:hidden;",
+    "display:none;flex-direction:column;background:var(--bg);border-left:1px solid var(--line);", "box-shadow:-12px 0 34px rgba(0,0,0,.45)}",
+    ".cnp-rail.cnp-open{display:flex}", ".cnp-rail.cnp-prep-focused{width:720px}.cnp-prep-focused .cnp-prep{flex:1 1 0;max-height:none}",
+    ".cnp-prep-focused .cnp-thread,.cnp-prep-focused .cnp-chips{display:none}", ".cnp-record-context{flex-shrink:0;padding:0 14px;border-bottom:1px solid var(--line);font-size:12px}",
+    ".cnp-record-context:empty{display:none}.cnp-record-context a{color:#9bd5f5}", ".cnp-record-context details[open]{max-height:160px;overflow-y:auto;overscroll-behavior:contain}",
+    ".cnp-history-stale{margin:10px 0;border:1px solid var(--line);border-radius:9px;padding:8px}", ".cnp-history-stale summary{cursor:pointer;color:var(--muted);font-size:12px}",
+    ".cnp-evidence-card{margin:10px 0;padding:10px;border:1px solid var(--line);", "border-radius:9px;background:var(--panel)}",
+    ".cnp-evidence-source{margin:0 0 7px;font-size:12px;color:var(--muted);font-weight:700}", ".cnp-evidence-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.55}",
+    ".cnp-evidence-additional{margin-top:8px}.cnp-evidence-additional summary{cursor:pointer;color:var(--muted)}", ".cnp-evidence-additional summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}",
+    ".cnp-evidence-visit{margin:10px 0}.cnp-evidence-visit>summary{cursor:pointer;font-weight:700;padding:8px 0}", ".cnp-evidence-visit>summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}",
+    ".cnp-head,.cnp-chips,.cnp-foot{flex-shrink:0}", ".cnp-head{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line)}",
+    ".cnp-logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#9c7a2f);", "display:grid;place-items:center;font-weight:800;color:#1a130a;font-size:13px}",
+    ".cnp-title{font-weight:700;font-size:14px}.cnp-sub{font-size:11px;color:var(--muted)}", ".cnp-sandbox{display:inline-block;margin-top:3px;padding:1px 7px;border-radius:999px;",
+    "border:1px solid #d8b75d;color:#ffe6a0;background:#3b3015;font-size:9px;font-weight:800;", "letter-spacing:.45px;text-transform:uppercase}",
+    ".cnp-sandbox[hidden]{display:none}", ".cnp-x{margin-left:auto;background:none;border:none;color:var(--muted);font-size:19px;cursor:pointer}",
+    ".cnp-prep{display:flex;flex-direction:column;flex:0 1 auto;min-height:0;max-height:65%;", "box-sizing:border-box;overflow:hidden;padding:10px 14px;border-bottom:1px solid var(--line);background:#111a26}",
+    ".cnp-prep[hidden]{display:none}.cnp-prep-actions{display:flex;gap:6px;flex-shrink:0}", ".cnp-prep-go{flex:1;min-width:0;background:var(--panel2);",
+    "border:1px solid var(--accent2);color:var(--ink);border-radius:9px;padding:8px 11px;", "font-weight:700;cursor:pointer}.cnp-prep-go:disabled{opacity:.5}",
+    ".cnp-prep-toggle{flex-shrink:0;background:var(--panel);border:1px solid var(--line);", "color:var(--ink);border-radius:9px;padding:6px 8px;font-size:11px;cursor:pointer}",
+    ".cnp-prep-toggle[hidden],.cnp-prep-focus[hidden]{display:none}", ".cnp-prep-focus{background:var(--panel);border:1px solid var(--line);color:var(--ink);",
+    "border-radius:9px;padding:6px 8px;font-size:11px;cursor:pointer}", ".cnp-prep-view{margin-top:9px;padding:10px;border:1px solid var(--line);border-radius:9px;",
+    "min-height:0;overflow-y:auto;overscroll-behavior:contain;", "background:var(--panel)}.cnp-prep-view[hidden]{display:none}",
+    ".cnp-prep-state{font-size:10px;text-transform:uppercase;letter-spacing:.55px;", "color:var(--accent);font-weight:800}.cnp-prep-meta{font-size:10.5px;color:var(--muted);margin-top:3px}",
+    ".cnp-prep-progress{flex-shrink:0;font-size:11px;color:var(--muted);margin-top:5px}", ".cnp-prep-section{margin-top:12px}.cnp-prep-section h4{font-size:13px;margin:0 0 4px;",
+    "color:#b9dcef}.cnp-prep-section p{margin:0}", ".cnp-prep-section ul,.cnp-prep-section ol{margin:2px 0 0;padding-left:20px}",
+    ".cnp-prep-section li+li{margin-top:5px}", ".cnp-facts-table{width:100%;border-collapse:collapse;table-layout:fixed;margin-top:9px}",
+    ".cnp-facts-table caption{text-align:left;font-weight:700;color:#b9dcef;margin:8px 0}", ".cnp-facts-table th,.cnp-facts-table td{padding:6px 4px;text-align:left;vertical-align:top;",
+    "border-bottom:1px solid var(--line);overflow-wrap:anywhere;font-size:11px}", ".cnp-facts-table th{color:var(--muted)}.cnp-facts-table summary{cursor:pointer}",
+    ".cnp-fact-quote{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:5px 0}", ".cnp-fact-correction{color:#efd196}.cnp-facts-notice{font-size:11px;color:var(--muted)}",
+    ".cnp-root button:focus-visible,.cnp-root select:focus-visible,.cnp-root textarea:focus-visible,", ".cnp-root a:focus-visible,.cnp-root summary:focus-visible,.cnp-prep-view:focus-visible",
+    "{outline:2px solid var(--accent2);outline-offset:3px}", ".cnp-thread{flex:1 1 0;min-height:0;overflow-y:auto;padding:14px}",
+    ".cnp-msg{margin:10px 0;display:flex}.cnp-msg.cnp-u{justify-content:flex-end}", ".cnp-b{max-width:88%;padding:10px 13px;border-radius:12px;background:var(--panel);",
     "border:1px solid var(--line);font-size:13.5px}",
     ".cnp-u .cnp-b{background:#214a63;border-color:#2b5c7a}",
     ".cnp-b p{margin:.35em 0}",
@@ -177,9 +142,7 @@
     }).join("");
     return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" +
       hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
-  }
-  // Escapes quotes too — escaped text can land inside HTML attributes, where
-  // an unescaped quote is an XSS breakout.
+  } // Escapes quotes too — escaped text can land inside HTML attributes, where an unescaped quote is an XSS breakout.
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;",
@@ -190,10 +153,7 @@
     return t.replace(/\\([\\`*_{}\[\]()#!|~])/g, "$1")
       .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
   }
-  function evidenceBody(quote) {
-    // Only the two observed, exact terminal boilerplate paragraphs collapse.
-    // The full canonical quote remains unchanged; both rendered parts retain
-    // their original text, including every separating/trailing newline.
+  function evidenceBody(quote) { // Only the two observed, exact terminal boilerplate paragraphs collapse. The full canonical quote remains unchanged; both rendered parts retain their original text, including every separating/trailing newline.
     var suffix = quote.match(/\n{2,}Greater than (?:0|1) minutes was spent in patient care, including review of prior records, consultation with other providers, and documentation\.\n{2,}This note was generated with AI assistance\.\n*$/);
     if (!suffix || !quote.slice(0, suffix.index).trim())
       return '<pre class="cnp-evidence-body">' + esc(quote) + '</pre>';
@@ -201,36 +161,47 @@
       '<details class="cnp-evidence-additional"><summary>Additional note text</summary>' +
       '<pre class="cnp-evidence-body">' + esc(suffix[0]) + '</pre></details>';
   }
-  function md(t, rawBrief) {
-    // This canonical evidence envelope contains server-escaped literal
-    // Markdown, rather than generated prose. History retains the answer but
-    // omits structured data, so recognize its fixed format in both paths.
-    // This changes text formatting only; it grants no authority/capability.
-    if (!rawBrief && typeof t === "string" &&
-        t.indexOf("Selected reviewed-note excerpts for your question:\n\n") === 0) {
+  function md(t, rawBrief) { // This canonical evidence envelope contains server-escaped literal Markdown, rather than generated prose. History retains the answer but omits structured data, so recognize its fixed format in both paths. This changes text formatting only; it grants no authority/capability.
+    var timeline = typeof t === "string" &&
+      t.indexOf("Reviewed visit timeline — exact source sections:\n\n") === 0;
+    if (!rawBrief && typeof t === "string" && (timeline ||
+        t.indexOf("Selected reviewed-note excerpts for your question:\n\n") === 0)) {
       var literal = literalMarkdownText(t);
-      var evidenceLines = literal.split("\n"), evidenceHtml = "", expected = 1;
+      var evidenceLines = literal.split("\n"), evidenceHtml = "", expected = 1, groupDate = "", lastDate = "";
+      if (timeline) for (var d = 0; d < evidenceLines.length; d++) {
+        var datedLabel = evidenceLines[d].match(/^\[\d+\] (\d{4}-\d{2}-\d{2}) — /);
+        if (datedLabel && datedLabel[1] > lastDate) lastDate = datedLabel[1];
+      }
       for (var e = 0; e < evidenceLines.length; e++) {
         var label = evidenceLines[e].match(/^\[(\d+)\] (.+)$/);
-        if (label && Number(label[1]) === expected && expected <= 8) {
+        if (label && Number(label[1]) === expected && expected <= (timeline ? 32 : 8)) {
           var cursor = e + 1;
           while (evidenceLines[cursor] === "") cursor += 1;
           var quote = [];
           while (cursor < evidenceLines.length && evidenceLines[cursor].indexOf("> ") === 0)
             quote.push(evidenceLines[cursor++].slice(2));
           if (quote.length) {
+            var sourceDate = timeline && label[2].match(/^(\d{4}-\d{2}-\d{2}) — /);
+            if (sourceDate && sourceDate[1] !== groupDate) {
+              if (groupDate) evidenceHtml += "</details>";
+              groupDate = sourceDate[1];
+              evidenceHtml += '<details class="cnp-evidence-visit"' + (groupDate === lastDate ? " open" : "") +
+                '><summary>' + esc(groupDate) + " — clinical-section excerpts</summary>";
+            }
             evidenceHtml += '<section class="cnp-evidence-card" aria-label="Reviewed-note excerpt">' +
               '<h4 class="cnp-evidence-source">' + esc(label[2]) + '</h4>' +
               evidenceBody(quote.join("\n")) + '</section>';
             expected += 1; e = cursor - 1; continue;
           }
         }
-        if (evidenceLines[e] !== "") evidenceHtml += "<p>" + esc(evidenceLines[e]) + "</p>";
+        if (evidenceLines[e] !== "") {
+          if (groupDate) { evidenceHtml += "</details>"; groupDate = ""; }
+          evidenceHtml += "<p>" + esc(evidenceLines[e]) + "</p>";
+        }
       }
+      if (groupDate) evidenceHtml += "</details>";
       return evidenceHtml;
-    }
-    // Dynamic values escape this marker; the last raw one binds the suffix.
-    // Never re-detect copied literal envelopes inside the raw generated brief.
+    } // Dynamic values escape this marker; the last raw one binds the suffix. Never re-detect copied literal envelopes inside the raw generated brief.
     var marker = "\n\n<!-- [reviewed-source-observations:v1] -->\n", observations = !rawBrief && typeof t === "string" ? t.lastIndexOf(marker) : -1;
     if (observations >= 0 && /^Reviewed-source observations — bounded explicit mentions\nNote dates: \d{4}-\d{2}-\d{2}(?:, \d{4}-\d{2}-\d{2}){0,4}\nThese are dated note observations, not a complete medication list or order ledger\.(?:\n|$)/.test(t.slice(observations + marker.length))) {
       return md(t.slice(0, observations), true) + esc(literalMarkdownText(t.slice(observations + marker.length)))
@@ -247,10 +218,7 @@
     }
     if (inList) html += "</ul>";
     return html;
-  }
-  // The verified-calculations box is the trust centerpiece for clinicians, so
-  // it must read like clinical values, not like a JSON dump. Known keys get
-  // formatted; anything new falls back to a readable key: value line.
+  } // The verified-calculations box is the trust centerpiece for clinicians, so it must read like clinical values, not like a JSON dump. Known keys get formatted; anything new falls back to a readable key: value line.
   function num(n) {
     return typeof n === "number" ? n.toLocaleString("en-US") : String(n);
   }
@@ -278,12 +246,7 @@
       }
     });
     return out;
-  }
-  // ---- analyte trend chart -------------------------------------------------
-  // Single series over time: 2px line, dot markers with a 2px surface ring,
-  // emphasized endpoint with a direct value label, clinical reference range as
-  // a subtle band, per-point hover tooltips. No legend — the title names the
-  // one series. Line color #3b9ce6 validated against the dark surface.
+  } // ---- analyte trend chart ------------------------------------------------- Single series over time: 2px line, dot markers with a 2px surface ring, emphasized endpoint with a direct value label, clinical reference range as a subtle band, per-point hover tooltips. No legend — the title names the one series. Line color #3b9ce6 validated against the dark surface.
   var LINE = "#3b9ce6", SURFACE = "#16202c";
   function fdate(iso) {
     var d = new Date(iso);
@@ -349,8 +312,7 @@
       var isLast = i === pts.length - 1;
       el("circle", { cx: x(i, d), cy: y(d.v), r: isLast ? 4.5 : 3,
         fill: LINE, stroke: SURFACE, "stroke-width": 2 });
-    });
-    // Direct label on the emphasized endpoint — text tokens, not series color.
+    }); // Direct label on the emphasized endpoint — text tokens, not series color.
     el("text", { x: Math.min(x(pts.length - 1, last) + 8, W - 2), y: y(last.v) + 3.5,
       fill: "#e9eff7", "font-size": 11, "font-weight": 700 }).textContent =
       last.v + (last.p.unit ? " " + last.p.unit : "");
@@ -358,8 +320,7 @@
     ax.textContent = fdate(pts[0].p.observed_at);
     var ax2 = el("text", { x: mL + iw, y: H - 4, fill: "#93a6ba",
       "font-size": 9, "text-anchor": "end" });
-    ax2.textContent = fdate(last.p.observed_at);
-    // Hover layer: oversized hit targets, one shared tooltip.
+    ax2.textContent = fdate(last.p.observed_at); // Hover layer: oversized hit targets, one shared tooltip.
     var tip = document.createElement("div"); tip.className = "cnp-tip";
     tipHost.appendChild(tip); ownedTips.push(tip);
     pts.forEach(function (d, i) {
@@ -485,8 +446,7 @@
     if (typeof opts.getContext !== "function")
       throw new Error("getContext is required");
     if (typeof opts.onHumanContact !== "function")
-      throw new Error("onHumanContact is required");
-    // Parse and normalize no path at all before any credential callback runs.
+      throw new Error("onHumanContact is required"); // Parse and normalize no path at all before any credential callback runs.
     var service = exactServiceOrigin(opts.sovereignUrl, opts.allowLoopbackHttp);
     var url = service.origin;
     var embedVersion = opts.embedVersion;
@@ -532,9 +492,7 @@
       '    <textarea class="cnp-in" aria-label="Ask Sovereign a question" rows="1" placeholder="Ask a question…"></textarea>' +
       '    <button class="cnp-send">Send</button></div>' +
       '    <p class="cnp-format-help" hidden>Document mode requests a draft from this record. For example: draft a visit summary. Review the draft before use.</p></div></div>';
-    (opts.target || document.body).appendChild(root);
-    // Hosts often already own the bottom-right corner (support widgets, bug
-    // reporters). Let them place the launcher instead of colliding with it.
+    (opts.target || document.body).appendChild(root); // Hosts often already own the bottom-right corner (support widgets, bug reporters). Let them place the launcher instead of colliding with it.
     if (opts.fabBottom) root.querySelector(".cnp-fab").style.bottom = opts.fabBottom;
     if (opts.fabRight) root.querySelector(".cnp-fab").style.right = opts.fabRight;
     var gate = root.querySelector(".cnp-gate"),
@@ -623,9 +581,7 @@
           retained.push(item);
         }
       });
-      listeners = retained;
-      // Dynamic chips and response actions use property handlers. Revoke them
-      // too, even if a host retained a reference to the detached root.
+      listeners = retained; // Dynamic chips and response actions use property handlers. Revoke them too, even if a host retained a reference to the detached root.
       if (!scope) {
         root.querySelectorAll("*").forEach(function (node) { node.onclick = null; });
       }
@@ -747,8 +703,7 @@
       }
       return clean;
     }
-    function governedChatMetadata(context, outputFormat) {
-      // Generic chat receives only independently governed host context hints.
+    function governedChatMetadata(context, outputFormat) { // Generic chat receives only independently governed host context hints.
       var meta = { output_format: outputFormat };
       ["clientId", "thread_ref", "digest_ref", "terminology", "care_model"]
         .forEach(function (key) {
@@ -760,9 +715,7 @@
       state.persona = w.persona === "provider" ? "provider" : "patient";
       state.localFixture = w.walkthrough_mode === "local_synthetic" && service.loopback;
       state.sessionPrepAvailable = state.persona === "provider" &&
-        (w.paths || []).some(function (path) { return path.intent === "session_prep"; });
-      // Provider-facing naming comes only from the server-resolved welcome,
-      // never a browser role hint, chart question, or the requested intent.
+        (w.paths || []).some(function (path) { return path.intent === "session_prep"; }); // Provider-facing naming comes only from the server-resolved welcome, never a browser role hint, chart question, or the requested intent.
       var provider = state.persona === "provider";
       root.querySelector(".cnp-title").textContent = provider ? "Session Prep" : "Sovereign";
       root.querySelector(".cnp-logo").textContent = provider ? "SP" : "C";
@@ -796,32 +749,20 @@
                  !hasLabsPath && !w.labs_tier && !w.labs_label) {
         sandboxBadge.textContent = "";
         sandboxBadge.hidden = true;
-      } else {
-        // Unknown or inconsistent lab-capable bootstrap data must never make
-        // the environment look production-safe.
+      } else { // Unknown or inconsistent lab-capable bootstrap data must never make the environment look production-safe.
         sandboxBadge.textContent = "Environment not verified";
         sandboxBadge.hidden = false;
       }
-    }
-    // Welcome is mount-resolved by the server: the browser sends no persona.
-    // The response drives tone and the persistent sandbox badge even when a
-    // restored record history means no welcome bubble is rendered.
-    // Fail closed until the host explicitly completes setRecord(). A token is
-    // never acquired at mount time because it would not yet be record-bound.
+    } // Welcome is mount-resolved by the server: the browser sends no persona. The response drives tone and the persistent sandbox badge even when a restored record history means no welcome bubble is rendered. Fail closed until the host explicitly completes setRecord(). A token is never acquired at mount time because it would not yet be record-bound.
     sandboxBadge.textContent = "Environment not verified";
-    sandboxBadge.hidden = false;
-    // Record-scoped threads. A monotonically increasing generation plus an
-    // AbortController protects against both cooperative and non-cooperative
-    // history loaders. A late A load can never paint after record B is active.
+    sandboxBadge.hidden = false; // Record-scoped threads. A monotonically increasing generation plus an AbortController protects against both cooperative and non-cooperative history loaders. A late A load can never paint after record B is active.
     async function loadThreadFor(id) {
       if (state.destroyed) return;
       var recordId = id == null ? null : String(id);
       var invalidRecordId = recordId !== null &&
         (recordId.length < 1 || recordId.length > 128);
       if (invalidRecordId) recordId = null;
-      var generation = ++state.generation;
-      // Synchronously remove every prior-scope Session Prep byte before any
-      // authentication, host-context, welcome, or history request begins.
+      var generation = ++state.generation; // Synchronously remove every prior-scope Session Prep byte before any authentication, host-context, welcome, or history request begins.
       clearSessionPrep();
       abort(state.chatController); abort(state.recordController);
       abort(state.welcomeController);
@@ -851,10 +792,7 @@
         if (invalidRecordId) throw new Error("record identifier is invalid");
         return generation;
       }
-      try {
-        // Authenticate the named provider before asking the host for even an
-        // opaque record reference. Every late result is discarded if the host
-        // switches records while the preflight is in flight.
+      try { // Authenticate the named provider before asking the host for even an opaque record reference. Every late result is discarded if the host switches records while the preflight is in flight.
         var headers = await freshBearerHeaders();
         if (!currentGeneration(generation)) return null;
         var welcome = await welcomeData(headers, generation);
@@ -867,9 +805,7 @@
           mismatch.recordMismatch = true;
           throw mismatch;
         }
-        state.recordHeaders = headers;
-        // Never ask the host for governed history until the server-side role
-        // check succeeds and the opaque record context validates locally.
+        state.recordHeaders = headers; // Never ask the host for governed history until the server-side role check succeeds and the opaque record context validates locally.
         var history = opts.loadHistory
           ? await opts.loadHistory(recordId, { signal: recordController.signal })
           : null;
@@ -1134,8 +1070,7 @@
       return typeof value === "string" && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
         !isNaN(Date.parse(value));
     }
-    function prepString(value, max) {
-      // Python contract bounds count Unicode characters; JS uses UTF-16 units.
+    function prepString(value, max) { // Python contract bounds count Unicode characters; JS uses UTF-16 units.
       return typeof value === "string" && Array.from(value).length > 0 &&
         Array.from(value).length <= max;
     }
@@ -1297,9 +1232,7 @@
         state.open && !document.hidden &&
         currentGeneration(cycle.generation) && state.clientId === cycle.recordId;
     }
-    function focusChatInput() {
-      // Polling defers to a focused input. Do not manufacture that signal when
-      // the provider is only reading an answer while preparation is pending.
+    function focusChatInput() { // Polling defers to a focused input. Do not manufacture that signal when the provider is only reading an answer while preparation is pending.
       if (!state.prepCycle || state.prepCycle.timer === null) input.focus();
     }
     function schedulePrepCheck(value, cycle) {
@@ -1308,9 +1241,7 @@
         return document.activeElement === input || input.value.trim().length > 0;
       }
       function schedule() {
-        if (!currentPrep(cycle)) return;
-        // Reserve a full request budget rather than manufacture a timeout at
-        // the end of the waiting window.
+        if (!currentPrep(cycle)) return; // Reserve a full request budget rather than manufacture a timeout at the end of the waiting window.
         if (cycle.checks >= 12 || Date.now() + delay + 30000 > cycle.deadline) {
           prepProgress.textContent = "Automatic checking has paused. You can check again when you’re ready.";
           return;
@@ -1320,8 +1251,7 @@
           : "Checking automatically while this panel is open.";
         cycle.timer = setTimeout(function () {
           cycle.timer = null;
-          if (!currentPrep(cycle)) return;
-          // A suspended browser must not start new work after the deadline.
+          if (!currentPrep(cycle)) return; // A suspended browser must not start new work after the deadline.
           if (Date.now() + 30000 > cycle.deadline || state.busy || state.switching || writing()) {
             schedule();
             return;
@@ -1452,8 +1382,7 @@
       retry.textContent = "Retry this exact Session Prep request";
       retry.onclick = function () {
         if (state.busy || state.prepBusy || state.switching || state.destroyed ||
-            !currentPrep(attempt.cycle)) return;
-        // An explicit retry gets a new waiting budget, but keeps its body/turn.
+            !currentPrep(attempt.cycle)) return; // An explicit retry gets a new waiting budget, but keeps its body/turn.
         attempt.cycle.deadline = Date.now() + 180000;
         attempt.cycle.checks = 0;
         return runSessionPrepAttempt(attempt);
@@ -1565,9 +1494,7 @@
     async function requestSessionPrep(focusWhenReady) {
       if (state.busy || state.prepBusy || state.switching || state.destroyed ||
           !state.open || document.hidden || !state.sessionPrepAvailable ||
-          !state.recordReady || state.clientId === null) return;
-      // A new action never retains a previous brief while authority and the
-      // current host record are being re-evaluated.
+          !state.recordReady || state.clientId === null) return; // A new action never retains a previous brief while authority and the current host record are being re-evaluated.
       clearSessionPrep();
       var cycle = {
         recordId: state.clientId, generation: state.generation,
@@ -1594,9 +1521,7 @@
       if (attempt.initialHeaders) {
         headers = attempt.initialHeaders;
         attempt.initialHeaders = null;
-      } else {
-        // Explicit retry preserves the request body/UUID/draft, authenticates
-        // first, and only then reacquires the record context.
+      } else { // Explicit retry preserves the request body/UUID/draft, authenticates first, and only then reacquires the record context.
         var refreshedHeaders = await freshBearerHeaders();
         if (!currentGeneration(attempt.generation)) throw new DOMException("stale", "AbortError");
         var refreshedContext = await opts.getContext();
@@ -1671,8 +1596,7 @@
         render(b, { answer: message.content, presentation: message.presentation,
           citations: [], doctrinal_review: null, structured: {}, safety_notice: null,
         }, attempt.recordId, attempt.generation, true);
-        if (state.retryAttempt === attempt) state.retryAttempt = null;
-        // Reading a stored response never replaces a new draft or resends it.
+        if (state.retryAttempt === attempt) state.retryAttempt = null; // Reading a stored response never replaces a new draft or resends it.
       }
       try {
         await Promise.race([deliver(), cancelled]);
@@ -1714,10 +1638,7 @@
       b.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
       var controller = new AbortController();
       state.chatController = controller;
-      try {
-        // There is deliberately one fetch per user action. An explicit retry
-        // reuses the same serialized body, UUID, draft, and record generation
-        // while acquiring a fresh bearer.
+      try { // There is deliberately one fetch per user action. An explicit retry reuses the same serialized body, UUID, draft, and record generation while acquiring a fresh bearer.
         var requestHeaders = await headersForAttempt(attempt);
         if (!currentGeneration(attempt.generation)) return;
         var r = await fetch(attempt.url, {
@@ -1813,10 +1734,7 @@
     async function ask() {
       var text = input.value.trim();
       if (!text || state.busy || state.switching || state.destroyed ||
-          !state.recordReady || state.clientId === null) return;
-      // A valid question always reveals its conversation, including any
-      // failure response. Switching presentation leaves the brief and draft
-      // intact; it never starts a preparation request or changes authority.
+          !state.recordReady || state.clientId === null) return; // A valid question always reveals its conversation, including any failure response. Switching presentation leaves the brief and draft intact; it never starts a preparation request or changes authority.
       state.prepFocused = false; syncPrepDisclosure();
       var generation = state.generation;
       var b = null;
@@ -1868,9 +1786,7 @@
           state.busy = false; syncControls(); focusChatInput();
         }
       }
-    }
-    // Reflow the host instead of covering its active workspace. Restore the
-    // host's own inline value on close, and skip the shift on narrow screens.
+    } // Reflow the host instead of covering its active workspace. Restore the host's own inline value on close, and skip the shift on narrow screens.
     var savedPad = null;
     function setOpen(open) {
       if (state.destroyed) return;
@@ -1956,10 +1872,7 @@
         return requestSessionPrep(true);
       },
       invalidateSessionPrep: function (recordId) {
-        if (!state.recordReady || state.clientId !== recordId || !state.accessGranted) return;
-        // A host-observed source change is only a freshness hint. Clear the
-        // old brief and cancel late generation results; the next request still
-        // reacquires server authority and determines the eligible source set.
+        if (!state.recordReady || state.clientId !== recordId || !state.accessGranted) return; // A host-observed source change is only a freshness hint. Clear the old brief and cancel late generation results; the next request still reacquires server authority and determines the eligible source set.
         clearSessionPrep();
         state.prepUpdateNeeded = true;
         prepGo.textContent = "Update Session Prep";
@@ -1977,10 +1890,7 @@
         syncControls();
       },
       recordPresentationTarget: root.querySelector(".cnp-record-context"),
-      close: function () { setOpen(false); },
-      // Call whenever the open record changes — clears the thread, reloads
-      // that record's history, and re-renders it. Prevents one patient's
-      // conversation from being displayed against another's chart.
+      close: function () { setOpen(false); }, // Call whenever the open record changes — clears the thread, reloads that record's history, and re-renders it. Prevents one patient's conversation from being displayed against another's chart.
       setRecord: function (id) { return loadThreadFor(id); },
       destroy: destroy,
       root: root,

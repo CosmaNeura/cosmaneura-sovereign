@@ -73,7 +73,7 @@ from app.clients.platform_usage import (
 from app.clients.provider_question import ProviderQuestionClient
 from app.clients.provider_evidence import (
     EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE, EVIDENCE_REVIEW_UNAVAILABLE,
-    EVIDENCE_UNAVAILABLE,
+    EVIDENCE_UNAVAILABLE, TIMELINE_UNAVAILABLE,
 )
 from app.clients.provider_question_contract import (
     ProviderQuestionArguments, ProviderQuestionRequest, ProviderQuestionResult,
@@ -1042,21 +1042,27 @@ class Sovereign:
             self.audit.record(trace_id=trace_id, profile=profile, event="routed",
                               details={"intent": intent.value, "sensitivity": sensitivity.value})
 
-            # A historical medication/order lookup can be mislabeled as hidden
-            # labs or plan work. Only a source-fact question on the canonical
+            # A historical lookup can be mislabeled as hidden labs/plan work or
+            # upcoming-visit preparation. Only a closed source-fact question on the canonical
             # provider record grant may use the already-enabled answer lane.
             # This selection does not enable labs, bypass authority, or pretend
             # to have fulfilled a live EHR/tool request.
             needs_context: bool | None = None
+            closed_record_question = Router._historical_plan_fact_candidate(request.message)
+            historical_visit_question = intent == Intent.VISIT_PREP and closed_record_question
             if (
-                intent in {Intent.LAB_REVIEW, Intent.PLAN_WORKBENCH}
+                (intent in {Intent.LAB_REVIEW, Intent.PLAN_WORKBENCH} or historical_visit_question)
                 and self.s.feature_session_prep
                 and platform_turn is not None and profile.persona == Persona.PROVIDER
                 and mount.surface == "provider_assistant" and mount.auth_tier == "provider"
                 and {"education:answer", "session-prep:read"}.issubset(mount.capabilities)
             ):
                 try:
-                    needs_context = await self.router.needs_provider_context(request, intent)
+                    # VISIT_PREP already requires record context. A closed
+                    # historical question changes its answer mode, not its
+                    # authority or record scope; no extra classifier is needed.
+                    needs_context = (True if historical_visit_question else
+                                     await self.router.needs_provider_context(request, intent))
                 except UpstreamCallError:
                     raise
                 except Exception:
@@ -1366,9 +1372,11 @@ class Sovereign:
                     )
             elif provider_context is not None:
                 if (intent == Intent.ENGAGEMENT
-                        and isinstance(provider_context, ReviewedProviderQuestionResult)):
+                        and (isinstance(provider_context, ReviewedProviderQuestionResult)
+                             or closed_record_question)):
                     # Specific chart questions use source evidence. The generated
-                    # overview, ethics and summary-only fallback keep synthesis.
+                    # overview and ethics keep synthesis. A recognized factual
+                    # inquiry cannot fall back to a lossy legacy summary.
                     result = await agent.run(
                         request, profile, provider_context=provider_context, exact_evidence=True,
                     )
@@ -1448,7 +1456,9 @@ class Sovereign:
                     if record_evidence == "unavailable":
                         # Mandatory review cannot turn a failed selection into
                         # selected excerpts. Preserve the primary static failure.
-                        answer = EVIDENCE_UNAVAILABLE
+                        answer = (TIMELINE_UNAVAILABLE
+                                  if result.data.get("record_evidence_mode") == "reviewed_timeline"
+                                  else EVIDENCE_UNAVAILABLE)
                     else:
                         answer = (
                             EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE

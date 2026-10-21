@@ -124,7 +124,9 @@ def test_ethics_and_preparation_synthesis_do_not_use_the_neutral_projection():
         service.agents[intent].run = AsyncMock(return_value=AgentResult(
             agent="synthetic_agent", content="Synthesized clinical wording: potassium omitted.",
         ))
-        handle(service, FAILED_QUESTION)
+        question = ("Prepare a short outline for the upcoming patient visit."
+                    if intent == Intent.VISIT_PREP else FAILED_QUESTION)
+        handle(service, question)
         assert "Synthesized clinical wording: potassium omitted." in service.arbiter.review.call_args.kwargs["deidentified_draft"]
 
 
@@ -132,7 +134,7 @@ def test_summary_only_and_free_prose_keep_the_existing_full_review():
     service, read, _ = sovereign()
     read.read.return_value = ProviderQuestionResponse.model_validate(fixture())
     service.llm.complete.return_value = "Prepared summary says potassium was not ordered."
-    handle(service, FAILED_QUESTION)
+    handle(service, "Explain the available prepared summary of the prior visits.")
     review = service.arbiter.review.call_args.kwargs["deidentified_draft"]
     assert "potassium was not ordered" in review
     assert review != _neutral_record_review_projection()

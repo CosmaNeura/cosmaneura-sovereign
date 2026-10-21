@@ -32,6 +32,44 @@ EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE = (
     "is available. Review the source notes directly."
 )
 
+TIMELINE_PREFIX = "Reviewed visit timeline — exact source sections:"
+MAX_TIMELINE_SECTIONS = 32
+TIMELINE_UNAVAILABLE = (
+    "The selected notes could not all be represented in one bounded "
+    "clinical-section timeline. No partial "
+    "timeline or generated summary was substituted. Open the reviewed source "
+    "notes, or ask about one visit date and the fact you need."
+)
+
+# The timeline focuses on observations, medications, labs, assessment and plan.
+# Omit only these known background/template headings, not text-based guesses.
+# Unrecognized headings remain quoted rather than assumed clinically irrelevant.
+_TIMELINE_BACKGROUND = frozenset({
+    "patient", "mrn / dob", "provider", "payer", "date of service", "modality",
+    "sites", "place of service", "telehealth attestation", "pmh / psh", "allergies",
+    "family hx", "social hx", "immunizations", "risk calculations", "screening gaps",
+    "follow-ups", "coding, attestation, signature",
+    "observed and patient-assisted exam via video",
+    "return precautions - given verbally, repeated back accurately, sent in writing",
+})
+
+
+def _timeline_section(title: str) -> bool:
+    title = " ".join(title.casefold().split())
+    return title not in _TIMELINE_BACKGROUND and re.fullmatch(
+        r"exam deferred to in-person visit \d{2}/\d{2}/\d{4}", title,
+    ) is None
+
+
+def reviewed_timeline_question(message: str) -> bool:
+    """Only the observed whole historical request selects the timeline mode."""
+    return re.fullmatch(
+        r"summari[sz]e the reviewed visit timeline"
+        r"(?: and identify the medication correction and outstanding documentation gaps)?[.?]?",
+        " ".join(message.casefold().split()),
+    ) is not None
+
+
 _RULES = (
     "You are a reviewed-note evidence selector. Select exact, complete source "
     "sections relevant to the clinician's question; do not write a clinical answer "
@@ -131,7 +169,21 @@ def validated_evidence(
             data={**data, "record_evidence_status": "unavailable"},
         )
 
-    parts = ["Selected reviewed-note excerpts for your question:"]
+    return _quoted_result(selected, agent=agent, data=data)
+
+
+def _quoted_result(
+    selected: list[tuple[str, str, str]], *, agent: str, data: dict,
+    timeline_sources: int | None = None,
+) -> AgentResult:
+    timeline = timeline_sources is not None
+    parts = [TIMELINE_PREFIX if timeline else "Selected reviewed-note excerpts for your question:"]
+    if timeline:
+        parts.append(
+            "Scope: subjective, medication, objective, lab, assessment and plan "
+            "sections, plus unrecognized headings. Known demographics, background "
+            "history, allergies and template sections are omitted."
+        )
     citations: list[Citation] = []
     for number, (quote, date, section) in enumerate(selected, start=1):
         # The canonical envelope has one label line followed by prefixed quote
@@ -141,22 +193,70 @@ def validated_evidence(
                      + "\n".join("> " + _literal_markdown(line)
                                   for line in quote.split("\n")))
         citations.append(Citation(source="Reviewed clinician note", title=label))
-    parts.append(
+    parts.append((
+        f"Clinical-section excerpts from {timeline_sources} selected reviewed-note "
+        "versions are shown in source-date order. Known demographic, routine "
+        "background and template sections are omitted; unrecognized headings are "
+        "retained. Omitted sections are not evidence of absent facts. Dates identify the notes, not "
+        "proof that medication was taken or testing was completed. Keep recorded "
+        "instructions, corrections and documentation gaps distinct. This is not "
+        "the entire chart or a confirmed current regimen or order ledger."
+    ) if timeline else (
         "These are exact excerpts from the selected reviewed-note versions. "
         "Quote matching verifies where the text came from; it does not establish "
         "that the excerpts fully answer the question or describe the current "
         "regimen or outstanding orders. Read later corrections and the surrounding notes."
-    )
+    ))
     content = "\n\n".join(parts)
-    if len(content) > 18_000:
+    if len(content) > 18_000 or (timeline and len(content.encode("utf-8")) > 64 * 1024):
         return AgentResult(
-            agent=agent, content=EVIDENCE_UNAVAILABLE, citations=[],
-            data={**data, "record_evidence_status": "unavailable"},
+            agent=agent, content=TIMELINE_UNAVAILABLE if timeline else EVIDENCE_UNAVAILABLE,
+            citations=[], data={**data, "record_evidence_status": "unavailable",
+                               **({"record_evidence_mode": "reviewed_timeline"} if timeline else {})},
         )
     return AgentResult(
         agent=agent, content=content, citations=citations,
         data={**data, "record_evidence_status": "validated_excerpts",
-              "record_evidence_count": len(selected)},
+              "record_evidence_count": len(selected),
+              **({"record_evidence_mode": "reviewed_timeline",
+                  "record_evidence_source_count": timeline_sources} if timeline else {})},
+    )
+
+
+def reviewed_timeline_evidence(
+    context: ReviewedProviderQuestionResult, *, agent: str, data: dict,
+) -> AgentResult:
+    """Copy full timeline sections; a plan-only selection is not a timeline.
+
+    This server-owned mode makes no clinical claim or relevance classification.
+    It retains unknown headings and disagreeing sections, alongside measurements,
+    plans, corrections and explicitly documented gaps. Bounds apply to the whole
+    response: never salvage a partial timeline or fall back to generated prose.
+    """
+    selected: list[tuple[str, str, str]] = []
+    total = 0
+    if context.state == "ready":
+        for source in sorted(context.reviewed_sources, key=lambda source: source.source_at):
+            start = len(selected)
+            for section, text in source.sections.items():
+                if not text.strip() or not _timeline_section(section):
+                    continue
+                total += len(text)
+                selected.append((text, source.source_at.date().isoformat(), section))
+                if len(text) > 3000 or total > 8000 or len(selected) > MAX_TIMELINE_SECTIONS:
+                    selected = []
+                    break
+            if len(selected) == start or not selected:
+                selected = []
+                break
+    if not selected:
+        return AgentResult(
+            agent=agent, content=TIMELINE_UNAVAILABLE, citations=[],
+            data={**data, "record_evidence_status": "unavailable",
+                  "record_evidence_mode": "reviewed_timeline"},
+        )
+    return _quoted_result(
+        selected, agent=agent, data=data, timeline_sources=len(context.reviewed_sources),
     )
 
 
