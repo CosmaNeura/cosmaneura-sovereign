@@ -33,7 +33,16 @@ def test_twenty_clinician_queries_use_grounded_prompt_or_retain_hidden_skill_ref
     # stochastic accuracy or the correctness of a live generated answer.
     service.router.route = AsyncMock(return_value=(classified_intent, DoctrinalSensitivity.LOW, ""))
     service.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": case["record_fact"]})
-    service.llm.complete = AsyncMock(return_value="Synthetic clinician-facing answer.")
+    # Selection is also scripted: this verifies routing/citation dispatch, not
+    # live relevance or whether these excerpts fully answer each corpus item.
+    selected_answer = json.dumps({"excerpts": [{
+        "source_index": 0, "section_index": 0,
+        "quote": "Office blood pressure is 148/92.",
+    }]})
+    service.llm.complete = AsyncMock(return_value=(
+        selected_answer if classified_intent in {Intent.ENGAGEMENT, Intent.LAB_REVIEW}
+        else "Synthetic clinician-facing answer."
+    ))
     context.read.return_value = ProviderQuestionResponse.model_validate(reviewed_response())
     response = handle(service, case["message"])
 

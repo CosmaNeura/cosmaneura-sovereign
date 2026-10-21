@@ -32,7 +32,10 @@ from __future__ import annotations
 
 from app.agents.base import BaseAgent
 from app.clients.conversation_read import CONVERSATION_RULES, conversation_prompt
-from app.clients.provider_question_contract import PROVIDER_CONTEXT_RULES, ProviderQuestionResult
+from app.clients.provider_evidence import EVIDENCE_UNAVAILABLE, select_reviewed_evidence
+from app.clients.provider_question_contract import (
+    PROVIDER_CONTEXT_RULES, ProviderQuestionResult, ReviewedProviderQuestionResult,
+)
 from app.config import ComplianceProfile
 from app.schemas import AgentResult, ChatRequest
 
@@ -60,7 +63,8 @@ class VisitPrepAgent(BaseAgent):
     name = "visit_prep_agent"
 
     async def run(self, request: ChatRequest, profile: ComplianceProfile, *,
-                  provider_context: ProviderQuestionResult | None = None) -> AgentResult:
+                  provider_context: ProviderQuestionResult | None = None,
+                  exact_evidence: bool = False) -> AgentResult:
         self.require_baa_covered_llm(profile)
 
         # NB: no scrubbing here — like the engagement agent, this call is the
@@ -85,6 +89,19 @@ class VisitPrepAgent(BaseAgent):
             # supplement its reviewed source set.
             prior = patient_profile = intake_summary = journey = ""
         fmt, fmt_rules = self.resolve_output_format(request)
+        if exact_evidence:
+            # This is an explicit server-owned mode, not a browser setting.
+            if (not isinstance(provider_context, ReviewedProviderQuestionResult)
+                    or provider_context.state != "ready"):
+                return AgentResult(
+                    agent=self.name, content=EVIDENCE_UNAVAILABLE,
+                    data={"feature": "visit_prep", "output_format": fmt,
+                          "record_evidence_status": "unavailable"},
+                )
+            return await select_reviewed_evidence(
+                llm=self.llm, context=provider_context, question=request.message,
+                agent=self.name, data={"feature": "visit_prep", "output_format": fmt},
+            )
 
         content = await self.llm.complete(
             system=_SYSTEM + CONVERSATION_RULES + (PROVIDER_CONTEXT_RULES if provider_context else ""),

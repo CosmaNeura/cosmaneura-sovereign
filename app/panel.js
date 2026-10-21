@@ -55,6 +55,10 @@
     ".cnp-record-context details[open]{max-height:160px;overflow-y:auto;overscroll-behavior:contain}",
     ".cnp-history-stale{margin:10px 0;border:1px solid var(--line);border-radius:9px;padding:8px}",
     ".cnp-history-stale summary{cursor:pointer;color:var(--muted);font-size:12px}",
+    ".cnp-evidence-card{margin:10px 0;padding:10px;border:1px solid var(--line);",
+    "border-radius:9px;background:var(--panel)}",
+    ".cnp-evidence-source{margin:0 0 7px;font-size:12px;color:var(--muted);font-weight:700}",
+    ".cnp-evidence-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.55}",
     ".cnp-head,.cnp-chips,.cnp-foot{flex-shrink:0}",
     ".cnp-head{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line)}",
     ".cnp-logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#9c7a2f);",
@@ -179,6 +183,35 @@
   }
 
   function md(t) {
+    // This canonical evidence envelope contains server-escaped literal
+    // Markdown, rather than generated prose. History retains the answer but
+    // omits structured data, so recognize its fixed format in both paths.
+    // This changes text formatting only; it grants no authority/capability.
+    if (typeof t === "string" &&
+        t.indexOf("Selected reviewed-note excerpts for your question:\n\n") === 0) {
+      var literal = t.replace(/\\([\\`*_{}\[\]()#!|~])/g, "$1")
+        .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
+      var evidenceLines = literal.split("\n"), evidenceHtml = "", expected = 1;
+      for (var e = 0; e < evidenceLines.length; e++) {
+        var label = evidenceLines[e].match(/^\[(\d+)\] (.+)$/);
+        if (label && Number(label[1]) === expected && expected <= 8) {
+          var cursor = e + 1;
+          while (evidenceLines[cursor] === "") cursor += 1;
+          var quote = [];
+          while (cursor < evidenceLines.length && evidenceLines[cursor].indexOf("> ") === 0)
+            quote.push(evidenceLines[cursor++].slice(2));
+          if (quote.length) {
+            evidenceHtml += '<section class="cnp-evidence-card" aria-label="Reviewed-note excerpt">' +
+              '<h4 class="cnp-evidence-source">' + esc(label[2]) + '</h4>' +
+              '<pre class="cnp-evidence-body">' + esc(quote.join("\n")) + '</pre></section>';
+            expected += 1; e = cursor - 1; continue;
+          }
+        }
+        if (evidenceLines[e] !== "") evidenceHtml += "<p>" + esc(evidenceLines[e]) + "</p>";
+      }
+      return evidenceHtml;
+    }
     var lines = esc(t).split("\n"), html = "", inList = false, m;
     for (var i = 0; i < lines.length; i++) {
       var ln = lines[i].replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");

@@ -16,6 +16,7 @@ from app.agents.engagement_agent import EngagementAgent
 from app.agents.ethics_agent import EthicsConsultAgent
 from app.agents.visit_prep_agent import VisitPrepAgent
 from app.clients.provider_question import ProviderQuestionClient
+from app.clients.provider_evidence import EVIDENCE_REVIEW_UNAVAILABLE
 from app.clients.provider_question_contract import (
     ProviderQuestionArguments, ProviderQuestionRequest, ProviderQuestionResponse,
     ReviewedProviderQuestionResult,
@@ -270,7 +271,8 @@ def test_actual_read_scope_survives_doctrinal_replacement_and_canonical_acceptan
     )
     response = handle(service)
     canonical = conversation.write_final_response.call_args.kwargs["answer"]
-    assert "Synthetic reviewed replacement." in canonical
+    assert (EVIDENCE_REVIEW_UNAVAILABLE in canonical if full_sources
+            else "Synthetic reviewed replacement." in canonical)
     assert context.read.call_args.kwargs["request"].tool_version == "1.2.0"
     assert "Full notes were not read" in canonical if not full_sources else "Full notes were not read" not in canonical
     assert "Source:" in response.answer

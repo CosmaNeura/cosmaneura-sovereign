@@ -90,6 +90,10 @@ def test_missing_brief_does_not_relax_source_authority_or_content_invariants(fie
 def test_factual_answer_can_finalize_from_sources_without_building_or_waiting_for_brief(brief_state):
     service, context, conversation = sovereign()
     context.read.return_value = ProviderQuestionResponse.model_validate(source_only_response(brief_state))
+    service.llm.complete.return_value = json.dumps({"excerpts": [{
+        "source_index": 0, "section_index": 0,
+        "quote": "Office blood pressure is 148/92.",
+    }]})
     response = handle(service, "What office blood pressure was documented on September 30?")
     prompt = service.llm.complete.call_args.kwargs["prompt"]
     assert "148/92" in prompt
