@@ -6,10 +6,14 @@ import re
 import uuid
 from dataclasses import dataclass
 
+from pydantic import ValidationError
+
 from app.clients.session_prep_contract import (
+    SessionPrepBriefText,
     SessionPrepContextReadResult,
     SessionPrepPendingResult,
     SessionPrepReadyResult,
+    SessionPrepRecap,
     SessionPrepRefreshingResult,
 )
 from app.clients.session_prep_facts_contract import SessionPrepFactsResult
@@ -23,6 +27,11 @@ from app.schemas import (
 )
 
 MAX_SESSION_PREP_CANONICAL_CHARS = 19_000
+# Only the observed standalone citation syntax is a display token. Bare IDs,
+# nested/escaped parentheses, URL destinations and attributes remain literal.
+_VISIT_NOTE_CITATION = re.compile(
+    r"(?<!\S)\((visit_note_[A-Za-z0-9._~-]+)\)(?=$|\s|[.,;:!?](?=\s|$))"
+)
 # Dynamic observation values escape these brackets/angles, so only the
 # appended server delimiter remains raw. It grants formatting, not authority.
 OBSERVATIONS_LITERAL_MARKER = "<!-- [reviewed-source-observations:v1] -->"
@@ -74,34 +83,64 @@ def _blocked_projection(client_turn_id: uuid.UUID) -> SessionPrepResponse:
     )
 
 
+def _dated_brief_citations(
+    item: SessionPrepRecap | SessionPrepBriefText, note_labels: dict[str, str],
+) -> str:
+    """Label only this item's verified note citations; retain all other text.
+
+    The labels describe supporting-note dates, never clinical event dates.
+    This operates on generated brief items, not source excerpts or canonical
+    history text, and does not change the Core-owned artifact or its lineage.
+    """
+    refs = set(item.source_refs)
+
+    def label(match: re.Match[str]) -> str:
+        ref = match.group(1)
+        return f"({note_labels[ref]})" if ref in refs and ref in note_labels else match[0]
+
+    return _VISIT_NOTE_CITATION.sub(label, item.text)
+
+
 def project_session_prep_result(
     result: SessionPrepContextReadResult,
     *,
     client_turn_id: uuid.UUID,
 ) -> SessionPrepResponse:
-    """Copy exact text while dropping server-only lineage and unsafe content."""
+    """Project safe brief text with dated labels for verified note citations."""
     if isinstance(result, (SessionPrepReadyResult, SessionPrepRefreshingResult)):
         if not session_prep_egress_is_safe(result):
             return _blocked_projection(client_turn_id)
         brief = result.prepared_brief
-        projected = SessionPrepProjectedBrief(
-            recap=brief.recap.text,
-            trajectory_and_material_changes=[
-                item.text for item in brief.trajectory_and_material_changes
-            ],
-            talking_points=[item.text for item in brief.talking_points],
-            open_threads=[item.text for item in brief.open_threads],
-            cautions=[item.text for item in brief.cautions],
-            suggested_outline=[item.text for item in brief.suggested_outline],
-            patient_reported=(
-                SessionPrepProjectedPatientReport(
-                    label=brief.patient_reported.label,
-                    summary=brief.patient_reported.summary,
-                )
-                if brief.patient_reported is not None
-                else None
-            ),
-        )
+        note_labels = {
+            source.source_ref: f"Reviewed note · {source.source_at.date().isoformat()}"
+            for source in result.provenance
+            if source.included and source.source_class == "clinician_finalized_note"
+            and source.source_ref is not None and source.source_at is not None
+        }
+        try:
+            projected = SessionPrepProjectedBrief(
+                recap=_dated_brief_citations(brief.recap, note_labels),
+                trajectory_and_material_changes=[
+                    _dated_brief_citations(item, note_labels)
+                    for item in brief.trajectory_and_material_changes
+                ],
+                talking_points=[_dated_brief_citations(item, note_labels) for item in brief.talking_points],
+                open_threads=[_dated_brief_citations(item, note_labels) for item in brief.open_threads],
+                cautions=[_dated_brief_citations(item, note_labels) for item in brief.cautions],
+                suggested_outline=[_dated_brief_citations(item, note_labels) for item in brief.suggested_outline],
+                patient_reported=(
+                    SessionPrepProjectedPatientReport(
+                        label=brief.patient_reported.label,
+                        summary=brief.patient_reported.summary,
+                    )
+                    if brief.patient_reported is not None
+                    else None
+                ),
+            )
+        except ValidationError:
+            # A short opaque ref can expand beyond an item's projection bound.
+            # Keep the same fail-closed outcome as the canonical size limit.
+            return _blocked_projection(client_turn_id)
         response = SessionPrepResponse(
             client_turn_id=client_turn_id,
             state=result.state,
