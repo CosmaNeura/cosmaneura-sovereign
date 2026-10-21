@@ -10,7 +10,7 @@ from app.clients.session_prep_contract import parse_session_prep_result
 from app.clients.session_prep_facts_contract import SessionPrepFactsReadResponse
 from app.session_prep import (
     MAX_SESSION_PREP_CANONICAL_CHARS, project_session_prep_facts,
-    project_session_prep_result, render_session_prep_text,
+    project_session_prep_result, render_session_prep_text, session_prep_egress_is_safe,
 )
 from tests.test_provider_evidence import panel_render_data
 from tests.test_session_prep_facts import _facts_envelope, _VisibleHistory
@@ -94,6 +94,41 @@ def test_unrecognized_or_unverified_tokens_remain_exact(token):
     assert result.prepared_brief.recap == text
 
 
+@pytest.mark.parametrize("text", [
+    f'Literal <a title=" ({A}) ">sample</a>.',
+    f'Literal <a title="> ({A}) ">sample</a>.',
+    f"Literal <a title=' ({A}) '>sample</a>.",
+    f'Literal <a href=" https://invalid.example/ ({A}) ">sample</a>.',
+    f"Literal <a> ({A}) </a>.",
+    f"Literal <!-- ({A}) --> comment.",
+    f"Literal ` ({A}) ` sample.", f"Literal `` ({A}) `` sample.",
+    f"Literal code:\n```\n({A})\n```",
+    f"Literal code:\n````\n({A})\n```\n````",
+    f"Literal ( ({A}) ) sample.", f"Literal ( nested ( ({A}) ) ) sample.",
+    f'Literal " ({A}) " sample.', f"Literal ' ({A}) ' sample.",
+    f"Literal [link]( https://invalid.example/ ({A}) ) sample.",
+    f'Unclosed <a title=" ({A})', f"Unclosed ` ({A}).", f"Unclosed ( ({A}).",
+])
+def test_protected_or_ambiguous_wrappers_preserve_exact_literal_text(text):
+    result = _project(_body(text))
+    assert result.state == "ready" and result.prepared_brief.recap == text
+
+
+@pytest.mark.parametrize("prefix", [
+    'Literal <a title=">">sample</a>.', "Literal <img src=x>.",
+    "Literal `code`.", "Literal ``code``.", "Literal (sample).",
+    'Literal "sample".', "Patient's prior note.", "Literal <!-- sample -->.",
+    "Literal `code with an unmatched ' quote`.",
+    "Literal <a title='`'>a ( b</a>.",
+    "Literal ```\nquoted \"code\"\n```.",
+])
+def test_closed_wrappers_do_not_hide_a_following_standalone_citation(prefix):
+    text = prefix + f" Note ({A})."
+    assert _project(_body(text)).prepared_brief.recap == (
+        prefix + " Note (Reviewed note · 2026-09-30)."
+    )
+
+
 def test_included_source_cited_only_by_another_item_is_not_labeled():
     body = _body(f"Recap ({A}). Another item cites ({B}).")
     body["prepared_brief"]["talking_points"][0]["text"] = f"Review the prior note ({B})."
@@ -156,6 +191,30 @@ def test_same_date_notes_are_not_dropped_or_combined():
 def test_original_prohibited_clinical_instruction_is_still_rejected():
     result = _project(_body(f"Increase your dose ({A}) to 50 mg."))
     assert result.state == "unavailable" and result.prepared_brief is None
+
+
+@pytest.mark.parametrize("section", ["recap", "talking_points", "suggested_outline"])
+@pytest.mark.parametrize("state", ["ready", "refreshing"])
+@pytest.mark.parametrize("instruction", [
+    "Advice: skip ({ref}) emergency care.",
+    "Recommendation: increase ({ref}) your dose to 50 mg.",
+])
+def test_actual_shortened_projection_is_independently_gated(section, state, instruction):
+    ref = "visit_note_" + "x" * 120
+    body = _body("Safe recap.")
+    next(source for source in body["provenance"] if source["source_ref"] == A)["source_ref"] = ref
+    body["prepared_brief"]["recap"]["source_refs"] = [ref]
+    item = {"text": instruction.format(ref=ref), "source_refs": [ref]}
+    body["prepared_brief"][section] = item if section == "recap" else [item]
+    if state == "refreshing":
+        body.update(state=state, freshness="stale", retry_after_seconds=5, reason_code="refresh_in_progress")
+    parsed = parse_session_prep_result(body)
+    assert session_prep_egress_is_safe(parsed)  # Reproduced bounded-window gap.
+    result = project_session_prep_result(parsed, client_turn_id=TURN_ID)
+    assert result.state == "unavailable" and result.prepared_brief is None
+    assert result.source_count == 0 and result.current_through is None
+    assert "Advice:" not in render_session_prep_text(result)
+    assert "Recommendation:" not in render_session_prep_text(result)
 
 
 def test_label_expansion_cannot_exceed_an_item_bound():
@@ -231,4 +290,3 @@ def test_dated_brief_projection_does_not_rewrite_literal_fact_or_correction_quot
             assert f"({A})" in fact.correction.quote
             assert fact.correction.quote in live["literalTexts"]
             assert fact.correction.quote in "".join(visible.fragments)
-
