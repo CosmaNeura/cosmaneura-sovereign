@@ -1,7 +1,8 @@
 # Reviewed-note evidence mode
 
 Risk: Tier 2, provider context. Owner: Session Prep engineering. Status:
-implemented, not yet deployed to staging. The user selected dated excerpt
+the existing evidence mode is deployed to staging; the index-only selector
+update awaits staging activation. The user selected dated excerpt
 cards for specific chart questions while retaining the generated preparation
 brief as the overview. The server enables exact evidence for ENGAGEMENT
 answers only when the existing authorized lane supplies full reviewed-note
@@ -12,17 +13,19 @@ the generated brief and v1.0/v1.1/v1.2 Core contracts remain unchanged.
 ## Deployable outcome
 
 Add a bounded evidence-selection primitive for factual record questions. The
-BAA-covered drafting call returns only source/section indices and exact full
-section text. Sovereign validates the complete selection against the already
-authorized reviewed-source version, derives date and section labels itself,
+BAA-covered drafting call returns only source/section indices. Extra quotation
+or attribution fields are rejected, even when they match the note. Sovereign
+validates the complete selection against the already authorized reviewed-source
+version, copies the entire section text, derives date and section labels itself,
 and renders quoted sections without model-written clinical assertions.
 
 This deliberately requires the full selected section, rather than a substring
 or line. A standalone line can omit a correction or negation immediately above
 it. Bounds are eight sections, 3,000 characters per section, 8,000 quote
 characters in total, 40,000 raw model-output characters and 18,000 rendered
-characters. A section that exceeds these limits cannot be excerpted in this
-mode. No evidence is salvaged from an invalid selection.
+characters. The model response budget is 512 tokens for at most eight pairs of
+strict integer indices. A section that exceeds these limits cannot be excerpted
+in this mode. No evidence is salvaged from an invalid selection.
 
 The model sees disposable zero-based indices, not Core source handles or
 version digests. Dates and labels derive from authorized metadata. There is
@@ -39,8 +42,8 @@ titles are flattened into one label line so they cannot manufacture cards.
 
 ## Limits
 
-Exact section matching proves provenance only. It does not prove relevance,
-that all later corrections were selected, that a historical plan became the
+Copying a complete authorized section proves provenance only. It does not prove
+relevance, that all later corrections were selected, that a historical plan became the
 current regimen, or that the whole question was answered. The answer states
 this limitation and preserves the actual source-read notice. This is not a
 semantic clinical-claim validator or an evaluation of live model selection
@@ -66,8 +69,13 @@ existing final-acceptance authority/freshness check can still reject corrected,
 revoked or mismatched context before answer egress. No schema, migrations,
 configuration, dependency, browser ingress or permission changes are required.
 
-Recovery: remove the explicit ENGAGEMENT dispatch of `exact_evidence=True` to
-restore prior synthesis without changing preparation artifacts. If reverting
+Recovery for the index-only selector: revert its source/test/documentation
+commit and restore the previous index-plus-exact-quote model prompt and validator.
+Persisted canonical answers and browser rendering remain compatible; no data
+cleanup or database rollback is required.
+
+Recovery for the original evidence mode: remove the explicit ENGAGEMENT dispatch
+of `exact_evidence=True` to restore prior synthesis without changing preparation artifacts. If reverting
 the primitive and panel renderer, revert this PR's implementation commits.
 No data cleanup or database rollback is required. Deployment remains within
 the existing Session Prep feature/authorized staging cohort; no new flag,

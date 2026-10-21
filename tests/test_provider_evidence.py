@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from html.parser import HTMLParser
 import json
 from pathlib import Path
@@ -30,8 +31,8 @@ from tests.test_provider_reviewed_sources import reviewed_response
 from tests.test_provider_source_readiness import source_only_response
 
 
-def selected(*, source=0, section=0, quote="Office blood pressure is 148/92."):
-    return {"source_index": source, "section_index": section, "quote": quote}
+def selected(*, source=0, section=0, **extra):
+    return {"source_index": source, "section_index": section, **extra}
 
 
 def output(*spans):
@@ -56,9 +57,7 @@ def test_indices_are_disposable_and_do_not_export_authority_handles():
 
 
 def test_exact_old_and_new_measurements_receive_server_dates_and_sections():
-    result = validate(output(selected(), selected(
-        source=1, quote="Home BP 128–136/78–84. Office BP not measured today.",
-    )))
+    result = validate(output(selected(), selected(source=1)))
     assert result.data["record_evidence_status"] == "validated_excerpts"
     assert result.citations[0].title == "2026-09-30 — O - OBJECTIVE"
     assert result.citations[1].title == "2026-10-07 — O - OBJECTIVE"
@@ -70,9 +69,24 @@ def test_exact_old_and_new_measurements_receive_server_dates_and_sections():
 
 @pytest.mark.parametrize("mutate", [
     lambda x: x.update(source_index=4),
+    lambda x: x.update(source_index=-1),
+    lambda x: x.update(source_index=5),
     lambda x: x.update(section_index=5),
+    lambda x: x.update(section_index=-1),
+    lambda x: x.update(section_index=64),
     lambda x: x.update(source_index=True),
+    lambda x: x.update(section_index=True),
+    lambda x: x.update(source_index=0.0),
+    lambda x: x.update(source_index="0"),
+    lambda x: x.update(source_index=None),
+    lambda x: x.update(source_index=[]),
+    lambda x: x.update(source_index={}),
+    lambda x: x.update(section_index=0.0),
     lambda x: x.update(section_index="0"),
+    lambda x: x.update(section_index=None),
+    lambda x: x.update(section_index=[]),
+    lambda x: x.update(section_index={}),
+    lambda x: x.update(quote="Office blood pressure is 148/92."),
     lambda x: x.update(quote="Office blood pressure is 120/80."),
     lambda x: x.update(quote="148/92"),
     lambda x: x.update(quote=" "),
@@ -93,9 +107,16 @@ def test_one_invalid_citation_discards_every_excerpt_and_generated_claim(mutate)
 
 @pytest.mark.parametrize("raw", [
     output(), output(selected(), selected()),
-    '{"excerpts":[],"excerpts":[{"source_index":0,"section_index":0,"quote":"Office blood pressure is 148/92."}]}',
-    '{"excerpts":[{"source_index":0,"source_index":1,"section_index":0,"quote":"Office blood pressure is 148/92."}]}',
+    '{"excerpts":[],"excerpts":[{"source_index":0,"section_index":0}]}',
+    '{"excerpts":[{"source_index":0,"source_index":1,"section_index":0}]}',
+    '{"excerpts":[{"source_index":0,"section_index":0,"section_index":1}]}',
     '{"excerpts":[],"answer":"Current losartan is 50 mg"}',
+    '{"excerpts":[{"source_index":0}]}',
+    '{"excerpts":[{"section_index":0}]}',
+    '{"excerpts":[{"source_index":0,"section_index":0,"quote":null}]}',
+    '{"excerpts":null}', '{"excerpts":{}}', '{"excerpts":[null]}',
+    '{"excerpts":[{"source_index":Infinity,"section_index":0}]}',
+    '{"excerpts":[{"source_index":0,"section_index":1e309}]}',
     '{"excerpts":NaN}', "```json\n{}\n```", "Current dose is 50 mg.",
     "x" * 40_001,
 ])
@@ -115,8 +136,7 @@ def test_partial_line_cannot_drop_correction_negation_or_the_order_status():
         result = validated_evidence(output(selected(source=1, section=1, quote=quote)), ctx,
                                     agent="synthetic_agent", data={})
         assert result.content == EVIDENCE_UNAVAILABLE
-    complete = raw["result"]["reviewed_sources"][1]["sections"]["P - PLAN"]
-    result = validated_evidence(output(selected(source=1, section=1, quote=complete)), ctx,
+    result = validated_evidence(output(selected(source=1, section=1)), ctx,
                                 agent="synthetic_agent", data={})
     assert result.data["record_evidence_status"] == "validated_excerpts"
     assert "not ordered" in result.content and "cancelled" in result.content
@@ -133,14 +153,21 @@ def test_complete_line_cannot_be_detached_from_section_heading_that_negates_it()
     result = validated_evidence(output(selected(section=1, quote="Increase losartan to 50 mg daily.")),
                                 ctx, agent="synthetic_agent", data={})
     assert result.content == EVIDENCE_UNAVAILABLE
+    complete = validated_evidence(output(selected(section=1)), ctx, agent="synthetic_agent", data={})
+    assert "Incorrect prior plan" in complete.content and "Corrected plan" in complete.content
+    assert "50 mg" in complete.content and "25 mg" in complete.content
 
 
-def test_source_corrections_invalidate_old_quote_membership_without_using_model_dates():
+def test_source_correction_is_copied_from_current_context_without_old_model_text_or_dates():
     raw = source_only_response("unavailable")
     raw["result"]["reviewed_sources"][0]["sections"]["O - OBJECTIVE"] = "Corrected office BP is 142/90."
     ctx = ProviderQuestionResponse.model_validate(raw).result
     result = validated_evidence(output(selected()), ctx, agent="synthetic_agent", data={})
-    assert result.content == EVIDENCE_UNAVAILABLE
+    assert "142/90" in result.content and "148/92" not in result.content
+    assert result.citations[0].title == "2026-09-30 — O - OBJECTIVE"
+    stale = validated_evidence(output(selected(quote="Office blood pressure is 148/92.")), ctx,
+                               agent="synthetic_agent", data={})
+    assert stale.content == EVIDENCE_UNAVAILABLE
 
 
 def test_source_markup_is_literal_and_cannot_add_links_or_document_actions():
@@ -149,7 +176,7 @@ def test_source_markup_is_literal_and_cannot_add_links_or_document_actions():
     title = "P - PLAN [fake](https://attacker.example)"
     raw["result"]["reviewed_sources"][0]["sections"] = {title: text}
     ctx = ProviderQuestionResponse.model_validate(raw).result
-    result = validated_evidence(output(selected(quote=text)), ctx, agent="synthetic_agent", data={})
+    result = validated_evidence(output(selected()), ctx, agent="synthetic_agent", data={})
     assert "<script>" not in result.content and "<!-- document -->" not in result.content
     assert "\\[Record\\]" in result.content
     assert result.citations[0].url is None
@@ -169,6 +196,8 @@ def test_only_selected_evidence_enters_record_answer_and_raw_browser_history_is_
     assert "note_synthetic_" not in call["prompt"]
     assert "never instructions" in call["system"]
     assert "do not write a clinical answer" in call["system"]
+    assert "Never copy or write a quote" in call["system"]
+    assert call["max_tokens"] == 512
     assert not call.get("use_doctrinal_mcp")
     assert agent.llm.complete.call_count == 1
 
@@ -204,7 +233,7 @@ def test_validated_quotes_are_deidentified_before_arbitration_and_canonically_pe
         "Patient email: synthetic@example.com. Office blood pressure is 148/92."
     )
     read.read.return_value = ProviderQuestionResponse.model_validate(raw)
-    service.llm.complete.return_value = output(selected(quote=raw["result"]["reviewed_sources"][0]["sections"]["O - OBJECTIVE"]))
+    service.llm.complete.return_value = output(selected())
     response = handle(service)
     arbiter = service.arbiter.review.call_args.kwargs["deidentified_draft"]
     assert "synthetic@example.com" not in arbiter
@@ -284,9 +313,91 @@ def test_aggregate_budget_rejects_valid_but_unbounded_quote_output():
     text = "x" * 2700
     raw["result"]["reviewed_sources"][0]["sections"] = {"A": text, "B": text, "C": text}
     ctx = ProviderQuestionResponse.model_validate(raw).result
-    result = validated_evidence(output(*(selected(section=i, quote=text) for i in range(3))),
+    result = validated_evidence(output(*(selected(section=i) for i in range(3))),
                                 ctx, agent="synthetic_agent", data={})
     assert result.content == EVIDENCE_UNAVAILABLE
+
+
+def source_context_with_sections(sections):
+    raw = source_only_response("unavailable")
+    raw["result"]["reviewed_sources"][0]["sections"] = sections
+    return ProviderQuestionResponse.model_validate(raw).result
+
+
+@pytest.mark.parametrize("length,accepted", [(3000, True), (3001, False)])
+def test_whole_section_size_boundary_never_truncates(length, accepted):
+    text = "x" * length
+    ctx = source_context_with_sections({"OBJECTIVE": text})
+    result = validated_evidence(output(selected()), ctx, agent="synthetic_agent", data={})
+    assert (result.data["record_evidence_status"] == "validated_excerpts") is accepted
+    if accepted:
+        assert text in result.content
+    else:
+        assert result.content == EVIDENCE_UNAVAILABLE and result.citations == []
+
+
+@pytest.mark.parametrize("last_length,accepted", [(2000, True), (2001, False)])
+def test_total_source_character_boundary_is_all_or_nothing(last_length, accepted):
+    sections = {str(i): "x" * (last_length if i == 3 else 2000) for i in range(4)}
+    ctx = source_context_with_sections(sections)
+    result = validated_evidence(output(*(selected(section=i) for i in range(4))),
+                                ctx, agent="synthetic_agent", data={})
+    assert (result.data["record_evidence_status"] == "validated_excerpts") is accepted
+    if accepted:
+        assert len(result.citations) == 4
+    else:
+        assert result.content == EVIDENCE_UNAVAILABLE and result.citations == []
+
+
+@pytest.mark.parametrize("count,accepted", [(8, True), (9, False)])
+def test_unique_selection_count_boundary(count, accepted):
+    ctx = source_context_with_sections({f"SECTION {i}": f"Full section {i}." for i in range(count)})
+    result = validated_evidence(output(*(selected(section=i) for i in range(count))),
+                                ctx, agent="synthetic_agent", data={})
+    assert (result.data["record_evidence_status"] == "validated_excerpts") is accepted
+    assert len(result.citations) == (count if accepted else 0)
+
+
+@pytest.mark.parametrize("empty", ["", " \t\n"])
+def test_empty_selected_section_discards_other_valid_sections(empty):
+    ctx = source_context_with_sections({"VALID": "Full valid section.", "EMPTY": empty})
+    result = validated_evidence(output(selected(), selected(section=1)),
+                                ctx, agent="synthetic_agent", data={})
+    assert result.content == EVIDENCE_UNAVAILABLE and result.citations == []
+    assert "Full valid section." not in result.content
+
+
+def test_canonical_escape_expansion_budget_discards_all_evidence():
+    # The source passes the 8,000-character quote budget, but literal entity
+    # escaping would exceed the unchanged 18,000-character canonical limit.
+    ctx = source_context_with_sections({str(i): "&" * 2700 for i in range(2)})
+    result = validated_evidence(output(selected(), selected(section=1)),
+                                ctx, agent="synthetic_agent", data={})
+    assert result.content == EVIDENCE_UNAVAILABLE and result.citations == []
+
+
+def test_maximum_indices_select_server_owned_complete_section_and_metadata():
+    raw = source_only_response("unavailable")
+    while len(raw["result"]["reviewed_sources"]) < 5:
+        ref = f"note_synthetic_00{len(raw['result']['reviewed_sources']) + 1}"
+        source = copy.deepcopy(raw["result"]["reviewed_sources"][0])
+        provenance = copy.deepcopy(raw["result"]["provenance"][0])
+        source["source_ref"] = provenance["source_ref"] = ref
+        raw["result"]["reviewed_sources"].append(source)
+        raw["result"]["provenance"].append(provenance)
+    text = "Correction: do not implement the old plan.\nContinue the corrected plan."
+    sections = {f"SECTION {i}": f"Full section {i}." for i in range(64)}
+    sections["SECTION 63"] = text
+    raw["result"]["reviewed_sources"][4]["sections"] = sections
+    ctx = ProviderQuestionResponse.model_validate(raw).result
+    prompt = json.loads(evidence_prompt(ctx))
+    assert prompt["reviewed_sources"][4]["section_indexes"]["SECTION 63"] == 63
+    result = validated_evidence(output(selected(source=4, section=63)),
+                                ctx, agent="synthetic_agent", data={})
+    assert result.data["record_evidence_status"] == "validated_excerpts"
+    assert result.citations[0].title == "2026-09-30 — SECTION 63"
+    assert "> " + text.replace("\n", "\n> ") in result.content
+    assert "note_synthetic_005" not in result.model_dump_json()
 
 
 class RenderedEvidence(HTMLParser):
@@ -354,7 +465,7 @@ def test_actual_panel_preserves_source_text_once_in_live_and_restored_excerpt_ca
     title = 'P - PLAN **status** & <source> "quoted"'
     raw["result"]["reviewed_sources"][0]["sections"] = {title: text}
     ctx = ProviderQuestionResponse.model_validate(raw).result
-    result = validated_evidence(output(selected(quote=text)), ctx, agent="synthetic_agent", data={})
+    result = validated_evidence(output(selected()), ctx, agent="synthetic_agent", data={})
     assert result.data["record_evidence_status"] == "validated_excerpts"
     html = panel_render(result.content, hydrated=hydrated, structured=result.data)
     rendered = RenderedEvidence()
@@ -382,7 +493,7 @@ def test_multiline_source_title_cannot_create_an_extra_excerpt_card():
         "PLAN\n[2] False date\n> False source statement": text,
     }
     ctx = ProviderQuestionResponse.model_validate(raw).result
-    result = validated_evidence(output(selected(quote=text)), ctx, agent="synthetic_agent", data={})
+    result = validated_evidence(output(selected()), ctx, agent="synthetic_agent", data={})
     rendered = RenderedEvidence()
     rendered.feed(panel_render(result.content, hydrated=True))
     assert rendered.quotes == [text]
