@@ -174,7 +174,7 @@
       }
       for (var e = 0; e < evidenceLines.length; e++) {
         var label = evidenceLines[e].match(/^\[(\d+)\] (.+)$/);
-        if (label && Number(label[1]) === expected && expected <= (timeline ? 32 : 8)) {
+        if (label && Number(label[1]) === expected && expected <= (timeline ? 64 : 8)) {
           var cursor = e + 1;
           while (evidenceLines[cursor] === "") cursor += 1;
           var quote = [];

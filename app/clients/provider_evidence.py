@@ -33,7 +33,7 @@ EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE = (
 )
 
 TIMELINE_PREFIX = "Reviewed visit timeline — exact source sections:"
-MAX_TIMELINE_SECTIONS = 32
+MAX_TIMELINE_SECTIONS = 64
 TIMELINE_UNAVAILABLE = (
     "The selected notes could not all be represented in one bounded "
     "clinical-section timeline. No partial "
@@ -41,24 +41,20 @@ TIMELINE_UNAVAILABLE = (
     "notes, or ask about one visit date and the fact you need."
 )
 
-# The timeline focuses on observations, medications, labs, assessment and plan.
-# Omit only these known background/template headings, not text-based guesses.
+# Omit only known demographic/background headings, not clinical sections or
+# text-based guesses. Follow-up, screening, exam, precaution and risk-calculation
+# headings may contain unique evidence even when they resemble template fields.
 # Unrecognized headings remain quoted rather than assumed clinically irrelevant.
 _TIMELINE_BACKGROUND = frozenset({
     "patient", "mrn / dob", "provider", "payer", "date of service", "modality",
     "sites", "place of service", "telehealth attestation", "pmh / psh", "allergies",
-    "family hx", "social hx", "immunizations", "risk calculations", "screening gaps",
-    "follow-ups", "coding, attestation, signature",
-    "observed and patient-assisted exam via video",
-    "return precautions - given verbally, repeated back accurately, sent in writing",
+    "family hx", "social hx", "immunizations", "coding, attestation, signature",
 })
 
 
 def _timeline_section(title: str) -> bool:
     title = " ".join(title.casefold().split())
-    return title not in _TIMELINE_BACKGROUND and re.fullmatch(
-        r"exam deferred to in-person visit \d{2}/\d{2}/\d{4}", title,
-    ) is None
+    return title not in _TIMELINE_BACKGROUND
 
 
 def reviewed_timeline_question(message: str) -> bool:
@@ -180,9 +176,10 @@ def _quoted_result(
     parts = [TIMELINE_PREFIX if timeline else "Selected reviewed-note excerpts for your question:"]
     if timeline:
         parts.append(
-            "Scope: subjective, medication, objective, lab, assessment and plan "
-            "sections, plus unrecognized headings. Known demographics, background "
-            "history, allergies and template sections are omitted."
+            "Scope: clinical sections, including observations, medications, labs, "
+            "assessment, plans, follow-ups, screening gaps, exams, return precautions "
+            "and risk calculations, plus unrecognized headings. Known demographics, "
+            "background history, allergy and immunization sections are omitted."
         )
     citations: list[Citation] = []
     for number, (quote, date, section) in enumerate(selected, start=1):
@@ -195,8 +192,8 @@ def _quoted_result(
         citations.append(Citation(source="Reviewed clinician note", title=label))
     parts.append((
         f"Clinical-section excerpts from {timeline_sources} selected reviewed-note "
-        "versions are shown in source-date order. Known demographic, routine "
-        "background and template sections are omitted; unrecognized headings are "
+        "versions are shown in source-date order. Known demographic and disclosed "
+        "background-history headings are omitted; unrecognized headings are "
         "retained. Omitted sections are not evidence of absent facts. Dates identify the notes, not "
         "proof that medication was taken or testing was completed. Keep recorded "
         "instructions, corrections and documentation gaps distinct. This is not "

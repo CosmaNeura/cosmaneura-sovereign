@@ -33,6 +33,9 @@ QUESTION = QUESTIONS[-1]
 CLINICAL_HEADINGS = {
     "S - SUBJECTIVE", "Medications", "O - OBJECTIVE",
     "Labs - fasting, 02/12/2026", "A - ASSESSMENT", "P - PLAN",
+    "Follow-ups", "Screening gaps", "Observed and patient-assisted exam via video",
+    "Return precautions - given verbally, repeated back accurately, sent in writing",
+    "Exam deferred to in-person visit 08/26/2026", "Risk calculations",
 }
 
 
@@ -124,12 +127,12 @@ def test_actual_full_note_measurement_is_not_a_shortened_clinical_fixture():
     assert [len(note["sections"]) for note in notes] == [27, 27, 27]
     assert [sum(map(len, note["sections"].values())) for note in notes] == [1741, 2223, 2219]
     assert [sum(len(text) for title, text in note["sections"].items()
-                if title in CLINICAL_HEADINGS) for note in notes] == [738, 1197, 1222]
+                if title in CLINICAL_HEADINGS) for note in notes] == [947, 1440, 1511]
     assert sum(map(len, timeline_context().result.reviewed_sources[0].sections.values())) == 2219
 
 
-@pytest.mark.parametrize("hydrated", [False, True])
-def test_five_date_history_keeps_each_date_and_every_clinical_section(hydrated):
+def five_note_context():
+    """Three complete observed layouts plus two wholly synthetic earlier visits."""
     raw = timeline_context().model_dump(mode="json")
     result = raw["result"]
     for index, date in enumerate(["2026-09-16", "2026-09-23"], start=4):
@@ -146,10 +149,15 @@ def test_five_date_history_keeps_each_date_and_every_clinical_section(hydrated):
         source["sections"]["P - PLAN"] = "Earlier fictional plan: review the blood pressure log."
         result["reviewed_sources"].append(source)
         result["provenance"].append(provenance)
-    context = ProviderQuestionResponse.model_validate(raw).result
+    return ProviderQuestionResponse.model_validate(raw)
+
+
+@pytest.mark.parametrize("hydrated", [False, True])
+def test_five_date_history_keeps_each_date_and_every_clinical_section(hydrated):
+    context = five_note_context().result
     answer = reviewed_timeline_evidence(context, agent="synthetic", data={})
     assert answer.data["record_evidence_source_count"] == 5
-    assert answer.data["record_evidence_count"] == 30
+    assert answer.data["record_evidence_count"] == 60
     groups = EvidenceGroups(panel_render(answer.content, hydrated=hydrated, structured=answer.data))
     assert groups.groups == [(date + " — clinical-section excerpts", date == "2026-10-08")
                              for date in ["2026-09-16", "2026-09-23", "2026-09-30", "2026-10-07", "2026-10-08"]]
@@ -159,6 +167,31 @@ def test_five_date_history_keeps_each_date_and_every_clinical_section(hydrated):
     assert "5 selected reviewed-note versions" in answer.content
 
 
+@pytest.mark.parametrize("heading,text", [
+    ("Follow-ups", "Synthetic follow-up: repeat potassium and creatinine in seven days; completion is not documented."),
+    ("Screening gaps", "Synthetic gap: outside CBC result is absent from this selected note; reconcile the requested report."),
+    ("Observed and patient-assisted exam via video", "Synthetic objective finding: bilateral ankle swelling observed on video."),
+    ("Return precautions - given verbally, repeated back accurately, sent in writing", "Synthetic recorded return precaution: urgent reassessment was advised if fainting occurs."),
+    ("Exam deferred to in-person visit 08/26/2026", "Synthetic documentation gap: the deferred neurologic examination has no recorded completion."),
+    ("Risk calculations", "Synthetic documented risk calculation: estimated ten-year cardiovascular risk is 12%; method not documented."),
+])
+@pytest.mark.parametrize("hydrated", [False, True])
+def test_unique_clinical_heading_evidence_cannot_be_dropped_as_a_template(heading, text, hydrated):
+    service, read, conversation = setup_timeline()
+    raw = read.read.return_value.model_dump(mode="json")
+    raw["result"]["reviewed_sources"][0]["sections"][heading] = text
+    read.read.return_value = ProviderQuestionResponse.model_validate(raw)
+    response = handle(service, QUESTION)
+    assert response.structured["record_evidence_status"] == "validated_excerpts"
+    assert response.structured["record_evidence_source_count"] == 3
+    assert response.structured["record_evidence_count"] == 36
+    groups = EvidenceGroups(panel_render(response.answer, hydrated=hydrated, structured=response.structured))
+    assert text in groups.card_quotes
+    assert any(c.title == "2026-10-08 — " + heading for c in response.citations)
+    assert conversation.write_final_response.call_args.kwargs["answer"] == response.answer
+    service.llm.complete.assert_not_called()
+
+
 def test_known_background_omission_is_disclosed_and_unknown_clinical_heading_retained():
     raw = timeline_context().model_dump(mode="json")
     title = "Allergies - severe warning from prior note"
@@ -166,7 +199,7 @@ def test_known_background_omission_is_disclosed_and_unknown_clinical_heading_ret
     raw["result"]["reviewed_sources"][0]["sections"][title] = text
     result = reviewed_timeline_evidence(ProviderQuestionResponse.model_validate(raw).result,
                                        agent="synthetic", data={})
-    assert result.data["record_evidence_count"] == 19
+    assert result.data["record_evidence_count"] == 37
     assert text in result.content and any(c.title.endswith(title) for c in result.citations)
     assert "unrecognized headings are retained" in result.content
     assert "Omitted sections are not evidence of absent facts" in result.content
@@ -193,7 +226,7 @@ def test_same_day_note_versions_are_retained_without_a_fabricated_order():
     result = reviewed_timeline_evidence(ProviderQuestionResponse.model_validate(raw).result,
                                        agent="synthetic", data={})
     groups = EvidenceGroups(panel_render(result.content, hydrated=False, structured=result.data))
-    assert len(groups.card_quotes) == 18 and len(groups.groups) == 2
+    assert len(groups.card_quotes) == 36 and len(groups.groups) == 2
     assert "3 selected reviewed-note versions" in result.content
     assert any("Increase losartan to 50 mg" in quote for quote in groups.card_quotes)
     assert any("supersedes previous erroneous" in quote for quote in groups.card_quotes)
@@ -227,14 +260,14 @@ def test_three_date_timeline_retains_measurements_correction_and_gap_sections(in
 
 
 @pytest.mark.parametrize("hydrated", [False, True])
-def test_actual_eighteen_clinical_sections_render_in_chronology_and_history(hydrated):
+def test_actual_thirty_six_clinical_sections_render_in_chronology_and_history(hydrated):
     service, read, _ = setup_timeline()
     response = handle(service, QUESTION)
     rendered = RenderedEvidence()
     html = panel_render(response.answer, hydrated=hydrated, structured=response.structured)
     rendered.feed(html)
     expected = expected_sections(read.read.return_value.result)
-    assert len(expected) == 18  # More than the ordinary eight-section selector.
+    assert len(expected) == 36  # More than the ordinary eight-section selector.
     assert rendered.labels == [label for label, _ in expected]
     assert EvidenceGroups(html).card_quotes == [text for _, text in expected]
     assert EvidenceGroups(html).groups == [
@@ -341,7 +374,7 @@ def test_one_overbound_section_discards_entire_timeline_without_partial_or_prose
         for source in sources:
             source["sections"] = {f"Part {n}": "x" * 1500 for n in range(2)}
     elif kind == "count":
-        sources[0]["sections"] = {f"Part {n}": "Exact synthetic source." for n in range(33)}
+        sources[0]["sections"] = {f"Part {n}": "Exact synthetic source." for n in range(64)}
     else:
         sources[0]["sections"] = {"L" * 6000: "Exact synthetic source." for _ in range(1)}
         sources[1]["sections"] = {"L" * 6000: "Exact synthetic source."}
@@ -414,7 +447,7 @@ def test_history_and_browser_metadata_cannot_select_the_timeline_mode():
     assert service.llm.complete.call_count == 1
 
 
-@pytest.mark.parametrize("count,accepted", [(32, True), (33, False)])
+@pytest.mark.parametrize("count,accepted", [(64, True), (65, False)])
 def test_timeline_card_bound_has_no_truncation(count, accepted):
     raw = timeline_context().model_dump(mode="json")
     raw["result"]["reviewed_sources"][0]["sections"] = {

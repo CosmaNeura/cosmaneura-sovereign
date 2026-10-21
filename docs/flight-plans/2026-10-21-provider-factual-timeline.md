@@ -8,10 +8,12 @@ literal source excerpts. Recognized historical fact questions now use the same
 authorized source-evidence lane when classified VISIT_PREP. Intentional upcoming
 visit preparation retains its existing drafting behavior.
 
-The closed reviewed-timeline request copies whole subjective, medication,
-objective, lab, assessment and plan sections. Known demographic/background,
-allergy and template headings are omitted with visible scope text; unrecognized
-headings remain included. Every selected note must have a represented section.
+The closed reviewed-timeline request copies whole clinical sections, including
+subjective, medication, objective, lab, assessment, plan, follow-up, screening
+gap, observed/deferred exam, return precaution and risk calculation sections.
+Known demographic/background history, allergy and immunization headings are
+omitted with visible scope text; unrecognized headings remain included. Every
+selected note must have a represented section.
 Dates identify note versions, not proof of medication use or completed testing.
 Disagreeing source wording stays literal. This is an excerpt chronology, not the
 entire chart, a current medication list, an order ledger or general entailment.
@@ -26,7 +28,7 @@ Legacy summary-only context cannot synthesize a recognized factual answer.
 
 Tier 2: canonical provider answer dispatch and a cross-repository renderer pin.
 The timeline uses the fixed `Reviewed visit timeline — exact source sections:`
-envelope with at most 32 cards. Generic index-selected evidence retains its old
+envelope with at most 64 cards. Generic index-selected evidence retains its old
 eight-card contract and one bounded selection call. Timeline selection has no
 additional model call. Whole-section limits remain 3,000 characters each,
 8,000 aggregate and 18,000 canonical characters (also 64 KiB UTF-8).
@@ -52,8 +54,8 @@ acknowledged transcript corrections. No data writes or migrations in this PR.
 The explicitly fictional UI fixture contains all 81 visible sections from three
 ordinary provider-read notes: 1,741 / 2,223 / 2,219 body characters. It re-expresses
 rendered text as synthetic source payloads, not a canonical Markdown or review-
-version export. The clinical projection retains 18 sections / 3,157 characters.
-The five-visit control retains all five dates and 30 clinical sections. Latest
+version export. The corrected clinical projection retains 36 sections / 3,898 characters.
+The five-visit control retains all five dates and 60 clinical sections. Latest
 date is expanded, older groups are native accessible disclosures; exact terminal
 care-time/AI boilerplate remains accessible under Additional note text.
 
@@ -64,6 +66,16 @@ clinical headings, markup/forged packet strings, footer preservation and live/
 canonical-history rendering through the real public panel mount API. Local
 checks do not establish model relevance, live BAA transport, fresh brief success,
 or operational alert delivery.
+
+The prior pushed 49de484 was rejected: its heading-only exclusions hid unique
+follow-up, screening-gap, exam and return-precaution evidence despite reporting
+validated excerpts. This descendant removes those exclusions and the deferred-
+exam exclusion regex, and also retains risk calculations. Regression controls
+use the exact independent synthetic counterexamples, preserving their entire
+qualified text and dates in both live and restored history. The 64-card limit
+fits the complete 60-card five-visit control without raising the unchanged raw,
+canonical or UTF-8 text budgets. Prior failed review/evidence stays historical;
+fresh independent review must bind the corrected final substantive push.
 
 Complete only after independent source and Core-pin reviews, compatible runtime
 rollout evidence and ordinary provider UI replay of the exact fictional timeline.
