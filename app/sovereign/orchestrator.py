@@ -937,14 +937,15 @@ class Sovereign:
             self.audit.record(trace_id=trace_id, profile=profile, event="routed",
                               details={"intent": intent.value, "sensitivity": sensitivity.value})
 
-            # A mixed medication/order lookup can be mislabeled as the hidden
-            # external labs skill. Only a source-fact question on the canonical
+            # A historical medication/order lookup can be mislabeled as hidden
+            # labs or plan work. Only a source-fact question on the canonical
             # provider record grant may use the already-enabled answer lane.
             # This selection does not enable labs, bypass authority, or pretend
             # to have fulfilled a live EHR/tool request.
             needs_context: bool | None = None
             if (
-                intent == Intent.LAB_REVIEW and self.s.feature_session_prep
+                intent in {Intent.LAB_REVIEW, Intent.PLAN_WORKBENCH}
+                and self.s.feature_session_prep
                 and platform_turn is not None and profile.persona == Persona.PROVIDER
                 and mount.surface == "provider_assistant" and mount.auth_tier == "provider"
                 and {"education:answer", "session-prep:read"}.issubset(mount.capabilities)
@@ -960,10 +961,13 @@ class Sovereign:
                         retryable=False,
                     ) from None
                 if needs_context:
+                    classified_intent = intent
                     intent = Intent.ENGAGEMENT
+                    if sensitivity == DoctrinalSensitivity.NONE:
+                        sensitivity = DoctrinalSensitivity.LOW
                     self.audit.record(
                         trace_id=trace_id, profile=profile, event="reviewed_note_question_routed",
-                        details={"classified_intent": Intent.LAB_REVIEW.value,
+                        details={"classified_intent": classified_intent.value,
                                  "answer_intent": intent.value},
                     )
 

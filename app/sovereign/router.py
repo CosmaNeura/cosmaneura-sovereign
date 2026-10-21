@@ -73,9 +73,15 @@ class Router:
         """
         if intent == Intent.VISIT_PREP:
             return True
-        if intent not in {Intent.ENGAGEMENT, Intent.ETHICS_CONSULT, Intent.LAB_REVIEW}:
+        if intent not in {
+            Intent.ENGAGEMENT, Intent.ETHICS_CONSULT, Intent.LAB_REVIEW,
+            Intent.PLAN_WORKBENCH,
+        }:
             return False
         if intent == Intent.LAB_REVIEW and not self._record_fact_candidate(request.message):
+            return False
+        if (intent == Intent.PLAN_WORKBENCH
+                and not self._historical_plan_fact_candidate(request.message)):
             return False
         result = await self.llm.classify_json(
             system=(
@@ -97,7 +103,16 @@ class Router:
                    "treatment recommendation or interpretation of what is abnormal. "
                    "This route can only read already-reviewed prior note sections; "
                    "it cannot perform the external skill."
-                   if intent == Intent.LAB_REVIEW else "")
+                   if intent == Intent.LAB_REVIEW else
+                   " This request was classified as plan_workbench. Return true "
+                   "only for a factual historical lookup in the current patient's "
+                   "reviewed note sections, including recorded medication doses, "
+                   "prior plans, corrections, order status or documented results. "
+                   "Return false for a new or revised care plan, treatment/dose "
+                   "recommendation, interpretation, external retrieval or action. "
+                   "This route can only read already-reviewed prior note sections; "
+                   "it cannot perform the external skill."
+                   if intent == Intent.PLAN_WORKBENCH else "")
             ),
             prompt=request.message,
             usage_call_kind="routing",
@@ -135,6 +150,53 @@ class Router:
         if re.search(r"\b(?:should|recommend|interpret|abnormal|concerning)\b|is it safe", low):
             return False
         return True
+
+    @staticmethod
+    def _historical_plan_fact_candidate(message: str) -> bool:
+        """Recognize complete historical inquiries before considering an override.
+
+        This closed set covers observed chart questions and bounded read
+        variants. It is deliberately not a general intent parser: any extra
+        clause, quoted instruction, unknown form or request for new care keeps
+        PLAN_WORKBENCH. The secondary current-question classifier and existing
+        canonical record grants are still required; this match grants nothing.
+        """
+        text = " ".join(message.casefold().split())
+        date = (
+            r"(?:january|february|march|april|may|june|july|august|september|"
+            r"october|november|december) \d{1,2}(?:, \d{4})?|\d{4}-\d{2}-\d{2}"
+        )
+        date = "(?:" + date + ")"
+        drug = r"[a-z][a-z0-9-]{0,39}"
+        lab = r"(?:cbc|potassium|creatinine|laboratory|lab)"
+        bp = r"(?:blood pressure|bp)"
+        source = r"(?:the )?(?:prior|previous|reviewed|recorded|historical) notes?"
+        source_time = rf"(?:on {date}|in {source})"
+        status = r"(?:stopped|increased|continued|decreased|planned|superseded)"
+        forms = (
+            rf"what office {bp} was documented on {date}"
+            r"(?:[.?] include (?:the )?visit date)?",
+            rf"what home {bp} range was documented on {date}"
+            rf"(?:[.?] was (?:an )?office {bp} documented at that visit)?",
+            rf"what does the {date} correction say about (?:the )?{drug} dose"
+            rf"(?:[.?] distinguish it from (?:the )?{date} proposed change)?",
+            rf"what is the documented {lab} order status across (?:the )?{date} and {date} notes"
+            rf"(?:[.?] are there any {lab} results)?",
+            rf"were {lab}(?: or {lab})? ordered or resulted in the reviewed notes"
+            rf"(?:[.?] use (?:the )?{date} correction)?",
+            r"summari[sz]e the reviewed visit timeline"
+            r"(?: and identify the medication correction and outstanding documentation gaps)?",
+            rf"what (?:is|was) the documented (?:medication dose|dose of {drug})"
+            rf"(?: {source_time})?",
+            rf"which prior note documented that {drug} was {status}",
+            rf"what was the documented plan when the dose was {status}",
+            rf"what did the reviewed note document about the {status} {drug} dose",
+            r"which historical plan did the last note supersede",
+            rf"what was the recorded medication plan at the {date} visit",
+            rf"what (?:office|home) {bp}(?: range)? was (?:recorded|documented) {source_time}",
+            rf"what (?:medication dose|dose of {drug}) was (?:recorded|documented) {source_time}",
+        )
+        return any(re.fullmatch(form + r"[.?]?", text) for form in forms)
 
     async def route(self, request: ChatRequest) -> tuple[Intent, DoctrinalSensitivity, str]:
         # Recent turns matter: "tell me more about that" misclassifies in
