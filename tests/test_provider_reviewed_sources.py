@@ -266,6 +266,9 @@ def test_actual_read_scope_survives_doctrinal_replacement_and_canonical_acceptan
     service, context, conversation = sovereign()
     if full_sources:
         context.read.return_value = ProviderQuestionResponse.model_validate(reviewed_response())
+        service.llm.complete.return_value = json.dumps({"excerpts": [{
+            "source_index": 0, "section_index": 0,
+        }]})
     service.arbiter.review.return_value = DoctrinalVerdict(
         conforms=False, rationale="Synthetic policy review", revised_content="Synthetic reviewed replacement.",
     )

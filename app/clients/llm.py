@@ -244,6 +244,7 @@ class LLMClient:
         prompt: str,
         usage_call_kind: CallKind = "classification",
         usage_purpose: str = "structured_classification",
+        reject_duplicate_keys: bool = False,
     ) -> dict:
         """Helper for routing: ask for strict JSON and parse it safely."""
         raw = await self.complete(
@@ -256,10 +257,25 @@ class LLMClient:
             usage_purpose=usage_purpose,
         )
         raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        if reject_duplicate_keys:
+            try:
+                return json.loads(raw, object_pairs_hook=_closed_json_object)
+            except ValueError:
+                return {}
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
             return {}
+
+
+def _closed_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate fields only for callers opting into the private parser."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
 
 
 def _azure_chat_request(endpoint: str, deployment: str, api_version: str,
@@ -395,7 +411,7 @@ def _mock_completion(*, system: str, prompt: str) -> str:
         return json.dumps({"intent": intent, "doctrinal_sensitivity": sensitivity,
                            "rationale": "mock heuristic classification"})
     if "doctrinal reviewer" in system.lower():
-        return json.dumps({"conforms": True, "rationale": "[MOCK] No conflict detected."})
+        return json.dumps({"conforms": True, "needs_revision": False})
     # Generic agent / assembly response.
     return ("[MOCK MODEL OUTPUT] This is a stubbed response so you can watch the "
             "Sovereign pipeline route, call tools, and arbitrate. Set MOCK_MODE=false "

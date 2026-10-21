@@ -284,7 +284,10 @@ def test_doctrinal_replacement_cannot_inherit_validated_chart_citations(revision
     assert response.citations == []
     assert response.structured["record_evidence_status"] == "review_unavailable"
     assert conversation.write_final_response.call_args.kwargs["outcome"] == "unavailable"
-    assert response.doctrinal_review.conforms is False
+    assert response.doctrinal_review is None
+    assert set(response.presentation.suppress) == {
+        "intent_badge", "doctrinal_badge", "citations", "structured_cards",
+    }
 
 
 def test_changed_source_context_at_final_acceptance_blocks_all_quote_egress():

@@ -43,6 +43,10 @@ _ANSWER_SYSTEM = (
     "Answer faithfully and pastorally, citing magisterial sources, and relate it to "
     "the USCCB Ethical and Religious Directives where relevant."
 )
+REVIEW_ASSESSMENT_UNAVAILABLE = (
+    "The required review was unavailable. No reviewed answer is available. "
+    "Please ask a new question later."
+)
 _REVIEW_REFUSAL_RE = re.compile(
     r"\b(?:cannot|can['’]t|unable to|not able to|not qualified to|not equipped to|"
     r"do not|don['’]t)\s+"
@@ -98,15 +102,26 @@ class DoctrinalArbiter:
                           "Does this conform? If not, give the corrected version."),
             usage_purpose="doctrinal_review",
         )
+        if type(review_text) is not str or not review_text.strip():
+            # An absent assessment cannot be supplied by the parser. Never
+            # coerce arbitrary values into a rationale or retain their citations.
+            verdict = DoctrinalVerdict(
+                conforms=False, rationale=REVIEW_ASSESSMENT_UNAVAILABLE,
+                revised_content=REVIEW_ASSESSMENT_UNAVAILABLE, citations=[],
+            )
+            verdict._adjudication_disposition = "assessment_unavailable"
+            return verdict
 
         # An explicit topic-scope refusal is not a conformance judgment. Do not
         # let an erroneous positive parser flag manufacture one. This is only a
         # negative gate; all other assessments retain the normal verdict parse.
         if _REVIEW_REFUSAL_RE.search(review_text):
-            return DoctrinalVerdict(
+            verdict = DoctrinalVerdict(
                 conforms=False, rationale=review_text,
                 revised_content=review_text, citations=citations,
             )
+            verdict._adjudication_disposition = "scope_refused"
+            return verdict
 
         # Use the fast model only to turn Magisterium's prose verdict into a flag.
         flag = await self.llm.classify_json(
@@ -115,18 +130,26 @@ class DoctrinalArbiter:
             prompt=(f"Reviewer assessment:\n{review_text}\n\n"
                     "Fields: conforms (bool), needs_revision (bool)."),
             usage_purpose="doctrinal_verdict_parse",
+            reject_duplicate_keys=True,
         )
-        # FAIL CLOSED: if the verdict can't be parsed (malformed output, or a
-        # prompt injection in upstream text breaking the parser), treat the
-        # draft as NON-conforming and surface Magisterium's review instead.
-        # An orthodoxy gate that fails open is not a gate.
-        if not flag:
-            conforms = False
-        else:
-            conforms = bool(flag.get("conforms", False))
-        return DoctrinalVerdict(
+        # The parser does not grant conformance through truthiness or coercion.
+        # Only its closed, consistent boolean judgment is usable. A malformed
+        # judgment remains denied and is distinct from an explicit negative.
+        valid = (
+            type(flag) is dict
+            and {"conforms"} <= set(flag) <= {"conforms", "needs_revision"}
+            and type(flag["conforms"]) is bool
+            and ("needs_revision" not in flag or type(flag["needs_revision"]) is bool)
+            and not (flag["conforms"] is True and flag.get("needs_revision") is True)
+        )
+        conforms = flag["conforms"] if valid else False
+        verdict = DoctrinalVerdict(
             conforms=conforms,
             rationale=review_text,
             revised_content=None if conforms else review_text,
             citations=citations,
         )
+        verdict._adjudication_disposition = (
+            "invalid_verdict" if not valid else "conforms" if conforms else "nonconforms"
+        )
+        return verdict
