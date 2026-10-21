@@ -37,7 +37,6 @@ def test_twenty_clinician_queries_use_grounded_prompt_or_retain_hidden_skill_ref
     # live relevance or whether these excerpts fully answer each corpus item.
     selected_answer = json.dumps({"excerpts": [{
         "source_index": 0, "section_index": 0,
-        "quote": "Office blood pressure is 148/92.",
     }]})
     service.llm.complete = AsyncMock(return_value=(
         selected_answer if classified_intent in {Intent.ENGAGEMENT, Intent.LAB_REVIEW}

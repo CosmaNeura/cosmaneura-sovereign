@@ -52,7 +52,7 @@ def setup(sensitivity=DoctrinalSensitivity.LOW, extra=""):
     read.read.return_value = corrected_context(extra)
     service.router.route.return_value = (Intent.ENGAGEMENT, sensitivity, "")
     service.llm.complete.return_value = json.dumps({"excerpts": [{
-        "source_index": 2, "section_index": 0, "quote": CORRECTION + extra,
+        "source_index": 2, "section_index": 0,
     }]})
     return service, read, conversation
 

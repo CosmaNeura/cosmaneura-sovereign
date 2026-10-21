@@ -50,9 +50,9 @@ def setup(intent=Intent.PLAN_WORKBENCH, *, decision=True, sensitivity=DoctrinalS
     # Select complete sections of all three dated synthetic sources. This is
     # scripted selection; it verifies dispatch/provenance, not live relevance.
     service.llm.complete = AsyncMock(return_value=json.dumps({"excerpts": [
-        {"source_index": source_index, "section_index": section_index, "quote": quote}
+        {"source_index": source_index, "section_index": section_index}
         for source_index, source in enumerate(context.read.return_value.result.reviewed_sources)
-        for section_index, quote in enumerate(source.sections.values())
+        for section_index in range(len(source.sections))
     ]}))
     return service, context, conversation
 
