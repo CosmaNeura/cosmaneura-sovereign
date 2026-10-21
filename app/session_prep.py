@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 
+from pydantic import ValidationError
+
 from app.clients.session_prep_contract import (
+    SessionPrepBriefText,
     SessionPrepContextReadResult,
     SessionPrepPendingResult,
     SessionPrepReadyResult,
+    SessionPrepRecap,
     SessionPrepRefreshingResult,
 )
 from app.clients.session_prep_facts_contract import SessionPrepFactsResult
@@ -23,6 +28,19 @@ from app.schemas import (
 )
 
 MAX_SESSION_PREP_CANONICAL_CHARS = 19_000
+# Only the observed standalone citation syntax is a display token. Bare IDs,
+# nested/escaped parentheses, URL destinations and attributes remain literal.
+_VISIT_NOTE_CITATION = re.compile(
+    r"(?<!\S)\((visit_note_[A-Za-z0-9._~-]+)\)(?=$|\s|[.,;:!?](?=\s|$))"
+)
+# This is a deliberately narrow plain-prose display feature. Ambiguous or
+# formatted items stay byte-for-byte unchanged, including later citations.
+_NON_PROSE_CHARACTERS = frozenset("\\\"'`~<>[]{}*_#|\u02bc\uff07")
+_NON_PROSE_STRUCTURE = re.compile(
+    r"https?://|mailto:|&(?:\#\d+|\#x[0-9a-f]+|[a-z][a-z0-9]+);|"
+    r"(?m:^[ \t]*(?:[-+]|\d+[.)])[ \t]|^(?: {4}|\t))",
+    re.I,
+)
 # Dynamic observation values escape these brackets/angles, so only the
 # appended server delimiter remains raw. It grants formatting, not authority.
 OBSERVATIONS_LITERAL_MARKER = "<!-- [reviewed-source-observations:v1] -->"
@@ -50,8 +68,22 @@ _PROHIBITED_EGRESS = tuple(re.compile(pattern, re.I) for pattern in (
     r"\b(?:avoid|delay|defer|postpone|skip|do\s+not\s+seek|don't\s+seek)\b[^.!?\n]{0,80}\b(?:urgent[- ]care|emergency\s+(?:care|department)|ER|911)\b",
 ))
 
-def session_prep_egress_is_safe(result: SessionPrepContextReadResult) -> bool:
-    """Independently reject prohibited clinical claims before projection."""
+def session_prep_egress_is_safe(
+    result: SessionPrepContextReadResult | SessionPrepResponse,
+) -> bool:
+    """Reject prohibited clinical claims in source or projected brief text."""
+    if isinstance(result, SessionPrepResponse):
+        if result.state not in {"ready", "refreshing"}:
+            return True
+        brief = result.prepared_brief
+        if brief is None:
+            return False
+        text = [brief.recap, *brief.trajectory_and_material_changes,
+                *brief.talking_points, *brief.open_threads, *brief.cautions,
+                *brief.suggested_outline]
+        if brief.patient_reported is not None:
+            text.append(brief.patient_reported.summary)
+        return not any(pattern.search(value) for value in text for pattern in _PROHIBITED_EGRESS)
     if not isinstance(result, (SessionPrepReadyResult, SessionPrepRefreshingResult)):
         return True
     brief = result.prepared_brief
@@ -74,34 +106,76 @@ def _blocked_projection(client_turn_id: uuid.UUID) -> SessionPrepResponse:
     )
 
 
+def _dated_brief_citations(
+    item: SessionPrepRecap | SessionPrepBriefText, note_labels: dict[str, str],
+) -> str:
+    """Label only this item's verified note citations; retain all other text.
+
+    The labels describe supporting-note dates, never clinical event dates.
+    This operates on generated brief items, not source excerpts or canonical
+    history text, and does not change the Core-owned artifact or its lineage.
+    """
+    # Ignore recognized token spans only for syntax eligibility, never for
+    # source authority or displayed content. Any other wrapper/formatting
+    # structure vetoes the complete item rather than guessing its grammar.
+    prose = _VISIT_NOTE_CITATION.sub("", item.text)
+    if _NON_PROSE_STRUCTURE.search(prose) or any(
+        character in _NON_PROSE_CHARACTERS
+        or unicodedata.category(character) in {"Pi", "Pf", "Ps", "Pe"}
+        for character in prose
+    ):
+        return item.text
+    refs = set(item.source_refs)
+
+    def label(match: re.Match[str]) -> str:
+        ref = match.group(1)
+        if ref in refs and ref in note_labels:
+            return f"({note_labels[ref]})"
+        return match[0]
+
+    return _VISIT_NOTE_CITATION.sub(label, item.text)
+
+
 def project_session_prep_result(
     result: SessionPrepContextReadResult,
     *,
     client_turn_id: uuid.UUID,
 ) -> SessionPrepResponse:
-    """Copy exact text while dropping server-only lineage and unsafe content."""
+    """Project safe brief text with dated labels for verified note citations."""
     if isinstance(result, (SessionPrepReadyResult, SessionPrepRefreshingResult)):
         if not session_prep_egress_is_safe(result):
             return _blocked_projection(client_turn_id)
         brief = result.prepared_brief
-        projected = SessionPrepProjectedBrief(
-            recap=brief.recap.text,
-            trajectory_and_material_changes=[
-                item.text for item in brief.trajectory_and_material_changes
-            ],
-            talking_points=[item.text for item in brief.talking_points],
-            open_threads=[item.text for item in brief.open_threads],
-            cautions=[item.text for item in brief.cautions],
-            suggested_outline=[item.text for item in brief.suggested_outline],
-            patient_reported=(
-                SessionPrepProjectedPatientReport(
-                    label=brief.patient_reported.label,
-                    summary=brief.patient_reported.summary,
-                )
-                if brief.patient_reported is not None
-                else None
-            ),
-        )
+        note_labels = {
+            source.source_ref: f"Reviewed note · {source.source_at.date().isoformat()}"
+            for source in result.provenance
+            if source.included and source.source_class == "clinician_finalized_note"
+            and source.source_ref is not None and source.source_at is not None
+        }
+        try:
+            projected = SessionPrepProjectedBrief(
+                recap=_dated_brief_citations(brief.recap, note_labels),
+                trajectory_and_material_changes=[
+                    _dated_brief_citations(item, note_labels)
+                    for item in brief.trajectory_and_material_changes
+                ],
+                talking_points=[_dated_brief_citations(item, note_labels) for item in brief.talking_points],
+                open_threads=[_dated_brief_citations(item, note_labels) for item in brief.open_threads],
+                cautions=[_dated_brief_citations(item, note_labels) for item in brief.cautions],
+                suggested_outline=[_dated_brief_citations(item, note_labels) for item in brief.suggested_outline],
+                patient_reported=(
+                    SessionPrepProjectedPatientReport(
+                        label=brief.patient_reported.label,
+                        summary=brief.patient_reported.summary,
+                    )
+                    if brief.patient_reported is not None
+                    else None
+                ),
+            )
+        except ValidationError:
+            # A short opaque ref can expand beyond an item's projection bound.
+            # Keep the same fail-closed outcome as the canonical size limit.
+            return _blocked_projection(client_turn_id)
         response = SessionPrepResponse(
             client_turn_id=client_turn_id,
             state=result.state,
@@ -112,6 +186,10 @@ def project_session_prep_result(
             retry_after_seconds=result.retry_after_seconds,
             reason_code=result.reason_code,
         )
+        # Formatting can shorten a long ref into the existing regex window.
+        # Independently gate the exact visible/canonical projection as well.
+        if not session_prep_egress_is_safe(response):
+            return _blocked_projection(client_turn_id)
         return (
             response if len(render_session_prep_text(response))
             <= MAX_SESSION_PREP_CANONICAL_CHARS
