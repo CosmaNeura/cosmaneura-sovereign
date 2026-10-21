@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
 
-from pydantic import (BaseModel, BeforeValidator, ConfigDict, Field,
+from pydantic import (BaseModel, BeforeValidator, ConfigDict, Field, PrivateAttr,
                       field_validator, model_validator)
 
 from app.config import Persona
@@ -136,6 +136,10 @@ class DoctrinalVerdict(ClosedWireModel):
     rationale: str
     revised_content: Optional[str] = None
     citations: list[Citation] = Field(default_factory=list)
+    # Internal provenance of the decision; never a wire field or schema change.
+    _adjudication_disposition: Literal[
+        "not_adjudicated", "conforms", "nonconforms", "scope_refused", "invalid_verdict",
+    ] = PrivateAttr(default="not_adjudicated")
 
 
 SuppressionName = Literal[

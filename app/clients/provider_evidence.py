@@ -27,6 +27,10 @@ EVIDENCE_REVIEW_UNAVAILABLE = (
     "The selected excerpts did not pass the required review. No verified factual "
     "answer is available. Review the source notes directly."
 )
+EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE = (
+    "The required review could not be interpreted. No verified factual answer "
+    "is available. Review the source notes directly."
+)
 
 _RULES = (
     "You are a reviewed-note evidence selector. Select exact, complete source "

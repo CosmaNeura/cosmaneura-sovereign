@@ -70,7 +70,10 @@ from app.clients.platform_usage import (
     usage_reporting_complete,
 )
 from app.clients.provider_question import ProviderQuestionClient
-from app.clients.provider_evidence import EVIDENCE_REVIEW_UNAVAILABLE
+from app.clients.provider_evidence import (
+    EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE, EVIDENCE_REVIEW_UNAVAILABLE,
+    EVIDENCE_UNAVAILABLE,
+)
 from app.clients.provider_question_contract import (
     ProviderQuestionArguments, ProviderQuestionRequest, ProviderQuestionResult,
     ReviewedProviderQuestionResult,
@@ -1331,10 +1334,21 @@ class Sovereign:
                 if record_evidence is not None:
                     # The replacement is not validated source evidence. Do not
                     # attach chart citations to its unvalidated clinical prose.
-                    answer = EVIDENCE_REVIEW_UNAVAILABLE
+                    if record_evidence == "unavailable":
+                        # Mandatory review cannot turn a failed selection into
+                        # selected excerpts. Preserve the primary static failure.
+                        answer = EVIDENCE_UNAVAILABLE
+                    else:
+                        answer = (
+                            EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE
+                            if verdict._adjudication_disposition == "invalid_verdict"
+                            else EVIDENCE_REVIEW_UNAVAILABLE
+                        )
                     evidence_unavailable = True
                     result_citations = []
-                    result_data = {"record_evidence_status": "review_unavailable"}
+                    result_data = {"record_evidence_status": (
+                        "unavailable" if record_evidence == "unavailable" else "review_unavailable"
+                    )}
                 elif verdict.revised_content and intent == Intent.REFERRAL:
                     answer = (result.content
                               + "\n\n*A note in keeping with Catholic teaching:* "
@@ -1596,6 +1610,7 @@ class Sovereign:
         record_fact_presentation: bool = False,
     ) -> ChatResponse:
         upstream_unavailable = safety_notice == "upstream_unavailable"
+        record_evidence_unavailable = safety_notice == "record_evidence_unavailable"
         unavailable = upstream_unavailable or safety_notice in {
             "provider_context_unavailable", "record_evidence_unavailable",
         }
@@ -1618,7 +1633,7 @@ class Sovereign:
             presentation = StandardPresentation(
                 mode="standard",
                 suppress=(["intent_badge", "doctrinal_badge", "citations", "structured_cards"]
-                          if upstream_unavailable else
+                          if upstream_unavailable or record_evidence_unavailable else
                           ["intent_badge", "doctrinal_badge"] if record_fact_presentation else []),
                 human_contact=None,
             )
@@ -1702,7 +1717,8 @@ class Sovereign:
             # Preserve the existing wire enum when routing itself failed; the
             # fallback has no inferred route in audit and suppresses its badge.
             answer=final, intent=intent or Intent.ENGAGEMENT, persona=profile.persona,
-            citations=citations or [], doctrinal_review=doctrinal,
+            citations=[] if record_evidence_unavailable else citations or [],
+            doctrinal_review=None if record_evidence_unavailable else doctrinal,
             structured=structured or {}, safety_notice=safety_notice,
             trace_id=trace_id,
             presentation=presentation,
