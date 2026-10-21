@@ -139,6 +139,7 @@ class DoctrinalVerdict(ClosedWireModel):
     # Internal provenance of the decision; never a wire field or schema change.
     _adjudication_disposition: Literal[
         "not_adjudicated", "conforms", "nonconforms", "scope_refused", "invalid_verdict",
+        "assessment_unavailable",
     ] = PrivateAttr(default="not_adjudicated")
 
 

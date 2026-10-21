@@ -43,6 +43,10 @@ _ANSWER_SYSTEM = (
     "Answer faithfully and pastorally, citing magisterial sources, and relate it to "
     "the USCCB Ethical and Religious Directives where relevant."
 )
+REVIEW_ASSESSMENT_UNAVAILABLE = (
+    "The required review was unavailable. No reviewed answer is available. "
+    "Please ask a new question later."
+)
 _REVIEW_REFUSAL_RE = re.compile(
     r"\b(?:cannot|can['’]t|unable to|not able to|not qualified to|not equipped to|"
     r"do not|don['’]t)\s+"
@@ -98,6 +102,15 @@ class DoctrinalArbiter:
                           "Does this conform? If not, give the corrected version."),
             usage_purpose="doctrinal_review",
         )
+        if type(review_text) is not str or not review_text.strip():
+            # An absent assessment cannot be supplied by the parser. Never
+            # coerce arbitrary values into a rationale or retain their citations.
+            verdict = DoctrinalVerdict(
+                conforms=False, rationale=REVIEW_ASSESSMENT_UNAVAILABLE,
+                revised_content=REVIEW_ASSESSMENT_UNAVAILABLE, citations=[],
+            )
+            verdict._adjudication_disposition = "assessment_unavailable"
+            return verdict
 
         # An explicit topic-scope refusal is not a conformance judgment. Do not
         # let an erroneous positive parser flag manufacture one. This is only a

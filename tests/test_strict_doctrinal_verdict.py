@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+import httpx
 from pydantic import ValidationError
 
 from app.clients.provider_evidence import (
@@ -16,7 +17,7 @@ from app.clients.provider_question_contract import ProviderQuestionResponse
 from app.compliance.safety import disclaimer_for
 from app.config import Persona, Settings
 from app.schemas import Citation, DoctrinalSensitivity, DoctrinalVerdict, Intent
-from app.sovereign.arbiter import DoctrinalArbiter
+from app.sovereign.arbiter import DoctrinalArbiter, REVIEW_ASSESSMENT_UNAVAILABLE
 from tests.test_provider_evidence import output, selected
 from tests.test_provider_question_context import handle, sovereign
 from tests.test_provider_source_readiness import source_only_response
@@ -35,6 +36,7 @@ INVALID_FLAGS = [
     {"conforms": True, 1: True},
 ]
 SUPPRESSIONS = {"intent_badge", "doctrinal_badge", "citations", "structured_cards"}
+ABSENT_ASSESSMENTS = ["", " \t\r\n", "\u00a0", None, False, 0, 1.5, [], ["unsupported"], {}, {"conforms": True}]
 
 
 def arbiter(flag, review=REVIEW):
@@ -228,3 +230,126 @@ def test_invalid_selection_preserves_primary_failure_after_any_mandatory_review(
     assert set(response.presentation.suppress) == SUPPRESSIONS
     assert conversation.write_final_response.call_args.kwargs["outcome"] == "unavailable"
     service.magisterium.ask.assert_called_once()
+
+
+@pytest.mark.parametrize("assessment", ABSENT_ASSESSMENTS)
+def test_absent_assessment_cannot_be_supplied_by_the_actual_positive_parser(assessment):
+    service = DoctrinalArbiter(Settings(_env_file=None, mock_mode=True))
+    service.magisterium.ask = AsyncMock(return_value=(assessment, [Citation(source="PRIVATE_CITATION_SENTINEL")]))
+    service.llm.complete = AsyncMock(return_value='{"conforms":true,"needs_revision":false}')
+    service.llm.classify_json = AsyncMock(wraps=service.llm.classify_json)
+    verdict = review(service)
+    assert verdict.conforms is False and verdict._adjudication_disposition == "assessment_unavailable"
+    assert verdict.rationale == verdict.revised_content == REVIEW_ASSESSMENT_UNAVAILABLE
+    assert verdict.citations == []
+    service.magisterium.ask.assert_called_once()
+    service.llm.classify_json.assert_not_called()
+    service.llm.complete.assert_not_called()
+
+
+@pytest.mark.parametrize("assessment", ["", " \t\r\n", None, [], {}])
+def test_actual_magisterium_response_absence_is_unavailable_without_parser(monkeypatch, assessment):
+    requests = []
+
+    def transport(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": assessment}}],
+            "citations": [{"title": "PRIVATE_CITATION_SENTINEL", "url": "https://synthetic.invalid/review"}],
+        })
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(transport), **kwargs))
+    monkeypatch.setattr("app.clients.magisterium.assert_safe_outbound_url", lambda _: None)
+    service = DoctrinalArbiter(Settings(
+        _env_file=None, mock_mode=False, magisterium_api_key="synthetic-key",
+        magisterium_base_url="https://synthetic.invalid",
+    ))
+    service.llm.complete = AsyncMock(return_value='{"conforms":true}')
+    verdict = review(service)
+    assert verdict.conforms is False and verdict._adjudication_disposition == "assessment_unavailable"
+    assert verdict.rationale == REVIEW_ASSESSMENT_UNAVAILABLE and verdict.citations == []
+    assert len(requests) == 1
+    service.llm.complete.assert_not_called()
+
+
+def positive_parser_for(service, draft):
+    service.llm.classify_json = AsyncMock(wraps=LLMClient.classify_json.__get__(service.llm))
+    service.llm.complete.side_effect = lambda **kwargs: (
+        '{"conforms":true,"needs_revision":false}'
+        if kwargs.get("usage_purpose") == "doctrinal_verdict_parse" else draft
+    )
+
+
+@pytest.mark.parametrize("assessment", ABSENT_ASSESSMENTS)
+def test_factual_absent_assessment_is_static_unavailable_after_selection(assessment):
+    service, read, conversation = factual_service({"conforms": True}, assessment)
+    positive_parser_for(service, output(selected()))
+    response = handle(service, QUESTION)
+    assert response.answer.startswith(EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE)
+    assert response.safety_notice == "record_evidence_unavailable"
+    assert response.doctrinal_review is None and response.citations == []
+    assert set(response.presentation.suppress) == SUPPRESSIONS
+    assert "148/92" not in response.answer and "PRIVATE_CITATION_SENTINEL" not in response.model_dump_json()
+    final = conversation.write_final_response.call_args.kwargs
+    assert final["outcome"] == "unavailable" and final["answer"] == response.answer
+    assert final["provider_context_ref"] == read.read.return_value.tool_call_ref
+    assert final["history_context_ref"] == "history_context_fictional"
+    service.magisterium.ask.assert_called_once()
+    service.llm.classify_json.assert_not_called()
+    service.llm.complete.assert_called_once()
+
+
+@pytest.mark.parametrize("with_context", [False, True])
+@pytest.mark.parametrize("assessment", ["", None, {}])
+def test_nonfactual_absent_assessment_replaces_draft_with_unavailable_closure(assessment, with_context):
+    service, read, conversation = factual_service({"conforms": True}, assessment, exact=False)
+    service.router.needs_provider_context.return_value = with_context
+    positive_parser_for(service, "NONFACTUAL_DRAFT_SENTINEL")
+    response = handle(service, QUESTION)
+    assert response.answer.startswith(REVIEW_ASSESSMENT_UNAVAILABLE)
+    assert response.safety_notice == "upstream_unavailable"
+    assert response.structured == {} and response.doctrinal_review is None and response.citations == []
+    assert set(response.presentation.suppress) == SUPPRESSIONS
+    assert "NONFACTUAL_DRAFT_SENTINEL" not in response.model_dump_json()
+    assert "PRIVATE_CITATION_SENTINEL" not in response.model_dump_json()
+    assert disclaimer_for(Persona.PROVIDER) in response.answer
+    final = conversation.write_final_response.call_args.kwargs
+    assert final["outcome"] == "unavailable" and final["answer"] == response.answer
+    assert final["history_context_ref"] == "history_context_fictional"
+    assert final["presentation"] == response.presentation.model_dump(mode="json")
+    if with_context:
+        assert read.read.return_value.result.source_notice() in response.answer
+        assert final["provider_context_ref"] == read.read.return_value.tool_call_ref
+    else:
+        assert "provider_context_ref" not in final
+    assert service._write_platform_observation.call_args.kwargs["event_type"] == "sovereign.turn.failed"
+    service.magisterium.ask.assert_called_once()
+    service.llm.classify_json.assert_not_called()
+    service.llm.complete.assert_called_once()
+
+
+@pytest.mark.parametrize("assessment", ["", None, {}])
+def test_selection_failure_remains_primary_when_assessment_is_absent(assessment):
+    service, _, conversation = factual_service({"conforms": True}, assessment)
+    positive_parser_for(service, "Invalid private selection.")
+    response = handle(service, QUESTION)
+    assert response.answer.startswith(EVIDENCE_UNAVAILABLE)
+    assert response.structured == {"record_evidence_status": "unavailable"}
+    assert response.safety_notice == "record_evidence_unavailable"
+    assert conversation.write_final_response.call_args.kwargs["outcome"] == "unavailable"
+    service.magisterium.ask.assert_called_once()
+    service.llm.classify_json.assert_not_called()
+
+
+def test_none_bypass_and_absent_assessment_never_coerce_arbitrary_objects():
+    class RepresentationTrap:
+        def __str__(self):
+            raise AssertionError("Absent assessment must not be coerced")
+
+    service = arbiter({"conforms": True}, RepresentationTrap())
+    assert review(service)._adjudication_disposition == "assessment_unavailable"
+    service = arbiter({"conforms": True}, None)
+    assert review(service, DoctrinalSensitivity.NONE).conforms is True
+    service.magisterium.ask.assert_not_called()
+    service.llm.classify_json.assert_not_called()

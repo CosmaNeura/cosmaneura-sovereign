@@ -12,6 +12,10 @@ Unknown fields and simultaneous `conforms=true` / `needs_revision=true` are
 unusable judgments. They deny conformance without truthiness or coercion.
 An opt-in JSON parser rejects duplicate fields for adjudication only; other
 classification callers retain their existing parsing behavior.
+After the required reviewer call, a non-string or empty/whitespace assessment
+is unavailable before either the refusal check or parser. Its internal verdict
+contains only static failure wording and no reviewer citations; no parser or
+retry can supply the absent assessment.
 Required Magisterium review, the existing refusal gate, prompts, PHI handling,
 authority, routing and model-call order remain unchanged. There are no retries.
 
@@ -20,6 +24,9 @@ genuine nonconformance/refusal without changing the wire schema. A future
 factual failure from an unusable verdict receives a static interpretation-
 unavailable answer. Other factual review denials retain the existing static
 answer. Canonical persistence retains the actual safety/source-scope prose.
+Absent assessments share the static factual interpretation failure. On other
+answer paths, this absence alone replaces the draft with static unavailable
+content and uses existing unavailable canonical/presentation semantics.
 An already unavailable selection still receives required review and retains
 its selection-primary static failure regardless of that review's result.
 

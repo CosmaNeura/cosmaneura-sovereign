@@ -123,7 +123,7 @@ from app.security.record_grant import (
     verify_record_grant,
 )
 from app.compliance.netsec import UpstreamCallError
-from app.sovereign.arbiter import DoctrinalArbiter
+from app.sovereign.arbiter import DoctrinalArbiter, REVIEW_ASSESSMENT_UNAVAILABLE
 from app.sovereign.router import Router
 from app.session_prep import (SessionPrepOutcome, project_session_prep_result, project_session_prep_facts,
                               render_session_prep_text)
@@ -1330,6 +1330,7 @@ class Sovereign:
             evidence_unavailable = record_evidence == "unavailable"
             result_citations = list(result.citations)
             result_data = result.data
+            assessment_unavailable = verdict._adjudication_disposition == "assessment_unavailable"
             if not verdict.conforms:
                 if record_evidence is not None:
                     # The replacement is not validated source evidence. Do not
@@ -1341,7 +1342,9 @@ class Sovereign:
                     else:
                         answer = (
                             EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE
-                            if verdict._adjudication_disposition == "invalid_verdict"
+                            if verdict._adjudication_disposition in {
+                                "invalid_verdict", "assessment_unavailable",
+                            }
                             else EVIDENCE_REVIEW_UNAVAILABLE
                         )
                     evidence_unavailable = True
@@ -1349,6 +1352,10 @@ class Sovereign:
                     result_data = {"record_evidence_status": (
                         "unavailable" if record_evidence == "unavailable" else "review_unavailable"
                     )}
+                elif assessment_unavailable:
+                    answer = REVIEW_ASSESSMENT_UNAVAILABLE
+                    result_citations = []
+                    result_data = {}
                 elif verdict.revised_content and intent == Intent.REFERRAL:
                     answer = (result.content
                               + "\n\n*A note in keeping with Catholic teaching:* "
@@ -1381,11 +1388,14 @@ class Sovereign:
                                       provider_context is not None
                                       and intent in {Intent.ENGAGEMENT, Intent.VISIT_PREP}
                                       and not evidence_unavailable
+                                      and not assessment_unavailable
                                   ),
                                   safety_notice=("record_evidence_unavailable"
-                                                 if evidence_unavailable else None),
-                                  citations=citations,
-                                  doctrinal=verdict, structured=result_data)
+                                                 if evidence_unavailable else
+                                                 "upstream_unavailable" if assessment_unavailable else None),
+                                  citations=[] if assessment_unavailable else citations,
+                                  doctrinal=None if assessment_unavailable else verdict,
+                                  structured=result_data)
         except UpstreamCallError:
             self.audit.record(trace_id=trace_id, profile=profile, event="upstream_unavailable")
             # Never reuse any draft, citations or document marker from the failed
