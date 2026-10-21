@@ -43,6 +43,13 @@ _ANSWER_SYSTEM = (
     "Answer faithfully and pastorally, citing magisterial sources, and relate it to "
     "the USCCB Ethical and Religious Directives where relevant."
 )
+_HISTORICAL_POLICY_REVIEW_QUESTION = (
+    "Does this reporting policy conform to Catholic teaching and the USCCB "
+    "Ethical and Religious Directives? State your doctrinal judgment and its "
+    "rationale. If it does not conform, identify the moral conflict. Evaluate "
+    "the reporting policy only; do not assess clinical accuracy or rewrite "
+    "clinician-note wording."
+)
 REVIEW_ASSESSMENT_UNAVAILABLE = (
     "The required review was unavailable. No reviewed answer is available. "
     "Please ask a new question later."
@@ -84,6 +91,7 @@ class DoctrinalArbiter:
     async def review(
         self, *, deidentified_draft: str, intent: Intent,
         sensitivity: DoctrinalSensitivity,
+        historical_record_policy: bool = False,
     ) -> DoctrinalVerdict:
         """
         Conformity check on an agent-produced draft.
@@ -91,15 +99,25 @@ class DoctrinalArbiter:
         Tiered for latency/cost:
           * NONE  -> trust the draft (pure logistics), no Magisterium call.
           * LOW/HIGH -> ask Magisterium to review and, if needed, correct.
+
+        The orchestrator selects historical_record_policy only after validating
+        neutral source excerpts. Its LOW/ENGAGEMENT wrapper asks for a policy
+        judgment without asking the reviewer to edit medical-document wording.
+        This internal option does not change the required review or verdict gate.
         """
         if sensitivity == DoctrinalSensitivity.NONE:
             return DoctrinalVerdict(conforms=True,
                                     rationale="No doctrinal sensitivity; passed.")
 
+        user_content = (f"DRAFT ANSWER:\n{deidentified_draft}\n\n"
+                        "Does this conform? If not, give the corrected version.")
+        if (historical_record_policy is True and intent == Intent.ENGAGEMENT
+                and sensitivity == DoctrinalSensitivity.LOW):
+            user_content = (f"HISTORICAL REPORTING POLICY:\n{deidentified_draft}\n\n"
+                            + _HISTORICAL_POLICY_REVIEW_QUESTION)
         review_text, citations = await self.magisterium.ask(
             system=_REVIEW_SYSTEM,
-            user_content=(f"DRAFT ANSWER:\n{deidentified_draft}\n\n"
-                          "Does this conform? If not, give the corrected version."),
+            user_content=user_content,
             usage_purpose="doctrinal_review",
         )
         if type(review_text) is not str or not review_text.strip():

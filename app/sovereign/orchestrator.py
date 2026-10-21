@@ -1283,6 +1283,7 @@ class Sovereign:
                 # The minimum applies before either review-input choice. A moral
                 # veto must never route a validated excerpt into NONE's bypass.
                 sensitivity = DoctrinalSensitivity.LOW
+            historical_record_policy = False
             if intent == Intent.LAB_REVIEW:
                 safe_lab_projection = _value_safe_lab_review_projection(
                     result.content, result.data
@@ -1301,6 +1302,7 @@ class Sovereign:
                 # reviewer about that policy posture without sending medical
                 # wording for it to edit. A refusal still fails closed below.
                 arbiter_input = deidentify(_neutral_record_review_projection()).text
+                historical_record_policy = True
                 self.audit.record(
                     trace_id=trace_id, profile=profile,
                     event="record_excerpts_withheld_from_non_baa_arbiter",
@@ -1316,7 +1318,8 @@ class Sovereign:
                         details={"types": deid.redacted_types},
                     )
             verdict = await self.arbiter.review(
-                deidentified_draft=arbiter_input, intent=intent, sensitivity=sensitivity
+                deidentified_draft=arbiter_input, intent=intent, sensitivity=sensitivity,
+                **({"historical_record_policy": True} if historical_record_policy else {}),
             )
             self.audit.record(trace_id=trace_id, profile=profile, event="arbitration",
                               details={"conforms": verdict.conforms})
