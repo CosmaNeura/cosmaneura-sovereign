@@ -26,7 +26,7 @@ from app.feature_catalog import labs_sandbox_enabled, visible_paths
 from app.schemas import (ChatRequest, ChatResponse,
                          CompassionateSafetyFallback, DigestRequest,
                          DigestResponse, EmbedChatRequest, EmbedChatResponse,
-                         SessionPrepRequest, SessionPrepResponse,
+                         SessionPrepRequest, SessionPrepResponse, SessionPrepFactsResponse,
                          SovereignProblemDetails)
 from app.security.auth import AuthError, Principal, TokenVerifier, resolve_principal
 from app.security.mount import MountResolutionError
@@ -51,7 +51,7 @@ _public_chat_limiter = TokenBucketRateLimiter(
 _EMBED_VERSION = "1.0"
 _EMBED_VERSION_HEADER = "X-Cosmaneura-Embed-Version"
 _PROTECTED_EMBED_PATHS = frozenset({
-    "/welcome", "/chat", "/digest", "/session-prep", "/embed/history",
+    "/welcome", "/chat", "/digest", "/session-prep", "/session-prep/structured-facts", "/embed/history",
 })
 _CORS_ALLOW_METHODS = ("GET", "POST")
 _CORS_ALLOW_HEADERS = (
@@ -753,6 +753,25 @@ async def session_prep(
     outcome = await _sovereign.read_session_prep(
         client_turn_id=client_turn_id,
         mount_context_token=mount_context_token,
+    )
+    http_response.headers["X-Trace-ID"] = outcome.trace_id
+    return outcome.response
+
+
+@app.post("/session-prep/structured-facts", response_model=SessionPrepFactsResponse)
+async def session_prep_structured_facts(
+    request: SessionPrepRequest, http_request: Request, http_response: Response,
+) -> SessionPrepFactsResponse:
+    """Opt-in dated facts under the same correlation-only provider action."""
+    _require_embed_version(http_request)
+    client_turn_id = _matched_client_turn_id(
+        header_value=_one_raw_header(http_request, "X-Cosmaneura-Client-Turn-ID"),
+        body_value=request.client_turn_id, required=True,
+    )
+    outcome = await _sovereign.read_session_prep(
+        client_turn_id=client_turn_id,
+        mount_context_token=_raw_bearer(_one_raw_header(http_request, "Authorization")),
+        include_structured_facts=True,
     )
     http_response.headers["X-Trace-ID"] = outcome.trace_id
     return outcome.response

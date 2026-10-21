@@ -1,0 +1,217 @@
+{
+  "schema_version": "1.0.0",
+  "coverage": "bounded_explicit_mentions",
+  "source_count": 3,
+  "selection_limited": false,
+  "facts_limited": false,
+  "sources": [
+    {
+      "source_ref": "note_facts_synthetic_001",
+      "source_version": 2,
+      "source_at": "2026-08-12T00:00:00Z"
+    },
+    {
+      "source_ref": "note_facts_synthetic_002",
+      "source_version": 2,
+      "source_at": "2026-08-19T00:00:00Z"
+    },
+    {
+      "source_ref": "note_facts_synthetic_003",
+      "source_version": 2,
+      "source_at": "2026-08-20T00:00:00Z"
+    }
+  ],
+  "facts": [
+    {
+      "fact_ref": "fact_8b3cda59a233f53f84ec8a939653d36e",
+      "kind": "vital",
+      "subject": "BP",
+      "value": "148/92 mmHg",
+      "state": "measured",
+      "setting": "office",
+      "evidence": {
+        "source_ref": "note_facts_synthetic_001",
+        "source_version": 2,
+        "source_at": "2026-08-12T00:00:00Z",
+        "section": "Objective",
+        "quote": "Office BP: 148/92 mmHg.",
+        "start": 0,
+        "end": 23
+      },
+      "supersedes": [],
+      "correction_evidence": null
+    },
+    {
+      "fact_ref": "fact_e0e53e2fad28c3d2de194d36d5418fe7",
+      "kind": "medication",
+      "subject": "losartan",
+      "value": "50 mg",
+      "state": "planned",
+      "setting": null,
+      "evidence": {
+        "source_ref": "note_facts_synthetic_001",
+        "source_version": 2,
+        "source_at": "2026-08-12T00:00:00Z",
+        "section": "Plan",
+        "quote": "Planned losartan 50 mg daily.",
+        "start": 0,
+        "end": 29
+      },
+      "supersedes": [],
+      "correction_evidence": null
+    },
+    {
+      "fact_ref": "fact_cadf91f6b62663580e223e002805d868",
+      "kind": "order",
+      "subject": "CBC",
+      "value": null,
+      "state": "ordered",
+      "setting": null,
+      "evidence": {
+        "source_ref": "note_facts_synthetic_001",
+        "source_version": 2,
+        "source_at": "2026-08-12T00:00:00Z",
+        "section": "Plan",
+        "quote": "CBC ordered.",
+        "start": 30,
+        "end": 42
+      },
+      "supersedes": [],
+      "correction_evidence": null
+    },
+    {
+      "fact_ref": "fact_d2b81551dbeb78427b9e81b427d8b26f",
+      "kind": "medication",
+      "subject": "losartan",
+      "value": "25 mg",
+      "state": "documented_continued",
+      "setting": null,
+      "evidence": {
+        "source_ref": "note_facts_synthetic_002",
+        "source_version": 2,
+        "source_at": "2026-08-19T00:00:00Z",
+        "section": "Medications",
+        "quote": "Correction: continue losartan 25 mg daily.",
+        "start": 0,
+        "end": 42
+      },
+      "supersedes": [
+        "fact_e0e53e2fad28c3d2de194d36d5418fe7"
+      ],
+      "correction_evidence": {
+        "source_ref": "note_facts_synthetic_002",
+        "source_version": 2,
+        "source_at": "2026-08-19T00:00:00Z",
+        "section": "Medications",
+        "quote": "Correction: continue losartan 25 mg daily. This supersedes the previous 50 mg plan.",
+        "start": 0,
+        "end": 83
+      }
+    },
+    {
+      "fact_ref": "fact_32f6dfc6ac4afe71d4fb5b861b498aea",
+      "kind": "vital",
+      "subject": "BP",
+      "value": "128–136/78–84 mmHg",
+      "state": "measured",
+      "setting": "home",
+      "evidence": {
+        "source_ref": "note_facts_synthetic_002",
+        "source_version": 2,
+        "source_at": "2026-08-19T00:00:00Z",
+        "section": "Objective",
+        "quote": "Home BP: 128–136/78–84 mmHg.",
+        "start": 0,
+        "end": 28
+      },
+      "supersedes": [],
+      "correction_evidence": null
+    },
+    {
+      "fact_ref": "fact_2fb5f63d7a0ed90b43c52b7d1efc3002",
+      "kind": "order",
+      "subject": "CBC",
+      "value": null,
+      "state": "cancelled",
+      "setting": null,
+      "evidence": {
+        "source_ref": "note_facts_synthetic_002",
+        "source_version": 2,
+        "source_at": "2026-08-19T00:00:00Z",
+        "section": "Orders",
+        "quote": "CBC order cancelled.",
+        "start": 0,
+        "end": 20
+      },
+      "supersedes": [
+        "fact_cadf91f6b62663580e223e002805d868"
+      ],
+      "correction_evidence": {
+        "source_ref": "note_facts_synthetic_002",
+        "source_version": 2,
+        "source_at": "2026-08-19T00:00:00Z",
+        "section": "Orders",
+        "quote": "CBC order cancelled. K/Cr not ordered.",
+        "start": 0,
+        "end": 38
+      }
+    },
+    {
+      "fact_ref": "fact_5a79cc08200c4785621d1c0a371c5936",
+      "kind": "order",
+      "subject": "K/Cr",
+      "value": null,
+      "state": "not_ordered",
+      "setting": null,
+      "evidence": {
+        "source_ref": "note_facts_synthetic_002",
+        "source_version": 2,
+        "source_at": "2026-08-19T00:00:00Z",
+        "section": "Orders",
+        "quote": "K/Cr not ordered.",
+        "start": 21,
+        "end": 38
+      },
+      "supersedes": [],
+      "correction_evidence": null
+    },
+    {
+      "fact_ref": "fact_90827c29d1fa78ef2f6c1b44ccc8efd2",
+      "kind": "medication",
+      "subject": "amlodipine",
+      "value": "2.5 mg",
+      "state": "documented_not_taking",
+      "setting": null,
+      "evidence": {
+        "source_ref": "note_facts_synthetic_003",
+        "source_version": 2,
+        "source_at": "2026-08-20T00:00:00Z",
+        "section": "Medications",
+        "quote": "Patient denies currently taking amlodipine 2.5 mg.",
+        "start": 0,
+        "end": 50
+      },
+      "supersedes": [],
+      "correction_evidence": null
+    },
+    {
+      "fact_ref": "fact_a77c1b47721132185c669fbd87248094",
+      "kind": "order",
+      "subject": "CBC",
+      "value": null,
+      "state": "result_not_documented",
+      "setting": null,
+      "evidence": {
+        "source_ref": "note_facts_synthetic_003",
+        "source_version": 2,
+        "source_at": "2026-08-20T00:00:00Z",
+        "section": "Orders",
+        "quote": "CBC result not documented.",
+        "start": 0,
+        "end": 26
+      },
+      "supersedes": [],
+      "correction_evidence": null
+    }
+  ]
+}

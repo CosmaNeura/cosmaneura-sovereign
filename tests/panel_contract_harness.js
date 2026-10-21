@@ -207,7 +207,7 @@ async function main() {
         walkthrough_mode: "local_synthetic",
       });
     }
-    if (url.endsWith("/session-prep")) {
+    if (url.endsWith("/session-prep/structured-facts")) {
       sessionPrepRequests.push({
         url,
         body: options.body,
@@ -590,7 +590,7 @@ async function main() {
          "Session Prep request carried extra browser data");
   assert(!sessionPrepRequests[0].body.includes(serverOnlyContextRef),
          "Session Prep browser body exposed the server-owned context handle");
-  assert(sessionPrepRequests[0].url === "https://sovereign.example/session-prep" &&
+  assert(sessionPrepRequests[0].url === "https://sovereign.example/session-prep/structured-facts" &&
          !sessionPrepRequests[0].url.includes(serverOnlyContextRef),
          "Session Prep URL exposed the server-owned context handle");
   const firstPrepWire = sessionPrepRequests[0].body;

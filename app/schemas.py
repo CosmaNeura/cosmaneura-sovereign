@@ -363,6 +363,71 @@ class SessionPrepResponse(ClosedWireModel):
         return self
 
 
+class SessionPrepProjectedCorrection(ClosedWireModel):
+    note_date: datetime
+    section: str = Field(min_length=1, max_length=160)
+    quote: str = Field(min_length=1, max_length=1200)
+
+
+class SessionPrepProjectedFact(ClosedWireModel):
+    kind: Literal["medication", "order", "vital"]
+    subject: str = Field(min_length=1, max_length=120)
+    value: Optional[str] = Field(min_length=1, max_length=120)
+    state: str = Field(min_length=1, max_length=40)
+    setting: Optional[Literal["office", "home", "unspecified"]]
+    note_date: datetime
+    section: str = Field(min_length=1, max_length=160)
+    quote: str = Field(min_length=1, max_length=1200)
+    correction: Optional[SessionPrepProjectedCorrection]
+
+    @model_validator(mode="after")
+    def documented_and_dated(self) -> "SessionPrepProjectedFact":
+        from app.clients.session_prep_facts_contract import FACT_STATES
+        if self.state not in FACT_STATES[self.kind] or (
+            (self.kind == "vital") != (self.setting is not None)
+        ):
+            raise ValueError("Invalid projected fact status")
+        if self.note_date.tzinfo is None or self.note_date.utcoffset() is None:
+            raise ValueError("A fact needs an explicit note date")
+        if self.correction is not None and (
+            self.correction.note_date.tzinfo is None
+            or self.correction.note_date < self.note_date
+        ):
+            raise ValueError("A correction must identify a later dated note")
+        return self
+
+
+class SessionPrepProjectedFacts(ClosedWireModel):
+    coverage: Literal["bounded_explicit_mentions"]
+    source_dates: list[datetime] = Field(min_length=1, max_length=5)
+    selection_limited: bool
+    facts_limited: bool
+    facts: list[SessionPrepProjectedFact] = Field(max_length=48)
+
+    @model_validator(mode="after")
+    def sources_are_dated(self) -> "SessionPrepProjectedFacts":
+        if any(value.tzinfo is None or value.utcoffset() is None for value in self.source_dates):
+            raise ValueError("Reviewed source dates need explicit offsets")
+        if any(fact.note_date not in self.source_dates or (
+            fact.correction is not None and fact.correction.note_date not in self.source_dates
+        ) for fact in self.facts):
+            raise ValueError("Facts must identify an included reviewed note date")
+        return self
+
+
+class SessionPrepFactsResponse(SessionPrepResponse):
+    """Additive route-only projection; all Core authority handles stay private."""
+    schema_version: Literal["1.1.0"] = "1.1.0"
+    facts_state: Literal["ready", "unavailable", "unsupported"]
+    structured_facts: Optional[SessionPrepProjectedFacts]
+
+    @model_validator(mode="after")
+    def independent_facts_state(self) -> "SessionPrepFactsResponse":
+        if (self.facts_state == "ready") != (self.structured_facts is not None):
+            raise ValueError("Fact availability requires a reviewed source projection")
+        return self
+
+
 class CompassionateSafetyFallback(ClosedWireModel):
     failure_stage: Literal["user_accepted", "final_response"]
     answer: str = Field(min_length=1, max_length=1_000)

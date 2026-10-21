@@ -15,11 +15,16 @@ from pydantic import ValidationError
 
 from app.clients.platform_conversation import PlatformTurn, derive_operation_token
 from app.clients.session_prep_contract import (
+    SessionPrepContextReadArguments,
     SessionPrepContextReadRequest,
     SessionPrepContextReadResponse,
+    SessionPrepDetail,
     SessionPrepPendingResult,
     SessionPrepRefreshingResult,
     validate_session_prep_exchange,
+)
+from app.clients.session_prep_facts_contract import (
+    SessionPrepFactsRequest, SessionPrepFactsReadResponse,
 )
 from app.compliance.netsec import assert_safe_outbound_url
 
@@ -32,6 +37,7 @@ SessionPrepDeliveryCategory = Literal["auth", "conflict", "schema", "unavailable
 MAX_SESSION_PREP_CALLS = 3
 MAX_SESSION_PREP_SECONDS = 10.0
 MAX_SESSION_PREP_RESPONSE_BYTES = 128 * 1024
+MAX_SESSION_PREP_FACTS_RESPONSE_BYTES = 512 * 1024
 
 class _DuplicateJSONKey(ValueError):
     pass
@@ -86,6 +92,24 @@ def _safe_retry(response: httpx.Response) -> tuple[bool, float]:
     if not math.isfinite(delay) or delay < 0:
         return False, 0.0
     return True, min(delay, MAX_SESSION_PREP_SECONDS)
+
+
+def _unsupported_facts(response: httpx.Response, trace_id: str) -> bool:
+    """Only Core's exact, correlated unknown-tool response permits v1 fallback."""
+    if response.status_code != 404 or response.headers.get_list("x-trace-id") != [trace_id]:
+        return False
+    if response.headers.get_list("content-type") != ["application/problem+json"]:
+        return False
+    try:
+        body = json.loads(response.content, object_pairs_hook=_closed_json_object)
+    except (TypeError, ValueError, RecursionError):
+        return False
+    return body == {
+        "type": "https://contracts.cosmaneura.com/problems/resource-not-found",
+        "title": "Resource not found", "status": 404, "code": "RESOURCE_NOT_FOUND",
+        "detail": "The requested tool is not available.", "trace_id": trace_id,
+        "retryable": False,
+    }
 
 class SessionPrepClient:
     _response_limit = MAX_SESSION_PREP_RESPONSE_BYTES
@@ -202,8 +226,8 @@ class SessionPrepClient:
         self,
         *,
         turn: PlatformTurn,
-        request: SessionPrepContextReadRequest,
-    ) -> SessionPrepContextReadResponse:
+        request: SessionPrepContextReadRequest | SessionPrepFactsRequest,
+    ) -> SessionPrepContextReadResponse | SessionPrepFactsReadResponse:
         """Poll within one budget; only logical polls rotate idempotency keys."""
         deadline = self._clock() + self._total_timeout_seconds
         payload = request.model_dump(mode="json")
@@ -228,10 +252,11 @@ class SessionPrepClient:
             )
         calls = 0
         logical_attempt = 1
-        idempotency_key = derive_operation_token(
-            turn.client_turn_id,
-            f"session-prep.context.read.{logical_attempt}",
-        )
+        facts_requested = isinstance(request, SessionPrepFactsRequest)
+        def operation_key() -> str:
+            prefix = "session-prep.context.read.facts" if facts_requested else "session-prep.context.read"
+            return derive_operation_token(turn.client_turn_id, f"{prefix}.{logical_attempt}")
+        idempotency_key = operation_key()
         while calls < self._max_calls:
             remaining = deadline - self._clock()
             if remaining <= 0:
@@ -253,6 +278,8 @@ class SessionPrepClient:
                     headers=headers,
                     payload=payload,
                     timeout_seconds=remaining,
+                    response_limit=(MAX_SESSION_PREP_FACTS_RESPONSE_BYTES
+                                    if facts_requested else MAX_SESSION_PREP_RESPONSE_BYTES),
                 )
             except (httpx.TransportError, asyncio.TimeoutError):
                 if calls >= self._max_calls:
@@ -267,6 +294,20 @@ class SessionPrepClient:
                 await self._sleep(delay)
                 continue
             if response.status_code != 200:
+                if facts_requested and _unsupported_facts(response, turn.trace_id):
+                    request = SessionPrepContextReadRequest(
+                        tool_name="session-prep.context.read", tool_version="1.0.0", subject_ref=None,
+                        arguments=SessionPrepContextReadArguments(
+                            source_turn_ref=request.arguments.source_turn_ref,
+                            context_snapshot_ref=request.arguments.context_snapshot_ref,
+                            purpose="session_prep", detail=SessionPrepDetail.BRIEF,
+                        ),
+                    )
+                    facts_requested = False
+                    payload = request.model_dump(mode="json")
+                    logical_attempt = 1
+                    idempotency_key = operation_key()
+                    continue
                 retryable, delay = _safe_retry(response)
                 if (
                     retryable
@@ -303,7 +344,8 @@ class SessionPrepClient:
                     response.content,
                     object_pairs_hook=_closed_json_object,
                 )
-                parsed = SessionPrepContextReadResponse.model_validate(raw)
+                parsed = (SessionPrepFactsReadResponse if facts_requested
+                          else SessionPrepContextReadResponse).model_validate(raw)
                 replayed = replay_headers[0].casefold()
                 returned_trace = trace_headers[0]
                 returned_turn = turn_headers[0]
@@ -314,31 +356,44 @@ class SessionPrepClient:
                     or returned_turn != str(turn.client_turn_id)
                 ):
                     raise ValueError
-                validate_session_prep_exchange(
-                    request,
-                    parsed.result,
-                    observed_at=self._wall_clock(),
-                )
+                preparation = parsed.result.preparation if isinstance(parsed, SessionPrepFactsReadResponse) else parsed.result
+                observed_at = self._wall_clock()
+                if isinstance(parsed, SessionPrepFactsReadResponse):
+                    if preparation.detail != SessionPrepDetail.BRIEF or parsed.recorded_at > observed_at:
+                        raise ValueError
+                    facts = parsed.result.structured_facts
+                    if facts is not None and any(source.source_at > observed_at for source in facts.sources):
+                        raise ValueError
+                    validation_request = SessionPrepContextReadRequest(
+                        tool_name="session-prep.context.read", tool_version="1.0.0", subject_ref=None,
+                        arguments=SessionPrepContextReadArguments(
+                            source_turn_ref=request.arguments.source_turn_ref,
+                            context_snapshot_ref=request.arguments.context_snapshot_ref,
+                            purpose="session_prep", detail=SessionPrepDetail.BRIEF,
+                        ),
+                    )
+                else:
+                    validation_request = request
+                validate_session_prep_exchange(validation_request, preparation, observed_at=observed_at)
             except (KeyError, TypeError, ValueError, RecursionError, ValidationError):
                 raise SessionPrepDeliveryError(
                     "schema", status_code=503, retryable=False,
                 ) from None
             if not isinstance(
-                parsed.result,
+                preparation,
                 (SessionPrepPendingResult, SessionPrepRefreshingResult),
             ):
                 return parsed
             if calls >= self._max_calls:
                 return parsed
-            delay = float(parsed.result.retry_after_seconds)
+            if isinstance(parsed, SessionPrepFactsReadResponse) and parsed.result.facts_state == "ready":
+                return parsed
+            delay = float(preparation.retry_after_seconds)
             if delay >= deadline - self._clock():
                 return parsed
             await self._sleep(delay)
             logical_attempt += 1
-            idempotency_key = derive_operation_token(
-                turn.client_turn_id,
-                f"session-prep.context.read.{logical_attempt}",
-            )
+            idempotency_key = operation_key()
         raise SessionPrepDeliveryError(
             "unavailable", status_code=503, retryable=True,
         )
