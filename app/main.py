@@ -263,6 +263,7 @@ async def _mount_resolution_error(
         retryable=(error.retryable and code in {"RATE_LIMITED", "SERVICE_UNAVAILABLE"}),
         headers=headers,
         safety_fallback=fallback,
+        retry_after_seconds=(error.retry_after_seconds if code == "RATE_LIMITED" else None),
     )
 
 

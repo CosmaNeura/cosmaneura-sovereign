@@ -148,12 +148,14 @@ class MountResolutionError(RuntimeError):
         code: str,
         retryable: bool = False,
         safety_fallback: object | None = None,
+        retry_after_seconds: int | None = None,
     ):
         super().__init__(code)
         self.status_code = status_code
         self.code = code
         self.retryable = retryable
         self.safety_fallback = safety_fallback
+        self.retry_after_seconds = retry_after_seconds
 
 
 class MountResolver(ABC):

@@ -68,6 +68,7 @@ from app.clients.platform_usage import (
     deactivate_usage_context,
     successful_usage_refs,
     usage_reporting_complete,
+    settle_pending_usage,
 )
 from app.clients.provider_question import ProviderQuestionClient
 from app.clients.provider_evidence import (
@@ -125,6 +126,10 @@ from app.security.record_grant import (
 from app.compliance.netsec import UpstreamCallError
 from app.sovereign.arbiter import DoctrinalArbiter, REVIEW_ASSESSMENT_UNAVAILABLE
 from app.sovereign.router import Router
+from app.sovereign.turn_deadline import (
+    ACTIVE_PROVIDER_TURN, PROVIDER_TOTAL_SECONDS, PROVIDER_WORK_SECONDS,
+    ProviderTurnClosure,
+)
 from app.session_prep import (SessionPrepOutcome, project_session_prep_result, project_session_prep_facts,
                               render_session_prep_text)
 
@@ -687,6 +692,88 @@ class Sovereign:
         mount_context_token: Optional[str] = None,
         client_turn_id: Optional[uuid.UUID] = None,
     ) -> ChatResponse:
+        if not self.s.platform_agent_api_enabled:
+            return await self._handle(request, principal,
+                mount_context_token=mount_context_token, client_turn_id=client_turn_id)
+        # Same coroutine preserves request-local usage and authority evidence.
+        # The work cancellation settles SDK transport/usage inside the remaining
+        # closure budget. The outer deadline bounds both Core setup and closure.
+        state = ProviderTurnClosure()
+        token = ACTIVE_PROVIDER_TURN.set(state)
+        started = asyncio.get_running_loop().time()
+        total = asyncio.timeout_at(started + PROVIDER_TOTAL_SECONDS)
+        work = asyncio.timeout_at(started + PROVIDER_WORK_SECONDS)
+        try:
+            async with total:
+                try:
+                    async with work:
+                        return await self._handle(request, principal,
+                            mount_context_token=mount_context_token, client_turn_id=client_turn_id)
+                except TimeoutError:
+                    if not work.expired():
+                        raise
+                response = await self._close_provider_deadline(state)
+                if response is not None:
+                    return response
+                raise MountResolutionError(
+                    status_code=503, code="PLATFORM_TIMEOUT", retryable=False,
+                )
+        except TimeoutError:
+            if not total.expired():
+                raise
+            raise MountResolutionError(
+                status_code=503, code="PLATFORM_TIMEOUT", retryable=False,
+            ) from None
+        finally:
+            # External cancellation still propagates and never manufactures a
+            # final. No task/usage/clinical turn state survives this request.
+            deactivate_usage_context()
+            ACTIVE_PROVIDER_TURN.reset(token)
+
+    async def _close_provider_deadline(
+        self, state: ProviderTurnClosure,
+    ) -> ChatResponse | None:
+        _LOGGER.warning("provider turn deadline reached", extra={
+            "trace_id": state.trace_id, "accepted": state.user_receipt is not None,
+            "final_confirmed": state.final_committed,
+        })
+        if state.final_arguments is not None:
+            # Final transport may have committed. Retry only its exact payload;
+            # never replace reviewed content with a conflicting unavailable final.
+            if not state.final_committed and self.platform_conversation is not None:
+                try:
+                    await self.platform_conversation.write_final_response(**state.final_arguments)
+                    state.final_committed = True
+                except Exception:
+                    pass
+            await settle_pending_usage()
+            # Terminal observation delivery may itself be ambiguous. Keep it
+            # pending rather than asserting a different status or usage closure.
+            return None
+        if (state.turn is None or state.user_receipt is None
+                or state.user_receipt.replayed or state.profile is None
+                or state.dependency_pending):
+            # Unknown acceptance/dependency delivery cannot donate guessed refs.
+            return None
+        await settle_pending_usage()
+        return await self._finalize(
+            "Session Prep could not finish this response within its time limit. "
+            "No reviewed answer or document is available. Please ask a new question later.",
+            None, state.profile, state.trace_id,
+            platform_turn=state.turn, user_receipt=state.user_receipt,
+            audit_turn=state.audit_turn, history_context_ref=state.history_context_ref,
+            provider_context_ref=state.provider_context_ref,
+            safety_notice="upstream_unavailable",
+        )
+
+    async def _handle(
+        self,
+        request: ChatRequest,
+        principal: Optional[Principal] = None,
+        *,
+        mount_context_token: Optional[str] = None,
+        client_turn_id: Optional[uuid.UUID] = None,
+    ) -> ChatResponse:
         # Each top-level request gets an isolated model-call sequence. Clearing
         # first also prevents a caught prior-request failure in the same task
         # from donating lineage to a later request.
@@ -734,6 +821,9 @@ class Sovereign:
             ),
         ))
         trace_id = resolution.trace_id
+        closure = ACTIVE_PROVIDER_TURN.get()
+        if closure is not None:
+            closure.trace_id = trace_id
         mount = resolution.context
         if (
             self.s.platform_agent_api_enabled
@@ -759,6 +849,8 @@ class Sovereign:
             })
         effective_persona = mount.persona_hint
         profile = ComplianceProfile(effective_persona)
+        if closure is not None:
+            closure.profile = profile
         sensitive_mode = (
             effective_persona == Persona.PATIENT
             and sensitive_disclosure.detect_sensitive_disclosure(request.message)
@@ -789,6 +881,9 @@ class Sovereign:
                     turn=platform_turn,
                     message=request.message,
                 )
+                if closure is not None:
+                    closure.turn = platform_turn
+                    closure.user_receipt = user_receipt
                 if user_receipt.replayed:
                     # A prior top-level request already crossed canonical
                     # acceptance. Never rerun model/tool work or synthesize a
@@ -807,6 +902,8 @@ class Sovereign:
                     conversation_turn_ref=user_receipt.turn_ref,
                     mount_context_token=mount_context_token,
                 )
+                if closure is not None:
+                    closure.audit_turn = audit_turn
                 if self.platform_usage is None:
                     raise ValueError("platform usage writer is unavailable")
                 activate_usage_context(
@@ -910,6 +1007,8 @@ class Sovereign:
             try:
                 if self.conversation_read is None or user_receipt is None:
                     raise ConversationReadError(503)
+                if closure is not None:
+                    closure.dependency_pending = True
                 history_response = await self.conversation_read.read_context(
                     turn=platform_turn, source_turn_ref=user_receipt.turn_ref,
                 )
@@ -920,6 +1019,9 @@ class Sovereign:
                     code="CONVERSATION_CONTEXT_UNAVAILABLE", retryable=False,
                 ) from None
             history_context_ref = history_response.tool_call_ref
+            if closure is not None:
+                closure.history_context_ref = history_context_ref
+                closure.dependency_pending = False
             request = request.model_copy(update={"history": history_response.result.messages})
 
         # Only normalized provider I/O failures become unavailable answers.
@@ -1032,6 +1134,8 @@ class Sovereign:
                             safety_notice="provider_context_unavailable",
                         )
                     try:
+                        if closure is not None:
+                            closure.dependency_pending = True
                         context_response = await self.provider_question.read(
                             turn=platform_turn,
                             request=ProviderQuestionRequest(arguments=ProviderQuestionArguments(
@@ -1047,6 +1151,9 @@ class Sovereign:
                             retryable=False,
                         ) from None
                     provider_context_ref = context_response.tool_call_ref
+                    if closure is not None:
+                        closure.provider_context_ref = provider_context_ref
+                        closure.dependency_pending = False
                     if context_response.result.state != "ready":
                         return await self._finalize(
                             "The prepared visit summary is unavailable for this question. "
@@ -1601,6 +1708,11 @@ class Sovereign:
             },
         )
         prefix = "CANONICAL_TURN" if owner == "conversation" else "PLATFORM_AUDIT"
+        if error.category == "rate_limited" and owner == "conversation":
+            return MountResolutionError(
+                status_code=429, code="RATE_LIMITED", retryable=True,
+                retry_after_seconds=error.retry_after_seconds,
+            )
         status_code = 409 if error.category == "conflict" else 503
         fallback = safety_fallback if status_code == 503 else None
         return MountResolutionError(
@@ -1666,7 +1778,7 @@ class Sovereign:
             if history_context_ref is not None:
                 context_dependency["history_context_ref"] = history_context_ref
             try:
-                await self.platform_conversation.write_final_response(
+                final_arguments = dict(
                     turn=platform_turn,
                     expected_turn_ref=user_receipt.turn_ref,
                     answer=final,
@@ -1674,6 +1786,12 @@ class Sovereign:
                     presentation=presentation.model_dump(mode="json"),
                     **context_dependency,
                 )
+                closure = ACTIVE_PROVIDER_TURN.get()
+                if closure is not None:
+                    closure.final_arguments = final_arguments
+                await self.platform_conversation.write_final_response(**final_arguments)
+                if closure is not None:
+                    closure.final_committed = True
             except ConversationDeliveryError as error:
                 deactivate_usage_context()
                 if upstream_unavailable:

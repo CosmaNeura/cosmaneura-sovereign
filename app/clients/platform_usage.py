@@ -146,6 +146,7 @@ class _UsageContext:
     next_sequence: int = 1
     receipts: dict[int, str] = field(default_factory=dict)
     failed_sequences: set[int] = field(default_factory=set)
+    pending_requests: dict[int, ModelUsageRequest] = field(default_factory=dict, repr=False)
 
     def start(
         self,
@@ -273,6 +274,10 @@ async def finish_model_call(
                 reasoning_tokens=facts.reasoning_tokens,
             ),
         )
+        # Keep the exact immutable event BEFORE transport. Cancellation during
+        # reporting must not replace a succeeded call with invented cancelled
+        # usage or produce a different digest/timestamp on bounded settlement.
+        request = context.pending_requests.setdefault(span.sequence, request)
         receipt = await context.client.report(
             turn=context.turn,
             request=request,
@@ -301,6 +306,24 @@ async def finish_model_call(
         )
     else:
         context.receipts[span.sequence] = receipt.record_ref
+        context.failed_sequences.discard(span.sequence)
+        context.pending_requests.pop(span.sequence, None)
+
+
+async def settle_pending_usage() -> None:
+    """Retry exact metadata only during the caller's bounded closure budget."""
+    context = _USAGE_CONTEXT.get()
+    if context is None:
+        return
+    for sequence, request in tuple(sorted(context.pending_requests.items())):
+        try:
+            receipt = await context.client.report(turn=context.turn, request=request)
+        except Exception:
+            context.failed_sequences.add(sequence)
+        else:
+            context.receipts[sequence] = receipt.record_ref
+            context.failed_sequences.discard(sequence)
+            context.pending_requests.pop(sequence, None)
 
 
 def successful_usage_refs() -> tuple[str, ...]:
