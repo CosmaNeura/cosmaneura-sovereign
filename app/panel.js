@@ -58,6 +58,8 @@
     "border-radius:9px;background:var(--panel)}",
     ".cnp-evidence-source{margin:0 0 7px;font-size:12px;color:var(--muted);font-weight:700}",
     ".cnp-evidence-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.55}",
+    ".cnp-evidence-additional{margin-top:8px}.cnp-evidence-additional summary{cursor:pointer;color:var(--muted)}",
+    ".cnp-evidence-additional summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}",
     ".cnp-head,.cnp-chips,.cnp-foot{flex-shrink:0}",
     ".cnp-head{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line)}",
     ".cnp-logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#9c7a2f);",
@@ -188,6 +190,17 @@
     return t.replace(/\\([\\`*_{}\[\]()#!|~])/g, "$1")
       .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
   }
+  function evidenceBody(quote) {
+    // Only the two observed, exact terminal boilerplate paragraphs collapse.
+    // The full canonical quote remains unchanged; both rendered parts retain
+    // their original text, including every separating/trailing newline.
+    var suffix = quote.match(/\n{2,}Greater than (?:0|1) minutes was spent in patient care, including review of prior records, consultation with other providers, and documentation\.\n{2,}This note was generated with AI assistance\.\n*$/);
+    if (!suffix || !quote.slice(0, suffix.index).trim())
+      return '<pre class="cnp-evidence-body">' + esc(quote) + '</pre>';
+    return '<pre class="cnp-evidence-body">' + esc(quote.slice(0, suffix.index)) + '</pre>' +
+      '<details class="cnp-evidence-additional"><summary>Additional note text</summary>' +
+      '<pre class="cnp-evidence-body">' + esc(suffix[0]) + '</pre></details>';
+  }
   function md(t, rawBrief) {
     // This canonical evidence envelope contains server-escaped literal
     // Markdown, rather than generated prose. History retains the answer but
@@ -208,7 +221,7 @@
           if (quote.length) {
             evidenceHtml += '<section class="cnp-evidence-card" aria-label="Reviewed-note excerpt">' +
               '<h4 class="cnp-evidence-source">' + esc(label[2]) + '</h4>' +
-              '<pre class="cnp-evidence-body">' + esc(quote.join("\n")) + '</pre></section>';
+              evidenceBody(quote.join("\n")) + '</section>';
             expected += 1; e = cursor - 1; continue;
           }
         }
