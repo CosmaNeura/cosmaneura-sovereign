@@ -55,9 +55,16 @@ def _project(body):
 @pytest.mark.parametrize("state", ["ready", "refreshing"])
 def test_observed_synthetic_recap_uses_each_verified_source_date(state):
     text = (
-        f"On 09/30/2026 ({A}), office blood pressure was documented. "
-        f"On 10/07/2026 ({B}), a prior plan was documented. "
-        f"On 10/08/2026 ({D}), a corrective plan was documented."
+        "The documented assessment across visits was hypertension, with home blood pressure readings "
+        "reported as elevated initially, then improving and stable on losartan. "
+        f"On 09/30/2026 ({A}), office blood pressure was 148/92 mmHg and losartan 25 mg daily was started. "
+        f"On 10/07/2026 ({B}), home readings ranged from 128-136/78-84, fatigue was improving, "
+        "and a documented plan was made for a planned dose of losartan 50 mg daily instead of 25 mg, "
+        "with a CBC order for fatigue evaluation. "
+        f"On 10/08/2026 ({D}), the documented plan superseded the prior plan, continuing losartan "
+        "25 mg daily and cancelling the CBC order; potassium and creatinine tests were not ordered "
+        "and no results were documented. No dizziness or adverse effects from losartan were reported. "
+        "No office blood pressure was documented after 09/30/2026."
     )
     body = _body(text, [A, B, D])
     if state == "refreshing":
@@ -108,6 +115,18 @@ def test_unrecognized_or_unverified_tokens_remain_exact(token):
     f'Literal " ({A}) " sample.', f"Literal ' ({A}) ' sample.",
     f"Literal [link]( https://invalid.example/ ({A}) ) sample.",
     f'Unclosed <a title=" ({A})', f"Unclosed ` ({A}).", f"Unclosed ( ({A}).",
+    f"Literal code:\n~~~\n({A})\n~~~",
+    f"Literal code:\n~~~~\n({A})\n~~~~~",
+    f"Unclosed tilde fence:\n~~~\n({A})",
+    f"Literal “ ({A}) ”.", f"Literal ‘ ({A}) ’.", f"Literal « ({A}) ».",
+    f"Literal 'Patient's note ({A}) was read.' Note ({A}).",
+    f"Literal ‘Patient’s note ({A}) was read.’ Note ({A}).",
+    f"Indented code:\n    ({A})", f"Indented code:\n\t({A})",
+    f"List:\n- Note ({A}).", f"Numbered list:\n1. Note ({A}).",
+    f"Unknown [ ({A}) ] structure. Note ({A}).",
+    f"Encoded &quot; ({A}) &quot; string. Note ({A}).",
+    f"Encoded &#x201c; ({A}) &#x201d; string. Note ({A}).",
+    f"Table | note ({A}) | value.",
 ])
 def test_protected_or_ambiguous_wrappers_preserve_exact_literal_text(text):
     result = _project(_body(text))
@@ -122,11 +141,9 @@ def test_protected_or_ambiguous_wrappers_preserve_exact_literal_text(text):
     "Literal <a title='`'>a ( b</a>.",
     "Literal ```\nquoted \"code\"\n```.",
 ])
-def test_closed_wrappers_do_not_hide_a_following_standalone_citation(prefix):
+def test_formatted_or_quoted_items_keep_even_following_citations_literal(prefix):
     text = prefix + f" Note ({A})."
-    assert _project(_body(text)).prepared_brief.recap == (
-        prefix + " Note (Reviewed note · 2026-09-30)."
-    )
+    assert _project(_body(text)).prepared_brief.recap == text
 
 
 def test_included_source_cited_only_by_another_item_is_not_labeled():
@@ -158,7 +175,7 @@ def test_each_generated_section_uses_its_own_refs_and_preserves_literal_content(
     for key in ("trajectory_and_material_changes", "talking_points", "open_threads", "cautions", "suggested_outline"):
         body["prepared_brief"][key] = [{"text": text, "source_refs": [A]}]
     result = _project(body)
-    expected = text.replace(f"({A})", "(Reviewed note · 2026-09-30)")
+    expected = text  # Complete formatted item remains intentionally literal.
     assert result.prepared_brief.recap == expected
     for key in ("trajectory_and_material_changes", "talking_points", "open_threads", "cautions", "suggested_outline"):
         assert getattr(result.prepared_brief, key) == [expected]
@@ -167,6 +184,18 @@ def test_each_generated_section_uses_its_own_refs_and_preserves_literal_content(
     assert expected in live["literalTexts"]
     history = panel_render_data(render_session_prep_text(result), hydrated=True)
     assert "<img " not in history["html"]
+
+
+def test_plain_prose_citations_are_projected_in_every_generated_section():
+    text = f"Review the prior note ({A})."
+    body = _body(text)
+    for key in ("trajectory_and_material_changes", "talking_points", "open_threads", "cautions", "suggested_outline"):
+        body["prepared_brief"][key] = [{"text": text, "source_refs": [A]}]
+    result = _project(body).prepared_brief
+    expected = "Review the prior note (Reviewed note · 2026-09-30)."
+    assert result.recap == expected
+    for key in ("trajectory_and_material_changes", "talking_points", "open_threads", "cautions", "suggested_outline"):
+        assert getattr(result, key) == [expected]
 
 
 def test_source_date_is_not_the_generated_date_or_local_timezone_conversion():

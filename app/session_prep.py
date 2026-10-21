@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 
@@ -32,11 +33,14 @@ MAX_SESSION_PREP_CANONICAL_CHARS = 19_000
 _VISIT_NOTE_CITATION = re.compile(
     r"(?<!\S)\((visit_note_[A-Za-z0-9._~-]+)\)(?=$|\s|[.,;:!?](?=\s|$))"
 )
-_HTML_TAG_NAME = re.compile(r"</?([A-Za-z][A-Za-z0-9:-]*)")
-_VOID_HTML_TAGS = frozenset({
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
-    "meta", "param", "source", "track", "wbr",
-})
+# This is a deliberately narrow plain-prose display feature. Ambiguous or
+# formatted items stay byte-for-byte unchanged, including later citations.
+_NON_PROSE_CHARACTERS = frozenset("\\\"'`~<>[]{}*_#|\u02bc\uff07")
+_NON_PROSE_STRUCTURE = re.compile(
+    r"https?://|mailto:|&(?:\#\d+|\#x[0-9a-f]+|[a-z][a-z0-9]+);|"
+    r"(?m:^[ \t]*(?:[-+]|\d+[.)])[ \t]|^(?: {4}|\t))",
+    re.I,
+)
 # Dynamic observation values escape these brackets/angles, so only the
 # appended server delimiter remains raw. It grants formatting, not authority.
 OBSERVATIONS_LITERAL_MARKER = "<!-- [reviewed-source-observations:v1] -->"
@@ -102,88 +106,6 @@ def _blocked_projection(client_turn_id: uuid.UUID) -> SessionPrepResponse:
     )
 
 
-def _citation_is_wrapped(text: str, start: int) -> bool:
-    """Conservatively retain tokens inside literal or ambiguous wrappers.
-
-    This is only a display exclusion, not a Markdown/HTML renderer or source
-    authority. Unclosed wrappers remain literal through the end of the item.
-    """
-    parentheses = 0
-    code_width = 0
-    tags: list[str] = []
-    tag_start: int | None = None
-    quote: str | None = None
-    cursor = 0
-    while cursor < start:
-        character = text[cursor]
-        if code_width:
-            if character == "`":
-                end = cursor + 1
-                while end < len(text) and text[end] == "`":
-                    end += 1
-                if end - cursor == code_width:
-                    code_width = 0
-                cursor = end
-            else:
-                cursor += 1
-            continue
-        if quote:
-            if character == "\\":
-                cursor += 2
-                continue
-            if character == quote:
-                quote = None
-            cursor += 1
-            continue
-        if tag_start is not None:
-            if character in {'"', "'"}:
-                quote = character
-            elif character == ">":
-                value = text[tag_start:cursor + 1]
-                tag = _HTML_TAG_NAME.match(value)
-                if tag is not None:
-                    name = tag[1].lower()
-                    if value.startswith("</"):
-                        if name in tags:
-                            del tags[len(tags) - 1 - tags[::-1].index(name):]
-                    elif name not in _VOID_HTML_TAGS and not value.endswith("/>"):
-                        tags.append(name)
-                tag_start = None
-            cursor += 1
-            continue
-        if text.startswith("<!--", cursor):
-            end = text.find("-->", cursor + 4)
-            if end == -1 or end + 3 > start:
-                return True
-            cursor = end + 3
-            continue
-        if character == "<" and _HTML_TAG_NAME.match(text, cursor):
-            tag_start = cursor
-            cursor += 1
-            continue
-        if tags:
-            cursor += 1
-            continue
-        if character == "\\":
-            cursor += 2
-            continue
-        if character == "`":
-            end = cursor + 1
-            while end < len(text) and text[end] == "`":
-                end += 1
-            code_width = end - cursor
-            cursor = end
-            continue
-        if character == '"' or (character == "'" and (cursor == 0 or not text[cursor - 1].isalnum())):
-            quote = character
-        elif character == "(":
-            parentheses += 1
-        elif character == ")":
-            parentheses = max(0, parentheses - 1)
-        cursor += 1
-    return bool(parentheses or code_width or tags or tag_start is not None or quote)
-
-
 def _dated_brief_citations(
     item: SessionPrepRecap | SessionPrepBriefText, note_labels: dict[str, str],
 ) -> str:
@@ -193,11 +115,21 @@ def _dated_brief_citations(
     This operates on generated brief items, not source excerpts or canonical
     history text, and does not change the Core-owned artifact or its lineage.
     """
+    # Ignore recognized token spans only for syntax eligibility, never for
+    # source authority or displayed content. Any other wrapper/formatting
+    # structure vetoes the complete item rather than guessing its grammar.
+    prose = _VISIT_NOTE_CITATION.sub("", item.text)
+    if _NON_PROSE_STRUCTURE.search(prose) or any(
+        character in _NON_PROSE_CHARACTERS
+        or unicodedata.category(character) in {"Pi", "Pf", "Ps", "Pe"}
+        for character in prose
+    ):
+        return item.text
     refs = set(item.source_refs)
 
     def label(match: re.Match[str]) -> str:
         ref = match.group(1)
-        if ref in refs and ref in note_labels and not _citation_is_wrapped(item.text, match.start()):
+        if ref in refs and ref in note_labels:
             return f"({note_labels[ref]})"
         return match[0]
 
