@@ -57,7 +57,8 @@ def setup(intent=Intent.PLAN_WORKBENCH, *, decision=True, sensitivity=DoctrinalS
     return service, context, conversation
 
 
-@pytest.mark.parametrize("intent", [Intent.PLAN_WORKBENCH, Intent.LAB_REVIEW, Intent.ENGAGEMENT])
+@pytest.mark.parametrize("intent", [Intent.PLAN_WORKBENCH, Intent.LAB_REVIEW, Intent.ENGAGEMENT,
+                                   Intent.VISIT_PREP])
 @pytest.mark.parametrize("question", QUESTIONS)
 def test_six_exact_history_questions_reach_existing_source_answer_lane(intent, question):
     service, context, conversation = setup(intent)
@@ -65,11 +66,16 @@ def test_six_exact_history_questions_reach_existing_source_answer_lane(intent, q
     assert response.intent == Intent.ENGAGEMENT
     assert response.safety_notice is None
     assert response.structured["record_evidence_status"] == "validated_excerpts"
-    assert service.llm.classify_json.call_count == 1
-    assert service.llm.classify_json.call_args.kwargs["prompt"] == question
+    assert service.llm.classify_json.call_count == (0 if intent == Intent.VISIT_PREP else 1)
+    if intent != Intent.VISIT_PREP:
+        assert service.llm.classify_json.call_args.kwargs["prompt"] == question
     assert context.read.call_count == 1
-    assert service.llm.complete.call_count == 1
-    assert "reviewed-note evidence selector" in service.llm.complete.call_args.kwargs["system"]
+    if question == QUESTIONS[-1]:
+        service.llm.complete.assert_not_called()
+        assert response.structured["record_evidence_mode"] == "reviewed_timeline"
+    else:
+        assert service.llm.complete.call_count == 1
+        assert "reviewed-note evidence selector" in service.llm.complete.call_args.kwargs["system"]
     assert "148/92" in response.answer and "25 mg" in response.answer
     assert {citation.title[:10] for citation in response.citations} == {
         "2026-09-30", "2026-10-07", "2026-10-08",

@@ -20,7 +20,10 @@ from __future__ import annotations
 
 from app.agents.base import BaseAgent
 from app.clients.conversation_read import CONVERSATION_RULES, conversation_prompt
-from app.clients.provider_evidence import EVIDENCE_UNAVAILABLE, select_reviewed_evidence
+from app.clients.provider_evidence import (
+    EVIDENCE_UNAVAILABLE, reviewed_timeline_evidence, reviewed_timeline_question,
+    select_reviewed_evidence,
+)
 from app.clients.provider_question_contract import (
     PROVIDER_CONTEXT_RULES, ProviderQuestionResult, ReviewedProviderQuestionResult,
 )
@@ -78,6 +81,10 @@ class EngagementAgent(BaseAgent):
                 return AgentResult(
                     agent=self.name, content=EVIDENCE_UNAVAILABLE,
                     data={"output_format": fmt, "record_evidence_status": "unavailable"},
+                )
+            if reviewed_timeline_question(request.message):
+                return reviewed_timeline_evidence(
+                    provider_context, agent=self.name, data={"output_format": fmt},
                 )
             return await select_reviewed_evidence(
                 llm=self.llm, context=provider_context, question=request.message,
