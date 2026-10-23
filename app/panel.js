@@ -1179,14 +1179,29 @@
         if (value.facts_state === "unsupported") prepSection("Dated observations", ["Dated tables aren’t available here yet."]);
         return;
       }
+      function factDateLabel(date) {
+        var sameDay = facts.source_dates.some(function (other) {
+          return other !== date && other.slice(0, 10) === date.slice(0, 10);
+        });
+        return sameDay ? date.replace("T", " ").replace(/Z$/, " UTC").replace(/([+-]\d{2}:\d{2})$/, " $1") : date.slice(0, 10);
+      }
       var notice = document.createElement("p"); notice.className = "cnp-facts-notice";
       notice.textContent = "Dated observations from reviewed notes. This is not a complete medication list or order ledger. Note dates: " +
-        facts.source_dates.map(function (date) { return date.slice(0, 10); }).join(", ") + ".";
+        facts.source_dates.map(factDateLabel).join(", ") + ".";
       if (facts.selection_limited || facts.facts_limited)
         notice.textContent += " Some sources or observations are omitted by preparation limits; consult reviewed notes.";
       prepView.appendChild(notice);
       [ ["medication", "Medication observations"], ["order", "Order observations"], ["vital", "Measurements"] ].forEach(function (group) {
-        var rows = facts.facts.filter(function (fact) { return fact.kind === group[0]; });
+        // Display grouping preserves every original evidence item and the unchanged payload.
+        var rows = [], identities = new Map();
+        facts.facts.forEach(function (fact) {
+          if (fact.kind !== group[0]) return;
+          var correction = fact.correction, key = JSON.stringify([fact.kind, fact.subject, fact.value, fact.state, fact.setting,
+            fact.note_date, correction ? [correction.note_date, correction.section, correction.quote] : null]);
+          var entry = fact.kind === "medication" ? null : identities.get(key);
+          if (entry) entry.evidence.push(fact);
+          else { entry = { fact: fact, evidence: [fact] }; rows.push(entry); identities.set(key, entry); }
+        });
         if (!rows.length) return;
         var table = document.createElement("table"); table.className = "cnp-facts-table";
         var caption = document.createElement("caption"); caption.textContent = group[1]; table.appendChild(caption);
@@ -1197,31 +1212,34 @@
         });
         head.appendChild(headings); table.appendChild(head);
         var body = document.createElement("tbody");
-        rows.forEach(function (fact) {
+        rows.forEach(function (entry) { var fact = entry.fact;
           var row = document.createElement("tr");
           [fact.subject + (fact.value ? " " + fact.value : "") + (fact.setting ? " (" + fact.setting + ")" : ""),
-            prepFactLabels[fact.state], fact.note_date.slice(0, 10)].forEach(function (label) {
+            prepFactLabels[fact.state], factDateLabel(fact.note_date)].forEach(function (label) {
             var cell = document.createElement("td"); cell.textContent = label; row.appendChild(cell);
           });
           if (fact.correction) {
             var changed = document.createElement("div"); changed.className = "cnp-fact-correction";
-            changed.textContent = "Superseded by correction dated " + fact.correction.note_date.slice(0, 10);
+            changed.textContent = "Superseded by correction dated " + factDateLabel(fact.correction.note_date);
             row.children[1].appendChild(changed);
           }
           body.appendChild(row);
           var proofRow = document.createElement("tr"), proofCell = document.createElement("td"); proofCell.colSpan = 3;
-          var details = document.createElement("details"), summary = document.createElement("summary");
-          summary.textContent = "Source evidence · " + fact.section; details.appendChild(summary);
-          var quote = document.createElement("pre"); quote.className = "cnp-fact-quote";
-          quote.textContent = fact.quote; details.appendChild(quote);
-          if (fact.correction) {
-            var label = document.createElement("p"); label.className = "cnp-fact-correction";
-            label.textContent = "Correction · " + fact.correction.note_date.slice(0, 10) + " · " + fact.correction.section;
-            details.appendChild(label);
-            var correctionQuote = document.createElement("pre"); correctionQuote.className = "cnp-fact-quote";
-            correctionQuote.textContent = fact.correction.quote; details.appendChild(correctionQuote);
-          }
-          proofCell.appendChild(details); proofRow.appendChild(proofCell); body.appendChild(proofRow);
+          entry.evidence.forEach(function (proof) {
+            var details = document.createElement("details"), summary = document.createElement("summary");
+            summary.textContent = "Source evidence · " + proof.section; details.appendChild(summary);
+            var quote = document.createElement("pre"); quote.className = "cnp-fact-quote";
+            quote.textContent = proof.quote; details.appendChild(quote);
+            if (proof.correction) {
+              var label = document.createElement("p"); label.className = "cnp-fact-correction";
+              label.textContent = "Correction · " + factDateLabel(proof.correction.note_date) + " · " + proof.correction.section;
+              details.appendChild(label);
+              var correctionQuote = document.createElement("pre"); correctionQuote.className = "cnp-fact-quote";
+              correctionQuote.textContent = proof.correction.quote; details.appendChild(correctionQuote);
+            }
+            proofCell.appendChild(details);
+          });
+          proofRow.appendChild(proofCell); body.appendChild(proofRow);
         });
         table.appendChild(body); prepView.appendChild(table);
       });
