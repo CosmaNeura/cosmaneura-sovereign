@@ -770,8 +770,9 @@ async function main() {
   assert(!readRequest.headers["x-cosmaneura-client-turn-id"] &&
          readRequest.headers.authorization !== chatRequests.at(-1).authorization,
          "response check reused lineage or an old bearer");
-  assert(!find(recovery.root, node => node.textContent === "Download document"),
-         "restored response invented download data");
+  assert(find(recovery.root, node => node.textContent === "Save answer .md") &&
+         !find(recovery.root, node => node.textContent === "Download .md"),
+         "restored response lost saved-answer export or invented original document metadata");
 
   for (const status of ["pending", "stale"]) {
     hydrationState = status;

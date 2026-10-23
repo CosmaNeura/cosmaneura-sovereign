@@ -491,7 +491,7 @@
       '      <option value="document">Document</option></select>' +
       '    <textarea class="cnp-in" aria-label="Ask Sovereign a question" rows="1" placeholder="Ask a question…"></textarea>' +
       '    <button class="cnp-send">Send</button></div>' +
-      '    <p class="cnp-format-help" hidden>Document mode requests a draft from this record. For example: draft a visit summary. Review the draft before use.</p></div></div>';
+      '    <p class="cnp-format-help" hidden>Document mode requests a draft, such as a visit summary or an ethics consult. Review the draft before use.</p></div></div>';
     (opts.target || document.body).appendChild(root); // Hosts often already own the bottom-right corner (support widgets, bug reporters). Let them place the launcher instead of colliding with it.
     if (opts.fabBottom) root.querySelector(".cnp-fab").style.bottom = opts.fabBottom;
     if (opts.fabRight) root.querySelector(".cnp-fab").style.right = opts.fabRight;
@@ -516,7 +516,7 @@
     function syncFormatHelp() {
       formatHelp.hidden = fmt.value !== "document";
       input.placeholder = state.localFixture ? "Use a synthetic guided prompt…"
-        : fmt.value === "document" ? "Draft a document from the open record…"
+        : fmt.value === "document" ? "Request a supported document draft…"
         : state.persona === "provider" ? "Ask about the open record…"
         : "Ask a health or values question…";
     }
@@ -997,12 +997,16 @@
         };
         bar.appendChild(x);
       }
+      function saveAnswer(filename) {
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([d.answer || ""], { type: "text/markdown" }));
+        a.download = filename; a.click();
+      }
       if (!hydrated && !suppressed.has("feature_actions") && ofmt === "document")
-        act("Download .md", function () {
-          var a = document.createElement("a");
-          a.href = URL.createObjectURL(new Blob([d.answer || ""], { type: "text/markdown" }));
-          a.download = "cosmaneura-" + (d.intent || "output") + ".md"; a.click();
-        });
+        act("Download .md", function () { saveAnswer("cosmaneura-" + (d.intent || "output") + ".md"); });
+      // History retains exact answer text and governed restrictions, not the original document metadata.
+      if (hydrated && presentation.mode === "standard" && !suppressed.has("feature_actions"))
+        act("Save answer .md", function () { saveAnswer("cosmaneura-saved-answer.md"); });
       if (presentation.human_contact) {
         var contact = presentation.human_contact;
         act(contact.label, function (button) {
