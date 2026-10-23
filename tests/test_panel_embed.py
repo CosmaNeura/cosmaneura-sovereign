@@ -303,6 +303,19 @@ def test_panel_first_send_exact_retry_success_and_record_reset_runtime():
     )
 
 
+def test_saved_history_answer_export_and_current_scope_guards_runtime():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable")
+    subprocess.run(
+        [node, str(ROOT / "tests/panel_history_export_harness.js"), str(PANEL_PATH)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
 def test_session_prep_automatic_completion_and_interrupted_delivery_runtime():
     node = shutil.which("node")
     if node is None:
