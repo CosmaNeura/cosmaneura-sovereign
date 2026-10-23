@@ -1179,9 +1179,15 @@
         if (value.facts_state === "unsupported") prepSection("Dated observations", ["Dated tables aren’t available here yet."]);
         return;
       }
+      function factDateLabel(date) {
+        var sameDay = facts.source_dates.some(function (other) {
+          return other !== date && other.slice(0, 10) === date.slice(0, 10);
+        });
+        return sameDay ? date.replace("T", " ").replace(/Z$/, " UTC").replace(/([+-]\d{2}:\d{2})$/, " $1") : date.slice(0, 10);
+      }
       var notice = document.createElement("p"); notice.className = "cnp-facts-notice";
       notice.textContent = "Dated observations from reviewed notes. This is not a complete medication list or order ledger. Note dates: " +
-        facts.source_dates.map(function (date) { return date.slice(0, 10); }).join(", ") + ".";
+        facts.source_dates.map(factDateLabel).join(", ") + ".";
       if (facts.selection_limited || facts.facts_limited)
         notice.textContent += " Some sources or observations are omitted by preparation limits; consult reviewed notes.";
       prepView.appendChild(notice);
@@ -1209,12 +1215,12 @@
         rows.forEach(function (entry) { var fact = entry.fact;
           var row = document.createElement("tr");
           [fact.subject + (fact.value ? " " + fact.value : "") + (fact.setting ? " (" + fact.setting + ")" : ""),
-            prepFactLabels[fact.state], fact.note_date.slice(0, 10)].forEach(function (label) {
+            prepFactLabels[fact.state], factDateLabel(fact.note_date)].forEach(function (label) {
             var cell = document.createElement("td"); cell.textContent = label; row.appendChild(cell);
           });
           if (fact.correction) {
             var changed = document.createElement("div"); changed.className = "cnp-fact-correction";
-            changed.textContent = "Superseded by correction dated " + fact.correction.note_date.slice(0, 10);
+            changed.textContent = "Superseded by correction dated " + factDateLabel(fact.correction.note_date);
             row.children[1].appendChild(changed);
           }
           body.appendChild(row);
@@ -1226,7 +1232,7 @@
             quote.textContent = proof.quote; details.appendChild(quote);
             if (proof.correction) {
               var label = document.createElement("p"); label.className = "cnp-fact-correction";
-              label.textContent = "Correction · " + proof.correction.note_date.slice(0, 10) + " · " + proof.correction.section;
+              label.textContent = "Correction · " + factDateLabel(proof.correction.note_date) + " · " + proof.correction.section;
               details.appendChild(label);
               var correctionQuote = document.createElement("pre"); correctionQuote.className = "cnp-fact-quote";
               correctionQuote.textContent = proof.correction.quote; details.appendChild(correctionQuote);
