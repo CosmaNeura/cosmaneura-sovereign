@@ -78,6 +78,14 @@ class Router:
             Intent.PLAN_WORKBENCH,
         }:
             return False
+        if (intent == Intent.ENGAGEMENT
+                and self._direct_patient_fact_candidate(request.message)):
+            # Ordinary chart questions often omit words such as "recorded" or
+            # "prior note" because the provider is already inside a patient's
+            # Session Prep panel. Keep this deterministic override deliberately
+            # narrow so a stochastic false classification cannot turn a chart
+            # lookup into general health advice.
+            return True
         if intent == Intent.LAB_REVIEW and not self._record_fact_candidate(request.message):
             return False
         if (intent == Intent.PLAN_WORKBENCH
@@ -150,6 +158,44 @@ class Router:
         if re.search(r"\b(?:should|recommend|interpret|abnormal|concerning)\b|is it safe", low):
             return False
         return True
+
+    @staticmethod
+    def _direct_patient_fact_candidate(message: str) -> bool:
+        """Recognize short, non-advisory questions about one patient's facts.
+
+        This is not a general intent parser and grants no record authority. It
+        only prevents two common question shapes in the provider panel from
+        silently falling through to generic education when the BAA classifier
+        returns a false negative. Multi-clause, external, action, and advisory
+        requests continue through the existing classifier and capability gates.
+        """
+        text = " ".join(message.split())
+        if not text or len(text) > 220 or re.search(r"[,;:\n]", text):
+            return False
+        if not Router._record_fact_candidate(text):
+            return False
+
+        # Keep a capitalized synthetic/person name distinct from general nouns.
+        # "the patient" and "this patient" are also valid inside the bound
+        # provider surface. Names are inspected locally and never establish the
+        # canonical patient identity used by the downstream record read.
+        subject = (
+            r"(?:(?i:the patient|this patient)|"
+            r"[A-Z][A-Za-z'\N{RIGHT SINGLE QUOTATION MARK}-]{1,39}"
+            r"(?: [A-Z][A-Za-z'\N{RIGHT SINGLE QUOTATION MARK}-]{1,39})?)"
+        )
+        verb = (
+            r"(?i:prefer|take|use|drink|eat|sleep|walk|exercise|smoke|"
+            r"report|have|experience|weigh)"
+        )
+        tail = r"(?: [^,;:!?]{1,100})?"
+        forms = (
+            rf"(?i:what) [^,;:!?]{{1,80}} (?i:does) {subject} {verb}{tail}[?]?",
+            rf"(?i:how (?:many|much|often|long)) [^,;:!?]{{0,80}} "
+            rf"(?i:does) {subject} {verb}{tail}[?]?",
+            rf"(?i:does) {subject} {verb}{tail}[?]?",
+        )
+        return any(re.fullmatch(form, text) is not None for form in forms)
 
     @staticmethod
     def _historical_plan_fact_candidate(message: str) -> bool:

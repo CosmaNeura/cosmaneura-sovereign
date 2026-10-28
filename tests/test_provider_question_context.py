@@ -206,6 +206,36 @@ def test_record_selection_uses_current_question_without_browser_metadata(decisio
         asyncio.run(router.needs_provider_context(request, Intent.ENGAGEMENT))
 
 
+@pytest.mark.parametrize("message", [
+    "How many cups of water does Don drink per day?",
+    "What appointment time does Don prefer?",
+    "Does the patient use tobacco?",
+])
+def test_direct_patient_fact_questions_do_not_depend_on_stochastic_selection(message):
+    router = Router(Settings(_env_file=None, mock_mode=True))
+    router.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": False})
+    request = ChatRequest(persona=Persona.PROVIDER, message=message)
+
+    assert asyncio.run(router.needs_provider_context(request, Intent.ENGAGEMENT)) is True
+    router.llm.classify_json.assert_not_called()
+
+
+@pytest.mark.parametrize("message", [
+    "How many cups of water should an adult drink per day?",
+    "What appointment time is best for telehealth?",
+    "Why does hydration matter?",
+    "What does Mass start with?",
+    "What medication should Don take?",
+])
+def test_general_or_advisory_questions_are_not_direct_patient_facts(message):
+    router = Router(Settings(_env_file=None, mock_mode=True))
+    router.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": False})
+    request = ChatRequest(persona=Persona.PROVIDER, message=message)
+
+    assert asyncio.run(router.needs_provider_context(request, Intent.ENGAGEMENT)) is False
+    router.llm.classify_json.assert_awaited_once()
+
+
 class Resolver(MountResolver):
     def __init__(self, record_capability=True):
         self.record_capability = record_capability

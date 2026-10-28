@@ -23,6 +23,11 @@ EVIDENCE_UNAVAILABLE = (
     "has been confirmed. Review the selected source notes directly, or ask a new "
     "question with the visit date and fact you need."
 )
+PARTIAL_CONTEXT_UNAVAILABLE = (
+    EVIDENCE_UNAVAILABLE
+    + " Not all otherwise eligible reviewed-note content was available to this "
+      "preparation. Review the prior-note list and source notes directly."
+)
 EVIDENCE_REVIEW_UNAVAILABLE = (
     "The selected excerpts did not pass the required review. No verified factual "
     "answer is available. Review the source notes directly."
@@ -161,7 +166,10 @@ def validated_evidence(
             selected.append((text, source.source_at.date().isoformat(), section))
     except (ValueError, TypeError, IndexError, RecursionError, ValidationError):
         return AgentResult(
-            agent=agent, content=EVIDENCE_UNAVAILABLE, citations=[],
+            agent=agent,
+            content=(PARTIAL_CONTEXT_UNAVAILABLE
+                     if context.completeness == "partial" else EVIDENCE_UNAVAILABLE),
+            citations=[],
             data={**data, "record_evidence_status": "unavailable"},
         )
 
