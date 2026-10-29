@@ -304,6 +304,33 @@ def verify_retained_recovery(recovery):
     )
 
 
+def protect_published_image(tag, digest):
+    """Protect both Azure's tag and manifest before recording publication."""
+    require(type(tag) is str and re.fullmatch(r"[0-9a-f]{12}-[0-9a-f]{12}", tag))
+    require(type(digest) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", digest))
+    references = ("cosmaneura/sovereign:" + tag, "cosmaneura/sovereign@" + digest)
+    for reference in references:
+        az(
+            "acr", "repository", "update", "--name", REGISTRY,
+            "--image", reference, "--write-enabled", "false",
+            "--delete-enabled", "false",
+        )
+    for reference in references:
+        observed = az(
+            "acr", "repository", "show", "--name", REGISTRY,
+            "--image", reference,
+        )
+        require(type(observed) is dict and observed.get("digest") == digest)
+        if reference == references[0]:
+            require(observed.get("name") == tag)
+        attributes = observed.get("changeableAttributes")
+        require(type(attributes) is dict)
+        require(all(attributes.get(key) is expected for key, expected in (
+            ("writeEnabled", False), ("deleteEnabled", False),
+            ("readEnabled", True), ("listEnabled", True),
+        )))
+
+
 def build(plan, plan_digest, output):
     output = Path(output)
     require(
@@ -465,19 +492,7 @@ def build(plan, plan_digest, output):
     require(
         IMAGE + "@" + digest in local["RepoDigests"] and local["Id"] == inspect["Id"]
     )
-    az(
-        "acr",
-        "repository",
-        "update",
-        "--name",
-        REGISTRY,
-        "--image",
-        "cosmaneura/sovereign:" + tag,
-        "--write-enabled",
-        "false",
-        "--delete-enabled",
-        "false",
-    )
+    protect_published_image(tag, digest)
     receipt(
         output / "published.json",
         {
