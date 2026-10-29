@@ -423,3 +423,86 @@ def test_state_still_refuses_substantive_container_drift(monkeypatch, path, valu
     serve_pair(monkeypatch, app, revision)
     with pytest.raises(ValueError, match="local_staging_release_refused"):
         m.state(m.APP)
+
+
+def publication_registry(monkeypatch, mutate_readback=None):
+    tag = "a" * 12 + "-" + "b" * 12
+    digest = "sha256:" + "c" * 64
+    references = ("cosmaneura/sovereign:" + tag, "cosmaneura/sovereign@" + digest)
+    records = {
+        reference: {
+            "name": tag if reference == references[0] else "unused",
+            "digest": digest,
+            "changeableAttributes": {
+                "writeEnabled": True, "deleteEnabled": True,
+                "readEnabled": True, "listEnabled": True,
+            },
+        }
+        for reference in references
+    }
+
+    def az(*args):
+        assert args[:2] == ("acr", "repository")
+        assert args[args.index("--name") + 1] == m.REGISTRY
+        reference = args[args.index("--image") + 1]
+        assert reference in records
+        if args[2] == "update":
+            for field in ("write", "delete", "read", "list"):
+                flag = "--" + field + "-enabled"
+                if flag in args:
+                    value = args[args.index(flag) + 1]
+                    assert value in {"true", "false"}
+                    records[reference]["changeableAttributes"][field + "Enabled"] = (
+                        value == "true"
+                    )
+            return records[reference]
+        assert args[2] == "show"
+        record = copy.deepcopy(records[reference])
+        if mutate_readback is not None:
+            mutate_readback(reference, record)
+        return record
+
+    monkeypatch.setattr(m, "az", az)
+    return tag, digest, references, records
+
+
+def test_publication_protects_tag_and_manifest_and_preserves_pull_access(monkeypatch):
+    tag, digest, _, records = publication_registry(monkeypatch)
+    m.protect_published_image(tag, digest)
+    assert all(record["changeableAttributes"] == {
+        "writeEnabled": False, "deleteEnabled": False,
+        "readEnabled": True, "listEnabled": True,
+    } for record in records.values())
+
+
+@pytest.mark.parametrize("surface", [":", "@"])
+@pytest.mark.parametrize("field,value", [
+    ("writeEnabled", True), ("deleteEnabled", True),
+    ("readEnabled", False), ("listEnabled", False),
+    ("writeEnabled", 0), ("deleteEnabled", "false"),
+])
+def test_publication_refuses_unprotected_or_unreadable_readback(
+    monkeypatch, surface, field, value,
+):
+    def mutate(reference, record):
+        if reference.startswith("cosmaneura/sovereign" + surface):
+            record["changeableAttributes"][field] = value
+
+    tag, digest, _, _ = publication_registry(monkeypatch, mutate)
+    with pytest.raises(ValueError, match="local_staging_release_refused"):
+        m.protect_published_image(tag, digest)
+
+
+@pytest.mark.parametrize("surface,field,value", [
+    (":", "digest", "sha256:" + "d" * 64),
+    ("@", "digest", "sha256:" + "d" * 64),
+    (":", "name", "different"),
+])
+def test_publication_refuses_artifact_identity_drift(monkeypatch, surface, field, value):
+    def mutate(reference, record):
+        if reference.startswith("cosmaneura/sovereign" + surface):
+            record[field] = value
+
+    tag, digest, _, _ = publication_registry(monkeypatch, mutate)
+    with pytest.raises(ValueError, match="local_staging_release_refused"):
+        m.protect_published_image(tag, digest)
