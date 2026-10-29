@@ -59,6 +59,23 @@ variable "production_provider_app_enabled" {
   }
 }
 
+variable "production_provider_key_vault_secrets_ready" {
+  description = "Operator assertion that the production provider vault contains every provider runtime secret. Valid only for the separate provider-only app gate; it does not assert public-vault readiness."
+  type        = bool
+  default     = false
+  nullable    = false
+
+  validation {
+    condition = !var.production_provider_key_vault_secrets_ready || (
+      var.deployment_environment == "prod" &&
+      var.production_provider_app_enabled &&
+      !var.live_apps_enabled &&
+      !var.key_vault_secrets_ready
+    )
+    error_message = "production_provider_key_vault_secrets_ready requires provider-only prod with the dual-app readiness assertion false."
+  }
+}
+
 locals {
   provider_app_enabled = var.live_apps_enabled || var.production_provider_app_enabled
 }

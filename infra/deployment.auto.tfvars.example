@@ -9,6 +9,8 @@ github_deploy_enabled   = true
 live_apps_enabled       = false
 # Provider-only creation is separately reviewed; leave the legacy dual gate off.
 production_provider_app_enabled = false
+# This provider-only assertion never stands in for both-vault readiness.
+production_provider_key_vault_secrets_ready = false
 key_vault_secrets_ready = false
 initial_image_ref        = ""
 
@@ -16,6 +18,8 @@ initial_image_ref        = ""
 # exact registry/repository@sha256:... fallback digest. Refresh that digest to
 # the current paired deployment before every later infrastructure plan.
 # For a provider-only production creation, enable only
-# production_provider_app_enabled and key_vault_secrets_ready with that reviewed
-# immutable digest. Public foundations retain their existing addresses; this
-# control does not authorize or redesign their bootstrap/provisioning.
+# production_provider_app_enabled and
+# production_provider_key_vault_secrets_ready with that reviewed immutable
+# digest. Keep key_vault_secrets_ready=false because the public vault/app remain
+# out of scope. Public foundations retain their existing addresses; these
+# controls do not authorize or redesign their bootstrap/provisioning.

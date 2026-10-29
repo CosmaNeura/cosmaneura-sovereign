@@ -250,8 +250,14 @@ resource "azurerm_container_app" "sovereign" {
       template[0].container[0].image,
     ]
     precondition {
-      condition     = var.key_vault_secrets_ready
-      error_message = "Seed the provider Key Vault before creating the provider Container App."
+      condition = (
+        (var.live_apps_enabled && var.key_vault_secrets_ready) ||
+        (
+          var.production_provider_app_enabled &&
+          var.production_provider_key_vault_secrets_ready
+        )
+      )
+      error_message = "Assert the readiness control for the selected provider or dual-app creation path before creating the provider Container App."
     }
     precondition {
       condition = (

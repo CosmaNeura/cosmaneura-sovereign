@@ -11,11 +11,15 @@ The public app, public env read and public app operator grant remain governed
 solely by the legacy dual gate. Non-disabled provider-only use in staging or
 combining both controls fails variable validation.
 
-The provider app still requires `key_vault_secrets_ready=true` and one immutable
-image from this environment's ACR. This creation control does not enable the
-Session Prep feature: its production profile remains false/synthetic until a
-separately reviewed coordinated activation. Omitting the optional new persistent
-input preserves old production inputs, and staging inputs/profile are unchanged.
+The provider-only path requires
+`production_provider_key_vault_secrets_ready=true`,
+`key_vault_secrets_ready=false`, and one immutable image from this environment's
+ACR. The provider assertion covers only the three provider runtime secrets and
+cannot authorize a later dual-app plan. The legacy dual path still requires the
+global both-vault assertion. This creation control does not enable the Session
+Prep feature: its production profile remains false/synthetic until a separately
+reviewed coordinated activation. Omitting the optional provider controls
+preserves old production inputs, and staging inputs/profile are unchanged.
 
 Foundation resource addresses and bootstrap topology remain unchanged. Public
 identity, vault, logging and app-environment foundations currently exist in the
@@ -35,6 +39,7 @@ gate false is not a rollback for an already-created app. Recover it on a
 compatible retained image; do not remove resources or records as rollback.
 
 Secretless validation covers dark defaults, provider-only and legacy dual plans,
-conflicting controls, staging compatibility, and persistent-input rejection of
-missing readiness or mutable/wrong-environment images. No Azure or env-secret
-access is part of those checks.
+exact provider-only secret bindings, conflicting readiness/gate controls,
+staging compatibility, and persistent-input rejection of missing readiness or
+mutable/wrong-environment images. No Azure or env-secret access is part of
+those checks.

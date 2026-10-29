@@ -15,7 +15,10 @@ COMMON_EXPECTED = {
     "initial_image_ref",
 }
 PRODUCTION_ONLY = {"azure_deid_service_id"}
-PRODUCTION_OPTIONAL = {"production_provider_app_enabled"}
+PRODUCTION_OPTIONAL = {
+    "production_provider_app_enabled",
+    "production_provider_key_vault_secrets_ready",
+}
 ALLOWED = COMMON_EXPECTED | PRODUCTION_ONLY | PRODUCTION_OPTIONAL
 DEID_RE = re.compile(
     r'^"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]+/'
@@ -77,6 +80,9 @@ def validate(values: dict[str, str], expected_environment: str | None = None) ->
     github_deploy_enabled = values["github_deploy_enabled"]
     enabled = values["live_apps_enabled"]
     provider_enabled = values.get("production_provider_app_enabled", "false")
+    provider_ready = values.get(
+        "production_provider_key_vault_secrets_ready", "false"
+    )
     ready = values["key_vault_secrets_ready"]
     image = values["initial_image_ref"]
     if github_deploy_enabled not in {"true", "false"}:
@@ -85,15 +91,29 @@ def validate(values: dict[str, str], expected_environment: str | None = None) ->
         raise InputError("deployment gate values must be literal true or false")
     if provider_enabled not in {"true", "false"}:
         raise InputError("production_provider_app_enabled must be literal true or false")
+    if provider_ready not in {"true", "false"}:
+        raise InputError(
+            "production_provider_key_vault_secrets_ready must be literal true or false"
+        )
     if provider_enabled == "true" and (environment != "prod" or enabled != "false"):
         raise InputError("production_provider_app_enabled requires prod and live_apps_enabled=false")
+    if provider_enabled == "true":
+        if provider_ready != "true" or ready != "false":
+            raise InputError(
+                "provider-only apps require provider-vault readiness true and "
+                "dual-app readiness false"
+            )
+    elif provider_ready != "false":
+        raise InputError(
+            "provider-vault readiness requires production_provider_app_enabled=true"
+        )
     if enabled == "false" and provider_enabled == "false":
         if ready != "false" or image != '""':
             raise InputError(
                 "disabled live apps must keep secrets-ready false and image empty"
             )
         return f"{environment} disabled"
-    if ready != "true":
+    if provider_enabled == "false" and ready != "true":
         raise InputError("live apps require key_vault_secrets_ready=true")
     registry = f"cosmaneurasovereign{environment}registry.azurecr.io"
     image_re = re.compile(
