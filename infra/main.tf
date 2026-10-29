@@ -124,7 +124,7 @@ resource "azurerm_container_app_environment" "public" {
 ########################################
 
 resource "azurerm_container_app" "sovereign" {
-  count                        = var.live_apps_enabled ? 1 : 0
+  count                        = local.provider_app_enabled ? 1 : 0
   name                         = "${local.base_name}-app"
   resource_group_name          = azurerm_resource_group.main.name
   container_app_environment_id = azurerm_container_app_environment.main.id
@@ -251,14 +251,14 @@ resource "azurerm_container_app" "sovereign" {
     ]
     precondition {
       condition     = var.key_vault_secrets_ready
-      error_message = "Seed both mount-specific Key Vaults before creating the Container Apps."
+      error_message = "Seed the provider Key Vault before creating the provider Container App."
     }
     precondition {
       condition = (
         startswith(var.initial_image_ref, "${azurerm_container_registry.main.login_server}/") &&
         can(regex("@sha256:[0-9a-f]{64}$", var.initial_image_ref))
       )
-      error_message = "Create both Container Apps from one immutable digest in this deployment's ACR."
+      error_message = "Create the provider Container App from an immutable digest in this deployment's ACR."
     }
   }
 
@@ -465,7 +465,7 @@ resource "azurerm_role_assignment" "github_env_operator" {
 }
 
 resource "azurerm_role_assignment" "github_app_operator" {
-  count                = var.live_apps_enabled && local.github_deploy_enabled ? 1 : 0
+  count                = local.provider_app_enabled && local.github_deploy_enabled ? 1 : 0
   scope                = azurerm_container_app.sovereign[0].id
   role_definition_name = "Contributor"
   principal_id         = azurerm_user_assigned_identity.ghactions[0].principal_id

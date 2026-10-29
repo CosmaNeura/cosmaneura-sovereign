@@ -7,9 +7,15 @@ azure_deid_service_id   = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/r
 # remains independently default-off.
 github_deploy_enabled   = true
 live_apps_enabled       = false
+# Provider-only creation is separately reviewed; leave the legacy dual gate off.
+production_provider_app_enabled = false
 key_vault_secrets_ready = false
 initial_image_ref        = ""
 
 # For one reviewed paired activation, set both booleans to true and persist the
 # exact registry/repository@sha256:... fallback digest. Refresh that digest to
 # the current paired deployment before every later infrastructure plan.
+# For a provider-only production creation, enable only
+# production_provider_app_enabled and key_vault_secrets_ready with that reviewed
+# immutable digest. Public foundations retain their existing addresses; this
+# control does not authorize or redesign their bootstrap/provisioning.

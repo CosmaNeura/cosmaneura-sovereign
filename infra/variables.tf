@@ -45,6 +45,24 @@ variable "live_apps_enabled" {
   default     = false
 }
 
+variable "production_provider_app_enabled" {
+  description = "Separately reviewed production-only provider app creation. Defaults off; cannot be combined with the legacy dual-app gate. Public app creation/config reads and existing foundation resource addresses are unchanged."
+  type        = bool
+  default     = false
+  nullable    = false
+
+  validation {
+    condition = !var.production_provider_app_enabled || (
+      var.deployment_environment == "prod" && !var.live_apps_enabled
+    )
+    error_message = "production_provider_app_enabled requires prod and live_apps_enabled=false."
+  }
+}
+
+locals {
+  provider_app_enabled = var.live_apps_enabled || var.production_provider_app_enabled
+}
+
 variable "initial_image_ref" {
   description = "Immutable ACR fallback image used to create or recover both mounts; persist and refresh before any later infrastructure plan"
   type        = string
@@ -190,7 +208,7 @@ data "external" "procfile" {
 # Only non-secret provider configuration enters Terraform state. The exporter
 # refuses op:// references and fails if an allowlisted key is absent.
 data "external" "provider_public_config" {
-  count = var.live_apps_enabled ? 1 : 0
+  count = local.provider_app_enabled ? 1 : 0
   program = [
     "bash",
     abspath("${path.module}/scripts/export-public-env.sh"),
