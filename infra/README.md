@@ -62,6 +62,11 @@ availability and audit-retention budget is decided separately.
   pair to true/platform. It requires no Athena credentials. Staging retains
   its existing profile and vault inventory. See the bounded
   [production provider profile](../docs/flight-plans/session-prep-production-provider-profile.md).
+  The separate default-false `production_provider_app_enabled` input permits
+  reviewed production provider-app creation with `live_apps_enabled=false`.
+  Public app/config reads remain off; foundation addresses remain unchanged.
+  Existing paired scripts are not a provider-only release procedure. See the
+  [provider app creation control](../docs/flight-plans/production-provider-app-creation-control.md).
   The DeID endpoint is not a file input: Terraform reads it from the existing
   production data resource or the staging-owned resource and injects it only
   into the provider app.

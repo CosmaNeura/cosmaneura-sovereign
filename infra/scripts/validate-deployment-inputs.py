@@ -15,7 +15,8 @@ COMMON_EXPECTED = {
     "initial_image_ref",
 }
 PRODUCTION_ONLY = {"azure_deid_service_id"}
-ALLOWED = COMMON_EXPECTED | PRODUCTION_ONLY
+PRODUCTION_OPTIONAL = {"production_provider_app_enabled"}
+ALLOWED = COMMON_EXPECTED | PRODUCTION_ONLY | PRODUCTION_OPTIONAL
 DEID_RE = re.compile(
     r'^"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]+/'
     r'providers/Microsoft\.HealthDataAIServices/deidServices/[^/]+"$'
@@ -62,7 +63,8 @@ def validate(values: dict[str, str], expected_environment: str | None = None) ->
     missing = sorted(expected - values.keys())
     if missing:
         raise InputError("missing deployment inputs: " + ", ".join(missing))
-    extra = sorted(values.keys() - expected)
+    allowed = expected | (PRODUCTION_OPTIONAL if environment == "prod" else set())
+    extra = sorted(values.keys() - allowed)
     if extra:
         raise InputError(
             f"{environment} forbids deployment inputs: " + ", ".join(extra)
@@ -74,13 +76,18 @@ def validate(values: dict[str, str], expected_environment: str | None = None) ->
 
     github_deploy_enabled = values["github_deploy_enabled"]
     enabled = values["live_apps_enabled"]
+    provider_enabled = values.get("production_provider_app_enabled", "false")
     ready = values["key_vault_secrets_ready"]
     image = values["initial_image_ref"]
     if github_deploy_enabled not in {"true", "false"}:
         raise InputError("github_deploy_enabled must be literal true or false")
     if enabled not in {"true", "false"} or ready not in {"true", "false"}:
         raise InputError("deployment gate values must be literal true or false")
-    if enabled == "false":
+    if provider_enabled not in {"true", "false"}:
+        raise InputError("production_provider_app_enabled must be literal true or false")
+    if provider_enabled == "true" and (environment != "prod" or enabled != "false"):
+        raise InputError("production_provider_app_enabled requires prod and live_apps_enabled=false")
+    if enabled == "false" and provider_enabled == "false":
         if ready != "false" or image != '""':
             raise InputError(
                 "disabled live apps must keep secrets-ready false and image empty"
@@ -97,7 +104,7 @@ def validate(values: dict[str, str], expected_environment: str | None = None) ->
         raise InputError(
             f"live apps require the exact {environment} ACR repository at an immutable digest"
         )
-    return f"{environment} enabled"
+    return f"{environment} provider-only enabled" if provider_enabled == "true" else f"{environment} enabled"
 
 
 def main(argv: list[str]) -> int:

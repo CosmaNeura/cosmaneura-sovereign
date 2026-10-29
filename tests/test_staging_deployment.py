@@ -426,12 +426,15 @@ def test_staging_github_deploy_identity_is_default_off_as_one_complete_unit() ->
         assert "count" in block
         assert "local.github_deploy_enabled ? 1 : 0" in block
 
-    for name in ("github_app_operator", "github_public_app_operator"):
+    for name, app_gate in (
+        ("github_app_operator", "local.provider_app_enabled"),
+        ("github_public_app_operator", "var.live_apps_enabled"),
+    ):
         block = main.split(f'resource "azurerm_role_assignment" "{name}" {{', 1)[
             1
         ].split('\nresource "', 1)[0]
         assert (
-            "var.live_apps_enabled && local.github_deploy_enabled ? 1 : 0" in block
+            f"{app_gate} && local.github_deploy_enabled ? 1 : 0" in block
         )
 
     assert main.count("to   = azurerm_") == 6

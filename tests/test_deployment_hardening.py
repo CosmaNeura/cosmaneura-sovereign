@@ -548,7 +548,8 @@ def test_terraform_keeps_runtime_application_secrets_out_of_state() -> None:
     assert 'variable "key_vault_secrets_ready"' in terraform
     assert 'variable "initial_image_ref"' in terraform
     assert 'variable "live_apps_enabled"' in terraform
-    assert terraform.count("count                        = var.live_apps_enabled ? 1 : 0") == 2
+    assert terraform.count("count                        = var.live_apps_enabled ? 1 : 0") == 1
+    assert terraform.count("count                        = local.provider_app_enabled ? 1 : 0") == 1
     assert terraform.count("condition     = var.key_vault_secrets_ready") == 2
     assert terraform.count("startswith(var.initial_image_ref") == 2
     assert terraform.count("image  = var.initial_image_ref") == 2
