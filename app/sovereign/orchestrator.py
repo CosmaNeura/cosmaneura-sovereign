@@ -1065,13 +1065,32 @@ class Sovereign:
                 Intent.PLAN_WORKBENCH, Intent.SMALL_TALK, Intent.CONCIERGE,
                 Intent.REFERRAL,
             }
-            if (
-                (intent in {Intent.LAB_REVIEW, Intent.PLAN_WORKBENCH}
-                 or historical_visit_question or direct_fact_route)
-                and self.s.feature_session_prep
+            reviewed_record_lane_available = (
+                self.s.feature_session_prep
                 and platform_turn is not None and profile.persona == Persona.PROVIDER
                 and mount.surface == "provider_assistant" and mount.auth_tier == "provider"
                 and {"education:answer", "session-prep:read"}.issubset(mount.capabilities)
+            )
+            if (
+                direct_fact_route and profile.persona == Persona.PROVIDER
+                and not reviewed_record_lane_available
+            ):
+                # Claim the provider fact question before checking availability.
+                # A lost record grant must not dispatch the incorrectly labelled
+                # logistics/specialist agent or answer from general knowledge.
+                return await self._finalize(
+                    "The reviewed visit context is unavailable for this question. "
+                    "I cannot confirm facts from prior visits without current "
+                    "Session Prep access.",
+                    Intent.ENGAGEMENT, profile, trace_id, audit_turn=audit_turn,
+                    platform_turn=platform_turn, user_receipt=user_receipt,
+                    history_context_ref=history_context_ref,
+                    safety_notice="provider_context_unavailable",
+                )
+            if (
+                (intent in {Intent.LAB_REVIEW, Intent.PLAN_WORKBENCH}
+                 or historical_visit_question or direct_fact_route)
+                and reviewed_record_lane_available
             ):
                 try:
                     # VISIT_PREP already requires record context. A closed

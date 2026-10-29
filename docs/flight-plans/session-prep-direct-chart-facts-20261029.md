@@ -22,7 +22,9 @@ capability checks. No specialist capability is enabled.
 Keep accepted-turn persistence, provider/BAA resolution, current own-record
 authority, exact source versions and final receipt validation. Matching a name
 in a question never chooses the canonical patient. Missing feature/record grants
-cannot read context; a legacy summary cannot become an original-note quote.
+return a static unavailable answer before any incorrectly labelled specialist
+dispatch, rather than falling through to generic knowledge or external tools.
+A legacy summary cannot become an original-note quote.
 Doctrinal review still runs and factual replies keep its existing badge policy.
 
 Verify misclassification across the known labels, actual synthetic preference

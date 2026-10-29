@@ -162,8 +162,12 @@ def test_direct_fact_override_requires_current_feature_and_record_grant(
         classified_intent, DoctrinalSensitivity.LOW, "",
     ))
     service.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": False})
+    concierge = service.agents[Intent.CONCIERGE]
+    concierge.run = AsyncMock()
     response = handle(service, "What appointment time does Don prefer?")
     context.read.assert_not_called()
+    concierge.run.assert_not_called()
+    assert response.safety_notice == "provider_context_unavailable"
     assert "Selected reviewed-note excerpts" not in response.answer
 
 
