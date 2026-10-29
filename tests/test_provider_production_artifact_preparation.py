@@ -318,3 +318,86 @@ def test_exclusive_output_refuses_overwrite(
     with pytest.raises(preparation.PreparationError, match="created exclusively"):
         preparation._write_new(manifest, preparation.prepare(**_arguments(inputs)))
     assert manifest.read_text() == "preserve me"
+
+
+@pytest.mark.parametrize("commit", ["main", "a" * 39, "a" * 41, "a" * 63, "A" * 40])
+def test_source_commit_requires_full_immutable_object_id(commit: str) -> None:
+    with pytest.raises(preparation.PreparationError, match="full lowercase Git"):
+        preparation._require_commit(commit, "Sovereign source commit")
+
+
+@pytest.mark.parametrize("command", ["prepare", "verify"])
+def test_cli_requires_explicit_sovereign_source_commit(
+    inputs: dict[str, Any], tmp_path: Path, command: str
+) -> None:
+    arguments = [command]
+    for name in sorted(OBSERVATION_KEYS - {"sovereign_source_commit"}):
+        arguments.extend(["--" + name.replace("_", "-"), str(inputs[name])])
+    arguments.extend(
+        [
+            "--output" if command == "prepare" else "--manifest",
+            str(tmp_path / "pair.json"),
+        ]
+    )
+    with pytest.raises(SystemExit) as refusal:
+        preparation.main(arguments)
+    assert refusal.value.code == 2
+    assert not (tmp_path / "pair.json").exists()
+
+
+def test_cli_prepares_and_reverifies_explicit_source_pair(
+    inputs: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments: list[str] = []
+    for name in sorted(OBSERVATION_KEYS):
+        arguments.extend(["--" + name.replace("_", "-"), str(inputs[name])])
+    manifest = tmp_path / "cli-pair.json"
+    assert preparation.main(["prepare", *arguments, "--output", str(manifest)]) == 0
+    expected = preparation.prepare(**_arguments(inputs))
+    assert capsys.readouterr().out.strip() == expected["payload_sha256"]
+    assert preparation.main(["verify", *arguments, "--manifest", str(manifest)]) == 0
+    assert capsys.readouterr().out.strip() == expected["payload_sha256"]
+
+
+def test_corrected_source_requires_new_image_and_preparation(
+    inputs: dict[str, Any], tmp_path: Path
+) -> None:
+    previous = preparation.prepare(**_arguments(inputs))
+    manifest = tmp_path / "previous-preparation.json"
+    preparation._write_new(manifest, previous)
+    repo = inputs["sovereign_repo"]
+    main_branch = _git(repo, "branch", "--show-current")
+    _git(repo, "checkout", "--quiet", "-b", "dependency-correction")
+    (repo / "provider.txt").write_text("corrected dependencies\n", encoding="utf-8")
+    _git(repo, "add", "provider.txt")
+    _git(repo, "commit", "--quiet", "-m", "dependency correction")
+    _git(repo, "checkout", "--quiet", main_branch)
+    _git(
+        repo,
+        "merge",
+        "--quiet",
+        "--no-ff",
+        "dependency-correction",
+        "-m",
+        "corrected merge",
+    )
+    inputs["sovereign_source_commit"] = _git(repo, "rev-parse", "HEAD")
+    with pytest.raises(preparation.PreparationError, match="revision label"):
+        preparation.prepare(**_arguments(inputs))
+
+    layout, digest, _paths = _oci_layout(
+        tmp_path / "corrected-sovereign-oci",
+        revision=inputs["sovereign_source_commit"],
+    )
+    inputs.update(sovereign_oci_layout=layout, sovereign_image_digest=digest)
+    with pytest.raises(preparation.PreparationError, match="exact current inputs"):
+        preparation.verify(manifest, **_arguments(inputs))
+    corrected = preparation.prepare(**_arguments(inputs))
+    assert (
+        corrected["payload"]["candidate_pair_sha256"]
+        != previous["payload"]["candidate_pair_sha256"]
+    )
+    corrected_manifest = tmp_path / "corrected-preparation.json"
+    preparation._write_new(corrected_manifest, corrected)
+    assert preparation.verify(corrected_manifest, **_arguments(inputs)) == corrected
+    assert set(corrected["payload"]["authorization"].values()) == {False}

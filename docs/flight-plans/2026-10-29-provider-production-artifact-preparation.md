@@ -5,10 +5,12 @@ the provider Session Prep service. It does not build, publish, deploy, enable,
 or configure production. It adds no workflow, cloud command, credential,
 provider record, chart data, or activation path.
 
-## Fixed source and scope
+## Explicit immutable source and fixed scope
 
-`tools/prepare_provider_production_artifact.py` accepts only Sovereign merged
-PR83 commit `66bba1e6814203a2268bf2104e33b390a7c1db55`. The selected checkout must be
+`tools/prepare_provider_production_artifact.py` requires an explicit full
+Sovereign source commit, without a default or branch/tag input. This permits a
+reviewed dependency correction to replace the earlier candidate without
+changing the preparation tool for every release. The selected checkout must be
 clean, its `HEAD` must equal that two-parent merge, and its archive is produced
 through isolated Git metadata using the same external-attribute exclusions as
 the existing bootstrap builder. The raw archive SHA-256 and committed tree are
@@ -30,8 +32,9 @@ The tool consumes, but never creates or downloads, two local OCI image layouts:
 - one exact existing Core candidate, its full source commit, and its
   independently supplied immutable manifest digest.
 
-Neither Core identity has a default. An operator must supply the actual reviewed
-candidate pair; the tool does not infer or invent a not-yet-built image. For
+Neither service's source or artifact identity has a default. An operator must
+supply the actual reviewed candidate pair; the tool does not infer or invent a
+not-yet-built image. For
 both layouts it checks the raw index, manifest, config, and every compressed
 layer against parent digest and size fields. Each index must select exactly one
 Linux/amd64 manifest, the config must also declare Linux/amd64, and the config's
@@ -57,9 +60,13 @@ Every authorization remains false:
 - public deployment authorized.
 
 The source/archive hash and OCI revision-label binding prove only the identities
-observed by this offline preparation. They do not prove binary reproducibility,
-runtime correctness, production readiness, or activation readiness. Those
+observed by this offline preparation. They do not prove GitHub review or merge
+status, binary reproducibility, runtime correctness, production readiness, or
+activation readiness. Those
 remain separate release gates with their own independently reviewed evidence.
+The release operator must separately match the exact reviewed, merged source
+through the existing release controls. Updating the source input never makes an
+old image or preparation document valid for the replacement source.
 
 `verify` rereads the document, revalidates those static false claims, rebuilds
 the complete observation from the current clean source and raw OCI layouts, and
@@ -79,6 +86,7 @@ From an exact clean checkout after this change itself is merged:
 ```bash
 PYTHONPATH=. python tools/prepare_provider_production_artifact.py prepare \
   --sovereign-repo /absolute/path/to/exact-sovereign-checkout \
+  --sovereign-source-commit <exact-reviewed-merged-sovereign-commit> \
   --sovereign-oci-layout /offline/provider-sovereign-oci \
   --sovereign-image-digest sha256:<exact-sovereign-manifest-digest> \
   --core-oci-layout /offline/existing-core-oci \
@@ -87,7 +95,7 @@ PYTHONPATH=. python tools/prepare_provider_production_artifact.py prepare \
   --output /private/provider-production-preparation.json
 ```
 
-Reverification uses the same six source/artifact arguments with `verify` and
+Reverification uses the same seven source/artifact arguments with `verify` and
 `--manifest`. The sole stdout value is the preparation payload SHA-256. A
 failure emits only a fixed refusal message; it does not echo local paths or OCI
 contents.
@@ -108,9 +116,15 @@ ruff format --check tools/prepare_provider_production_artifact.py \
 The focused tests cover exact source and clean-tree identity, raw manifest,
 config and layer tamper, platform drift, Core source/image splicing, public
 mount exclusion, rehashed authorization/public flips, successful revalidation,
-and exclusive output creation. They build synthetic local Git and OCI fixtures;
-they perform no network or cloud action.
+exclusive output creation, mandatory immutable source input, and replacement
+source/image binding after a corrected merge. They build synthetic local Git and
+OCI fixtures; they perform no network or cloud action.
 
-Stop on any mismatch. Do not weaken a source pin, substitute a tag for a
-digest, omit the Core candidate, change platform selection, edit the manifest,
+Stop on any mismatch. Do not omit either explicit source commit, substitute a tag
+for a digest, omit the Core candidate, change platform selection, edit the manifest,
 or interpret this preparation as permission to publish or activate anything.
+
+Recovery before release is to revert this source change and retain the explicit
+release hold. Do not publish the earlier security-affected candidate to recover
+tool compatibility. No runtime, schema, configuration, or deployment changes are
+part of this checkpoint.
