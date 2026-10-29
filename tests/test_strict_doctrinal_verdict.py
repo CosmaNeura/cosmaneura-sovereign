@@ -306,7 +306,8 @@ def test_nonfactual_absent_assessment_replaces_draft_with_unavailable_closure(as
     service, read, conversation = factual_service({"conforms": True}, assessment, exact=False)
     service.router.needs_provider_context.return_value = with_context
     positive_parser_for(service, "NONFACTUAL_DRAFT_SENTINEL")
-    response = handle(service, QUESTION)
+    # Exercise synthesis, not the closed dated blood-pressure excerpt lookup.
+    response = handle(service, "Summarize the prepared visit overview for the upcoming encounter.")
     assert response.answer.startswith(REVIEW_ASSESSMENT_UNAVAILABLE)
     assert response.safety_notice == "upstream_unavailable"
     assert response.structured == {} and response.doctrinal_review is None and response.citations == []

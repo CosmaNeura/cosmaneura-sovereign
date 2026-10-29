@@ -1004,8 +1004,9 @@
       }
       if (!hydrated && !suppressed.has("feature_actions") && ofmt === "document")
         act("Download .md", function () { saveAnswer("cosmaneura-" + (d.intent || "output") + ".md"); });
-      // History retains exact answer text and governed restrictions, not the original document metadata.
-      if (hydrated && presentation.mode === "standard" && !suppressed.has("feature_actions"))
+      // Chat and history save canonical answer text; Document retains its original download action.
+      if (presentation.mode === "standard" && !suppressed.has("feature_actions") &&
+          (hydrated || ofmt !== "document"))
         act("Save answer .md", function () { saveAnswer("cosmaneura-saved-answer.md"); });
       if (presentation.human_contact) {
         var contact = presentation.human_contact;

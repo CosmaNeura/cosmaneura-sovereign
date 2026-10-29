@@ -7,6 +7,10 @@ const { FakeElement, assert, find, response } = require("./panel_contract_harnes
 
 const ANSWER = "# Fictional saved answer\r\n\r\nExact café 🩺 text & <draft>.\n" +
   "Sources: words in the answer are not saved citation metadata.\n";
+const FACTUAL_ANSWER = "Selected reviewed-note excerpts for your question:\n\n" +
+  "[1] 2026-10-08 — Medications\n\n" +
+  "> Fictional reviewed dose: 25 mg daily supersedes the earlier erroneous 50 mg instruction.\n\n" +
+  "Source: 1 selected reviewed prior note through 2026-10-08.\n";
 const TURN_ID = "11111111-1111-4111-8111-111111111111";
 const STANDARD = { mode: "standard", suppress: [], human_contact: null };
 const SUPPRESSIONS = ["disclaimer", "intent_badge", "doctrinal_badge", "citations",
@@ -35,6 +39,7 @@ async function main() {
     createElementNS: (_namespace, tag) => new FakeElement(tag),
   });
   let uuid = 1, welcomeDenied = false, chatMode = "success";
+  let chatPresentation = STANDARD, chatAnswer = ANSWER, chatIntent = "ethics_consult";
   global.window = { innerWidth: 1200, location: { origin: "https://host.example" },
     crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` } };
   URL.createObjectURL = blob => { blobs.push(blob); return `blob:fictional-export-${blobs.length}`; };
@@ -55,8 +60,8 @@ async function main() {
       trace_id: "trace_fictional_export", retryable: false,
     });
     const body = JSON.parse(options.body);
-    return response(200, { answer: ANSWER, intent: "ethics_consult", client_turn_id: body.client_turn_id,
-      presentation: STANDARD, citations: [], doctrinal_review: null,
+    return response(200, { answer: chatAnswer, intent: chatIntent, client_turn_id: body.client_turn_id,
+      presentation: chatPresentation, citations: [], doctrinal_review: null,
       structured: { output_format: body.metadata.output_format }, safety_notice: null });
   };
   vm.runInThisContext(fs.readFileSync(process.argv[2], "utf8"));
@@ -74,13 +79,13 @@ async function main() {
   }
   const saveButton = panel => find(panel.root, node => node.textContent === "Save answer .md");
   const originalDownload = panel => find(panel.root, node => node.textContent === "Download .md");
-  async function checkExactDownload(button, expectedName) {
+  async function checkExactDownload(button, expectedName, expectedAnswer = ANSWER) {
     const beforeRequests = requests.length, beforeBlobs = blobs.length;
     await button.click();
     assert(blobs.length === beforeBlobs + 1, "export did not create exactly one Blob");
     const blob = blobs.at(-1);
     assert(blob.type === "text/markdown", "export media type changed");
-    assert(Buffer.from(await blob.arrayBuffer()).equals(Buffer.from(ANSWER, "utf8")),
+    assert(Buffer.from(await blob.arrayBuffer()).equals(Buffer.from(expectedAnswer, "utf8")),
       "export changed exact canonical UTF-8 answer bytes");
     assert(downloads.at(-1).name === expectedName, "export filename implies missing original metadata");
     assert(requests.length === beforeRequests, "export issued a network or model request");
@@ -162,18 +167,55 @@ async function main() {
   recovery.panel.destroy(); await destroyedSave.click();
   assert(blobs.length === beforeDestroy, "destroyed panel retained export action");
 
-  // Original live Document behavior remains distinct; ordinary Chat is not a saved-answer export.
+  // A fresh factual Chat answer can be saved immediately, without history hydration.
   chatMode = "success";
   for (const selected of ["chat", "document"]) {
+    chatAnswer = selected === "chat" ? FACTUAL_ANSWER : ANSWER;
+    chatIntent = selected === "chat" ? "visit_prep" : "ethics_consult";
     const live = await mount(null);
     live.panel.root.querySelector(".cnp-fmt").value = selected;
-    live.panel.root.querySelector(".cnp-in").value = "A fictional supported draft";
+    live.panel.root.querySelector(".cnp-in").value = selected === "chat"
+      ? "What did the fictional reviewed note document about the dose correction?"
+      : "A fictional supported draft";
     await live.panel.root.querySelector(".cnp-send").click();
-    assert(!saveButton(live.panel) && Boolean(originalDownload(live.panel)) === (selected === "document"),
-      "live Chat/Document output was mislabeled as restored history");
-    if (selected === "document") await checkExactDownload(originalDownload(live.panel), "cosmaneura-ethics_consult.md");
+    assert(Boolean(saveButton(live.panel)) === (selected === "chat") &&
+      Boolean(originalDownload(live.panel)) === (selected === "document"),
+      "fresh Chat export or existing Document action is missing or duplicated");
+    if (selected === "chat") {
+      const freshSave = saveButton(live.panel);
+      await checkExactDownload(freshSave, "cosmaneura-saved-answer.md", FACTUAL_ANSWER);
+      const beforeFreshSwitch = blobs.length;
+      live.record = "record_fictional_other";
+      const switched = live.panel.setRecord(live.record);
+      await freshSave.click();
+      await switched;
+      await freshSave.click();
+      assert(blobs.length === beforeFreshSwitch && !saveButton(live.panel),
+        "retained fresh-answer action exported after the record switched");
+      live.panel.destroy();
+      await freshSave.click();
+      assert(blobs.length === beforeFreshSwitch, "destroyed fresh-answer panel retained export");
+    } else {
+      await checkExactDownload(originalDownload(live.panel), "cosmaneura-ethics_consult.md");
+      live.panel.destroy();
+    }
+  }
+  // The new live Chat action obeys the same governed-presentation restrictions as history.
+  for (const presentation of [
+    { ...STANDARD, suppress: ["feature_actions"] },
+    { mode: "emergency", suppress: [], human_contact: null },
+    { mode: "sensitive_disclosure", suppress: SUPPRESSIONS, human_contact: {
+      label: "Contact care team", action_id: "care-team-contact", fallback_text: "Contact your care team." } },
+  ]) {
+    chatPresentation = presentation;
+    chatAnswer = FACTUAL_ANSWER; chatIntent = "visit_prep";
+    const live = await mount(null);
+    live.panel.root.querySelector(".cnp-in").value = "A fictional reviewed-note question";
+    await live.panel.root.querySelector(".cnp-send").click();
+    assert(!saveButton(live.panel) && !originalDownload(live.panel),
+      "governed fresh Chat presentation exposed export");
     live.panel.destroy();
   }
-  process.stdout.write("Saved-answer export: exact bytes, recovery, suppression and record/access guards passed.\n");
+  process.stdout.write("Saved-answer export: fresh Chat, exact bytes, Document, recovery, suppression and record/access guards passed.\n");
 }
 main().catch(error => { process.stderr.write(String(error.stack || error) + "\n"); process.exitCode = 1; });

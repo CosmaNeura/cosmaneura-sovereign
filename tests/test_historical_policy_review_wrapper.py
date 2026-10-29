@@ -200,13 +200,16 @@ def test_summary_and_synthesized_answers_keep_original_wrapper_even_with_browser
     context.read.return_value = ProviderQuestionResponse.model_validate(fixture())
     service.router.route.return_value = (intent, DoctrinalSensitivity.HIGH if intent == Intent.ETHICS_CONSULT else DoctrinalSensitivity.LOW, "")
     service.agents[intent].run = AsyncMock(return_value=AgentResult(agent="synthetic", content="SYNTHESIS_SENTINEL"))
+    # A broad overview stays synthesized; the dated CBC lookup requires exact excerpts.
     asyncio.run(service.handle(ChatRequest(
-        persona=Persona.PROVIDER, client_turn_id=TURN_ID, message=CBC_QUESTION,
+        persona=Persona.PROVIDER, client_turn_id=TURN_ID,
+        message="Summarize the prepared visit overview for the upcoming encounter.",
         metadata={"historical_record_policy": True, "record_evidence_status": "validated_excerpts"},
     ), mount_context_token="mount_synthetic_001", client_turn_id=TURN_ID))
     call = service.arbiter.magisterium.ask.call_args.kwargs
     assert call["user_content"] == "DRAFT ANSWER:\nSYNTHESIS_SENTINEL\n\nDoes this conform? If not, give the corrected version."
     service.arbiter.magisterium.ask.assert_called_once()
+    service.agents[intent].run.assert_awaited_once()
 
 
 @pytest.mark.parametrize("intent,tier,option", [
