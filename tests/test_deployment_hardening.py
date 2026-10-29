@@ -550,7 +550,8 @@ def test_terraform_keeps_runtime_application_secrets_out_of_state() -> None:
     assert 'variable "live_apps_enabled"' in terraform
     assert terraform.count("count                        = var.live_apps_enabled ? 1 : 0") == 1
     assert terraform.count("count                        = local.provider_app_enabled ? 1 : 0") == 1
-    assert terraform.count("condition     = var.key_vault_secrets_ready") == 2
+    assert terraform.count("condition     = var.key_vault_secrets_ready") == 1
+    assert "var.production_provider_key_vault_secrets_ready" in terraform
     assert terraform.count("startswith(var.initial_image_ref") == 2
     assert terraform.count("image  = var.initial_image_ref") == 2
     assert "primary_access_key" not in terraform
@@ -1107,8 +1108,8 @@ def test_persistent_deployment_inputs_are_fail_closed(tmp_path: Path) -> None:
         path.read_text()
         .replace("live_apps_enabled       = false", "live_apps_enabled       = true")
         .replace(
-            "key_vault_secrets_ready = false",
-            "key_vault_secrets_ready = true",
+            "\nkey_vault_secrets_ready = false\n",
+            "\nkey_vault_secrets_ready = true\n",
         )
         .replace(
             'initial_image_ref        = ""',
@@ -1121,7 +1122,10 @@ def test_persistent_deployment_inputs_are_fail_closed(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
 
-    path.write_text(path.read_text().replace("key_vault_secrets_ready = true", "key_vault_secrets_ready = false"))
+    path.write_text(path.read_text().replace(
+        "\nkey_vault_secrets_ready = true\n",
+        "\nkey_vault_secrets_ready = false\n",
+    ))
     result = subprocess.run(
         [sys.executable, validator, path], text=True, capture_output=True
     )

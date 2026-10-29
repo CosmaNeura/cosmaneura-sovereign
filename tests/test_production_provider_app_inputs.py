@@ -26,8 +26,17 @@ def production_inputs(*, provider: bool = False, dual: bool = False) -> str:
         source = source.replace("production_provider_app_enabled = false", "production_provider_app_enabled = true")
     if dual:
         source = source.replace("live_apps_enabled       = false", "live_apps_enabled       = true")
+    if provider:
+        source = source.replace(
+            "production_provider_key_vault_secrets_ready = false",
+            "production_provider_key_vault_secrets_ready = true",
+        )
+    if dual:
+        source = source.replace(
+            "\nkey_vault_secrets_ready = false\n",
+            "\nkey_vault_secrets_ready = true\n",
+        )
     if provider or dual:
-        source = source.replace("key_vault_secrets_ready = false", "key_vault_secrets_ready = true")
         source = source.replace('initial_image_ref        = ""',
                                 'initial_image_ref        = "cosmaneurasovereignprodregistry.azurecr.io/'
                                 'cosmaneura/sovereign@sha256:' + "a" * 64 + '"')
@@ -47,9 +56,12 @@ def test_creation_inputs_accept_only_explicit_dark_provider_only_or_legacy_dual_
     assert status in result.stdout
 
 
-def test_legacy_production_inputs_without_the_new_control_remain_accepted(tmp_path: Path) -> None:
+def test_legacy_production_inputs_without_the_new_controls_remain_accepted(tmp_path: Path) -> None:
     source = "\n".join(line for line in production_inputs(dual=True).splitlines()
-                       if not line.startswith("production_provider_app_enabled ="))
+                       if not line.startswith((
+                           "production_provider_app_enabled =",
+                           "production_provider_key_vault_secrets_ready =",
+                       )))
     result = validate(tmp_path, source)
     assert result.returncode == 0, result.stderr
     assert "prod enabled" in result.stdout
@@ -63,7 +75,8 @@ def test_creation_inputs_refuse_combining_provider_only_and_dual_gates(tmp_path:
 
 @pytest.mark.parametrize("old,new,message", [
     ("production_provider_app_enabled = true", 'production_provider_app_enabled = "true"', "must be literal true or false"),
-    ("key_vault_secrets_ready = true", "key_vault_secrets_ready = false", "live apps require key_vault_secrets_ready=true"),
+    ("production_provider_key_vault_secrets_ready = true", "production_provider_key_vault_secrets_ready = false", "provider-vault readiness true"),
+    ("production_provider_key_vault_secrets_ready = true", 'production_provider_key_vault_secrets_ready = "true"', "must be literal true or false"),
     ("@sha256:" + "a" * 64, ":latest", "immutable digest"),
     ("cosmaneurasovereignprodregistry.azurecr.io", "cosmaneurasovereignstagingregistry.azurecr.io", "exact prod ACR"),
 ])
@@ -75,6 +88,30 @@ def test_provider_only_creation_requires_literal_controls_ready_secrets_and_immu
     result = validate(tmp_path, source.replace(old, new))
     assert result.returncode == 1
     assert message in result.stderr
+
+
+def test_provider_only_creation_refuses_the_dual_vault_readiness_assertion(
+    tmp_path: Path,
+) -> None:
+    source = production_inputs(provider=True).replace(
+        "\nkey_vault_secrets_ready = false\n",
+        "\nkey_vault_secrets_ready = true\n",
+    )
+    result = validate(tmp_path, source)
+    assert result.returncode == 1
+    assert "dual-app readiness false" in result.stderr
+
+
+def test_provider_readiness_cannot_persist_without_the_provider_only_gate(
+    tmp_path: Path,
+) -> None:
+    source = production_inputs().replace(
+        "production_provider_key_vault_secrets_ready = false",
+        "production_provider_key_vault_secrets_ready = true",
+    )
+    result = validate(tmp_path, source)
+    assert result.returncode == 1
+    assert "requires production_provider_app_enabled=true" in result.stderr
 
 
 def test_staging_inputs_keep_existing_semantics_and_refuse_production_control(tmp_path: Path) -> None:

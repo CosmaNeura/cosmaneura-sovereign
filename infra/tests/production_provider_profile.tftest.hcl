@@ -171,9 +171,23 @@ run "staging_contract_remains_unchanged" {
 run "production_provider_only_creates_no_public_workload_or_config_read" {
   command = plan
   variables {
-    production_provider_app_enabled = true
-    key_vault_secrets_ready         = true
-    initial_image_ref               = "cosmaneurasovereignprodregistry.azurecr.io/cosmaneura/sovereign@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    production_provider_app_enabled             = true
+    production_provider_key_vault_secrets_ready = true
+    initial_image_ref                           = "cosmaneurasovereignprodregistry.azurecr.io/cosmaneura/sovereign@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+  override_resource {
+    target = azurerm_key_vault.provider
+    values = {
+      id        = "/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/synthetic-sovereign/providers/Microsoft.KeyVault/vaults/synthetic-provider-vault"
+      vault_uri = "https://synthetic-provider-vault.vault.azure.net/"
+    }
+  }
+  override_resource {
+    target = azurerm_key_vault.public
+    values = {
+      id        = "/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/synthetic-sovereign/providers/Microsoft.KeyVault/vaults/synthetic-public-vault"
+      vault_uri = "https://synthetic-public-vault.vault.azure.net/"
+    }
   }
 
   assert {
@@ -193,6 +207,23 @@ run "production_provider_only_creates_no_public_workload_or_config_read" {
       [for env in azurerm_container_app.sovereign[0].template[0].container[0].env : env.value if env.name == "MOUNT_PROFILE"] == ["provider_assistant"]
     )
     error_message = "Provider app creation must retain the dark Session Prep profile and provider mount."
+  }
+  assert {
+    condition     = length(azurerm_container_app.sovereign[0].secret) == 3
+    error_message = "Provider-only production must bind exactly three runtime secrets."
+  }
+  assert {
+    condition = local.provider_runtime_secret_vars == toset([
+      "AZURE_OPENAI_API_KEY", "MAGISTERIUM_API_KEY", "SOVEREIGN_RECORD_GRANT_SECRET",
+    ])
+    error_message = "Provider-only production must bind only the exact provider runtime secret names."
+  }
+  assert {
+    condition = alltrue([
+      for secret in azurerm_container_app.sovereign[0].secret :
+      startswith(secret.key_vault_secret_id, "https://synthetic-provider-vault.vault.azure.net/secrets/")
+    ])
+    error_message = "Provider-only production secret references must all resolve through the provider vault."
   }
 }
 
@@ -227,14 +258,24 @@ run "production_rejects_provider_only_combined_with_legacy_dual_gate" {
   expect_failures = [var.production_provider_app_enabled]
 }
 
+run "production_provider_only_rejects_global_readiness_in_place_of_provider_readiness" {
+  command = plan
+  variables {
+    production_provider_app_enabled = true
+    key_vault_secrets_ready         = true
+    initial_image_ref               = "cosmaneurasovereignprodregistry.azurecr.io/cosmaneura/sovereign@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+  expect_failures = [azurerm_container_app.sovereign]
+}
+
 run "staging_rejects_the_production_provider_control" {
   command = plan
   variables {
-    deployment_environment          = "staging"
-    azure_deid_service_id           = null
-    production_provider_app_enabled = true
-    key_vault_secrets_ready         = true
-    initial_image_ref               = "cosmaneurasovereignstagingregistry.azurecr.io/cosmaneura/sovereign@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    deployment_environment                      = "staging"
+    azure_deid_service_id                       = null
+    production_provider_app_enabled             = true
+    production_provider_key_vault_secrets_ready = true
+    initial_image_ref                           = "cosmaneurasovereignstagingregistry.azurecr.io/cosmaneura/sovereign@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   }
   override_resource {
     target = azurerm_container_registry.main
@@ -244,6 +285,16 @@ run "staging_rejects_the_production_provider_control" {
     }
   }
   expect_failures = [var.production_provider_app_enabled]
+}
+
+run "staging_rejects_provider_only_vault_readiness_without_the_provider_gate" {
+  command = plan
+  variables {
+    deployment_environment                      = "staging"
+    azure_deid_service_id                       = null
+    production_provider_key_vault_secrets_ready = true
+  }
+  expect_failures = [var.production_provider_key_vault_secrets_ready]
 }
 
 run "staging_dual_creation_retains_existing_workloads_and_credentials" {
