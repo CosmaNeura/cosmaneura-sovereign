@@ -4,6 +4,9 @@ set -euo pipefail
 
 readonly UV_VERSION="0.12.5"
 readonly LOCK_CUTOFF="2026-08-16T00:00:00Z"
+# Advance only the four reviewed security fixes; unrelated packages retain
+# the original resolution cutoff. Both generation and --check use this list.
+readonly SECURITY_FIX_CUTOFF="2026-10-29T00:00:00Z"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -23,6 +26,10 @@ compile_lock() {
     --only-binary :all: \
     --generate-hashes \
     --exclude-newer "$LOCK_CUTOFF" \
+    --exclude-newer-package "certifi=$SECURITY_FIX_CUTOFF" \
+    --exclude-newer-package "pyjwt=$SECURITY_FIX_CUTOFF" \
+    --exclude-newer-package "urllib3=$SECURITY_FIX_CUTOFF" \
+    --exclude-newer-package "pytest=$SECURITY_FIX_CUTOFF" \
     --custom-compile-command "tools/compile_requirements_locks.sh" \
     --quiet \
     --output-file "$output"

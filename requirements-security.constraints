@@ -1,0 +1,8 @@
+# Security floors for packages already required by the runtime graph. These
+# constraints do not install new packages or broaden enabled integrations.
+# certifi 2026.10.19 removes the compromised emSign ECC Root CA - G3 while
+# preserving the unaffected roots (GHSA-6q48-6c7w-9gw2).
+certifi>=2026.10.19
+# Streaming/proxy corrections in GHSA-8988-9cw3-xx77,
+# GHSA-gh4c-6fx4-qh6g and GHSA-vxq7-64xx-v4gw.
+urllib3>=2.8.0,<3
