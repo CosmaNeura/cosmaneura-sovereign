@@ -133,7 +133,7 @@ resource "azurerm_role_assignment" "bootstrap_public_secrets" {
 
 locals {
   provider_key_vault_secret_ids = {
-    for name in var.sovereign_secret_vars : name =>
+    for name in local.provider_runtime_secret_vars : name =>
     "${azurerm_key_vault.provider.vault_uri}secrets/${replace(lower(name), "_", "-")}"
   }
   public_key_vault_secret_ids = {

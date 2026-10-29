@@ -30,6 +30,8 @@ PROVIDER_SECRETS = {
     "ATHENA_CLIENT_ID", "ATHENA_CLIENT_SECRET",
     "SOVEREIGN_RECORD_GRANT_SECRET",
 }
+PRODUCTION_SESSION_PREP_PUBLIC = {"FEATURE_SESSION_PREP", "SESSION_PREP_CONTEXT_SOURCE"}
+ATHENA_SECRETS = {"ATHENA_CLIENT_ID", "ATHENA_CLIENT_SECRET"}
 PUBLIC_PUBLIC = {
     "MOCK_MODE", "SOVEREIGN_MODE", "LLM_PROVIDER", "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_API_VERSION", "REASONING_MODEL", "FAST_MODEL",
@@ -78,14 +80,17 @@ STAGING_PROVIDER_AUTH = {
 }
 
 PRODUCTION_PROVIDER_AUTHORITY = {
-    "AUTH_MODE": "oidc",
-    "PLATFORM_AGENT_API_ENABLED": "false",
+    # Core verifies the browser actor. Sovereign accepts only Core's opaque
+    # mount token and calls Agent API using its provider-only managed identity.
+    "AUTH_MODE": "disabled",
+    "PLATFORM_AGENT_API_ENABLED": "true",
     "PLATFORM_AGENT_API_BASE_URL": "https://app.cosmaneura.com",
     "PLATFORM_AGENT_API_SCOPE": (
         "api://af957741-0342-498b-8496-e93706af9e99/.default"
     ),
-    "FEATURE_ATHENA_LABS": "true",
-    "AUDIT_SINK": "file",
+    "FEATURE_ATHENA_LABS": "false",
+    "AUDIT_SINK": "stdout",
+    "CORS_ALLOW_ORIGINS": '["https://app.cosmaneura.com"]',
 }
 
 FIXED = {
@@ -221,6 +226,9 @@ def validate(environment: str, mount: str, values: dict[str, str]) -> None:
         raise ConfigError("environment must be prod or staging")
     if mount == "provider":
         public_keys, secret_keys = PROVIDER_PUBLIC, PROVIDER_SECRETS
+        if environment == "prod":
+            public_keys = public_keys | PRODUCTION_SESSION_PREP_PUBLIC
+            secret_keys = secret_keys - ATHENA_SECRETS
     elif mount == "public":
         public_keys, secret_keys = PUBLIC_PUBLIC, PUBLIC_SECRETS
     else:
@@ -237,7 +245,8 @@ def validate(environment: str, mount: str, values: dict[str, str]) -> None:
         if not values[name].startswith("op://") or len(values[name]) <= len("op://"):
             raise ConfigError(f"{name} must be a non-empty op:// reference")
     vault = ONEPASSWORD_VAULTS[environment]
-    for name, item in SECRET_ITEMS[mount].items():
+    for name in sorted(secret_keys):
+        item = SECRET_ITEMS[mount][name]
         expected = f"op://{vault}/{item}"
         if values[name] != expected:
             raise ConfigError(
@@ -259,6 +268,15 @@ def validate(environment: str, mount: str, values: dict[str, str]) -> None:
                 raise ConfigError(
                     f"{name} must match the production authority activation gate"
                 )
+        enabled = values["FEATURE_SESSION_PREP"]
+        expected_source = {"false": "synthetic", "true": "platform"}.get(enabled)
+        if expected_source is None:
+            raise ConfigError("FEATURE_SESSION_PREP must be literal true or false")
+        if values["SESSION_PREP_CONTEXT_SOURCE"] != expected_source:
+            raise ConfigError(
+                "Production Session Prep requires false/synthetic while dark "
+                "or true/platform for a separately reviewed activation"
+            )
     for name in URL_KEYS & values.keys():
         _https_url(name, values[name])
     _cors(values["CORS_ALLOW_ORIGINS"])

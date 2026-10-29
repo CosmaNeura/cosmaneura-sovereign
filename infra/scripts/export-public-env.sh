@@ -14,7 +14,7 @@ if [[ ! -f "$FILE" ]]; then
 fi
 
 # Terraform must enforce the same complete mount contract as preflight; an
-# operator cannot bypass fixed Preview/auth/BAA/public-isolation invariants by
+# operator cannot bypass environment-specific authority/public-isolation gates by
 # skipping the runbook and calling `tofu apply` directly.
 python3 "$HERE/validate-deployment-env.py" \
   "$ENVIRONMENT" "$MOUNT" "$FILE" >/dev/null

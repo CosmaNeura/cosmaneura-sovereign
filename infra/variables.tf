@@ -132,6 +132,22 @@ variable "sovereign_public_vars" {
   ]
 }
 
+locals {
+  # Production has a default-off Session Prep profile. Keep the accepted
+  # staging env contract unchanged; its release helper owns those feature keys.
+  provider_runtime_public_vars = setunion(
+    var.sovereign_public_vars,
+    local.environment == "prod" ? toset([
+      "FEATURE_SESSION_PREP", "SESSION_PREP_CONTEXT_SOURCE",
+    ]) : toset([]),
+  )
+  # The production provider beta does not use Athena. Do not make unused EHR
+  # credentials a prerequisite or project them into its app or vault bindings.
+  provider_runtime_secret_vars = local.environment == "prod" ? setsubtract(
+    var.sovereign_secret_vars, toset(["ATHENA_CLIENT_ID", "ATHENA_CLIENT_SECRET"]),
+  ) : var.sovereign_secret_vars
+}
+
 # The public app uses a separate environment export and a deliberately smaller
 # allowlist. In particular, no EHR, BAA, provider-auth, or de-id setting can be
 # injected by these dynamic blocks.
@@ -180,7 +196,7 @@ data "external" "provider_public_config" {
     abspath("${path.module}/scripts/export-public-env.sh"),
     local.environment,
     abspath("${path.module}/../.env.${local.deployment_context.env_file_suffix}.backend"),
-    join(",", sort(tolist(var.sovereign_public_vars))),
+    join(",", sort(tolist(local.provider_runtime_public_vars))),
     "provider",
   ]
   working_dir = abspath(path.module)

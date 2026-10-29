@@ -62,12 +62,15 @@ for item in items:
 PY
 }
 
-provider_expected="$(printf '%s\n' \
-  athena-client-id \
-  athena-client-secret \
-  azure-openai-api-key \
-  magisterium-api-key \
-  sovereign-record-grant-secret | LC_ALL=C sort)"
+provider_names=(
+  azure-openai-api-key
+  magisterium-api-key
+  sovereign-record-grant-secret
+)
+if [[ "$DEPLOYMENT_ENVIRONMENT" == "staging" ]]; then
+  provider_names+=(athena-client-id athena-client-secret)
+fi
+provider_expected="$(printf '%s\n' "${provider_names[@]}" | LC_ALL=C sort)"
 public_expected="$(printf '%s\n' \
   azure-openai-api-key \
   magisterium-api-key | LC_ALL=C sort)"
