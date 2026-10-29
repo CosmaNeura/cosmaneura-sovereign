@@ -4,16 +4,22 @@
 # auth, that the env file is complete, and that the Terraform is valid. Safe to
 # run repeatedly; it changes nothing. Run from the repo root or infra/.
 #
-#   ./infra/scripts/preflight.sh <prod|staging>
+#   ./infra/scripts/preflight.sh <prod|staging> [dual|provider-only]
 set -uo pipefail
 
 # resolve repo root regardless of where we're called from
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-DEPLOYMENT_ENVIRONMENT="${1:?usage: preflight.sh <prod|staging>}"
+DEPLOYMENT_ENVIRONMENT="${1:?usage: preflight.sh <prod|staging> [dual|provider-only]}"
+if (( $# > 2 )); then
+  echo "usage: preflight.sh <prod|staging> [dual|provider-only]" >&2
+  exit 2
+fi
+SOVEREIGN_RELEASE_SCOPE="${2:-${SOVEREIGN_RELEASE_SCOPE:-dual}}"
 source "$HERE/deployment-context.sh"
 load_deployment_context || exit $?
-export DEPLOYMENT_ENVIRONMENT
+load_release_scope || exit $?
+export DEPLOYMENT_ENVIRONMENT SOVEREIGN_RELEASE_SCOPE
 export TF_VAR_deployment_environment="$DEPLOYMENT_ENVIRONMENT"
 cd "$ROOT"
 
@@ -50,13 +56,19 @@ if op whoami >/dev/null 2>&1; then
 else
   bad "op not authenticated — needed to resolve op:// secret references"
 fi
-echo "== Config (provider + public) =="
+echo "== Config ($SOVEREIGN_RELEASE_SCOPE) =="
 deployment_gate_status=""
 if deployment_gate_status="$(python3 "$HERE/validate-deployment-inputs.py" \
     "$ROOT/infra/deployment.auto.tfvars" "$DEPLOYMENT_ENVIRONMENT")"; then
   ok "persistent Terraform deployment gates are internally consistent"
 else
   bad "infra/deployment.auto.tfvars is missing or unsafe (copy and validate the example)"
+fi
+if [[ "$deployment_gate_status" == *"provider-only enabled)" &&
+      "$SOVEREIGN_RELEASE_SCOPE" != "provider-only" ]] ||
+   [[ "$deployment_gate_status" == *"(prod enabled)" &&
+      "$SOVEREIGN_RELEASE_SCOPE" == "provider-only" ]]; then
+  bad "release scope conflicts with the persistent app/readiness controls"
 fi
 if python3 "$HERE/validate-deployment-env.py" \
     "$DEPLOYMENT_ENVIRONMENT" provider \
@@ -65,12 +77,16 @@ if python3 "$HERE/validate-deployment-env.py" \
 else
   bad ".env.${EXPECTED_ENV_FILE_SUFFIX}.backend is missing or unsafe (run the validator directly)"
 fi
-if python3 "$HERE/validate-deployment-env.py" \
-    "$DEPLOYMENT_ENVIRONMENT" public \
-    "$ROOT/.env.${EXPECTED_ENV_FILE_SUFFIX}.public" >/dev/null; then
-  ok ".env.${EXPECTED_ENV_FILE_SUFFIX}.public satisfies public invariants"
+if [[ "$SOVEREIGN_RELEASE_SCOPE" == "provider-only" ]]; then
+  ok "public env is excluded from provider-only preparation"
 else
-  bad ".env.${EXPECTED_ENV_FILE_SUFFIX}.public is missing or unsafe (run the validator directly)"
+  if python3 "$HERE/validate-deployment-env.py" \
+      "$DEPLOYMENT_ENVIRONMENT" public \
+      "$ROOT/.env.${EXPECTED_ENV_FILE_SUFFIX}.public" >/dev/null; then
+    ok ".env.${EXPECTED_ENV_FILE_SUFFIX}.public satisfies public invariants"
+  else
+    bad ".env.${EXPECTED_ENV_FILE_SUFFIX}.public is missing or unsafe (run the validator directly)"
+  fi
 fi
 
 if python3 "$HERE/verify-backend-context.py" \
@@ -89,7 +105,24 @@ if [[ "$deployment_gate_status" == *" enabled)" ]]; then
   else
     bad "vault inventory or runtime role boundary verification failed"
   fi
-  if az containerapp show \
+  if [[ "$SOVEREIGN_RELEASE_SCOPE" == "provider-only" ]]; then
+    if app_inventory="$(provider_only_app_inventory)"; then
+      if [[ "$app_inventory" == "present" ]]; then
+        if RESOURCE_GROUP="$EXPECTED_RESOURCE_GROUP" \
+          PROVIDER_APP="$EXPECTED_PROVIDER_APP" PUBLIC_APP="$EXPECTED_PUBLIC_APP" \
+          REGISTRY_SERVER="$EXPECTED_REGISTRY_SERVER" \
+          "$HERE/verify-live-app-boundaries.sh" >/dev/null 2>&1; then
+          ok "provider app binds are mount-exact and public app is absent"
+        else
+          bad "provider app identity or secret reference boundary verification failed"
+        fi
+      else
+        warn "live provider boundary check awaits the first reviewed provider-only creation"
+      fi
+    else
+      bad "provider-only app inventory could not prove the public app absent"
+    fi
+  elif az containerapp show \
       --resource-group "$EXPECTED_RESOURCE_GROUP" \
       --name "$EXPECTED_PROVIDER_APP" >/dev/null 2>&1 &&
     az containerapp show \

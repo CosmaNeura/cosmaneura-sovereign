@@ -325,3 +325,99 @@ run "staging_dual_creation_retains_existing_workloads_and_credentials" {
     error_message = "Staging retains its legacy dual app/config/secret and default-off GitHub operator behavior."
   }
 }
+
+
+run "provider_only_bootstrap_grants_only_local_push_and_provider_seed" {
+  command = plan
+  variables {
+    bootstrap_release_scope      = "provider-only"
+    bootstrap_operator_object_id = "44444444-4444-4444-8444-444444444444"
+    github_deploy_enabled        = false
+  }
+  assert {
+    condition = (
+      length(azurerm_role_assignment.bootstrap_acr_push) == 1 &&
+      length(azurerm_role_assignment.bootstrap_provider_secrets) == 1 &&
+      length(azurerm_role_assignment.bootstrap_acr_tasks) == 0 &&
+      length(azurerm_role_assignment.bootstrap_public_secrets) == 0 &&
+      length(azurerm_container_app.sovereign) == 0 &&
+      length(azurerm_container_app.public) == 0 &&
+      length(data.external.public_config) == 0
+    )
+    error_message = "Provider-only bootstrap must grant only ACR push and provider seeding, without any app or public config."
+  }
+  assert {
+    condition = (
+      azurerm_role_assignment.provider_acr_pull.role_definition_name == "AcrPull" &&
+      azurerm_role_assignment.public_acr_pull.role_definition_name == "AcrPull" &&
+      azurerm_role_assignment.provider_key_vault_secrets.role_definition_name == "Key Vault Secrets User" &&
+      azurerm_role_assignment.public_key_vault_secrets.role_definition_name == "Key Vault Secrets User"
+    )
+    error_message = "Bootstrap scope must not change either runtime identity's grants."
+  }
+}
+
+run "default_production_bootstrap_preserves_all_four_operator_roles" {
+  command = plan
+  variables {
+    bootstrap_operator_object_id = "44444444-4444-4444-8444-444444444444"
+  }
+  assert {
+    condition = (
+      var.bootstrap_release_scope == "dual" &&
+      length(azurerm_role_assignment.bootstrap_acr_push) == 1 &&
+      length(azurerm_role_assignment.bootstrap_acr_tasks) == 1 &&
+      length(azurerm_role_assignment.bootstrap_provider_secrets) == 1 &&
+      length(azurerm_role_assignment.bootstrap_public_secrets) == 1
+    )
+    error_message = "Default production bootstrap retains the established dual grant set."
+  }
+}
+
+run "staging_bootstrap_preserves_the_existing_dual_grants" {
+  command = plan
+  variables {
+    deployment_environment       = "staging"
+    azure_deid_service_id        = null
+    bootstrap_operator_object_id = "44444444-4444-4444-8444-444444444444"
+  }
+  assert {
+    condition = (
+      var.bootstrap_release_scope == "dual" &&
+      length(azurerm_role_assignment.bootstrap_acr_push) == 1 &&
+      length(azurerm_role_assignment.bootstrap_acr_tasks) == 1 &&
+      length(azurerm_role_assignment.bootstrap_provider_secrets) == 1 &&
+      length(azurerm_role_assignment.bootstrap_public_secrets) == 1
+    )
+    error_message = "Staging retains its established four temporary operator grants."
+  }
+}
+
+run "staging_rejects_provider_only_bootstrap_scope" {
+  command = plan
+  variables {
+    deployment_environment  = "staging"
+    azure_deid_service_id   = null
+    bootstrap_release_scope = "provider-only"
+  }
+  expect_failures = [var.bootstrap_release_scope]
+}
+
+run "bootstrap_rejects_unknown_scope" {
+  command = plan
+  variables {
+    bootstrap_release_scope = "provider"
+  }
+  expect_failures = [var.bootstrap_release_scope]
+}
+
+run "provider_only_bootstrap_refuses_dual_app_and_readiness_controls" {
+  command = plan
+  variables {
+    bootstrap_release_scope = "provider-only"
+    live_apps_enabled       = true
+    key_vault_secrets_ready = true
+    initial_image_ref       = "cosmaneurasovereignprodregistry.azurecr.io/cosmaneura/sovereign@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+  expect_failures = [var.bootstrap_release_scope]
+}

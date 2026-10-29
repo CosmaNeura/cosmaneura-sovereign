@@ -6,6 +6,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/deployment-context.sh"
 load_deployment_context
+load_release_scope
 
 : "${RESOURCE_GROUP:?RESOURCE_GROUP is required}"
 : "${PROVIDER_APP:?PROVIDER_APP is required}"
@@ -137,10 +138,18 @@ fi
 provider_secrets="$(printf '%s\n' "${provider_names[@]}" | LC_ALL=C sort)"
 public_secrets="$(printf '%s\n' azure-openai-api-key magisterium-api-key | LC_ALL=C sort)"
 
+if [[ "$SOVEREIGN_RELEASE_SCOPE" == "provider-only" ]]; then
+  [[ "$(provider_only_app_inventory)" == "present" ]] || {
+    echo "provider-only live verification requires the sole provider app" >&2
+    exit 1
+  }
+fi
 verify_app \
   "$PROVIDER_APP" "$PROVIDER_IDENTITY" "$PROVIDER_ENVIRONMENT" \
   "$PROVIDER_CONTAINER" "$PROVIDER_VAULT" "$provider_secrets"
-verify_app \
-  "$PUBLIC_APP" "$PUBLIC_IDENTITY" "$PUBLIC_ENVIRONMENT" \
-  "$PUBLIC_CONTAINER" "$PUBLIC_VAULT" "$public_secrets"
+if [[ "$SOVEREIGN_RELEASE_SCOPE" == "dual" ]]; then
+  verify_app \
+    "$PUBLIC_APP" "$PUBLIC_IDENTITY" "$PUBLIC_ENVIRONMENT" \
+    "$PUBLIC_CONTAINER" "$PUBLIC_VAULT" "$public_secrets"
+fi
 echo "live apps retain exact mount-specific identity and secret bindings" >&2

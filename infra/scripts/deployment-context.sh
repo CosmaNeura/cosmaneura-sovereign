@@ -42,3 +42,43 @@ require_deployment_value() {
     return 2
   fi
 }
+
+# Provider-only is a separate production preparation path. Callers must opt in
+# explicitly; staging and the established paired path keep their dual default.
+load_release_scope() {
+  SOVEREIGN_RELEASE_SCOPE="${SOVEREIGN_RELEASE_SCOPE:-dual}"
+  case "$SOVEREIGN_RELEASE_SCOPE" in
+    dual) ;;
+    provider-only)
+      if [[ "$DEPLOYMENT_ENVIRONMENT" != "prod" ]]; then
+        echo "provider-only release scope requires prod" >&2
+        return 2
+      fi
+      ;;
+    *)
+      echo "SOVEREIGN_RELEASE_SCOPE must be exactly dual or provider-only" >&2
+      return 2
+      ;;
+  esac
+}
+
+provider_only_app_inventory() {
+  local inventory
+  [[ "$SOVEREIGN_RELEASE_SCOPE" == "provider-only" ]] || return 2
+  inventory="$(az containerapp list --resource-group "$EXPECTED_RESOURCE_GROUP" \
+    --query '[].name' --output json)" || return 1
+  python3 - "$inventory" "$EXPECTED_PROVIDER_APP" <<'PY'
+import json
+import sys
+
+items = json.loads(sys.argv[1])
+if (
+    not isinstance(items, list)
+    or any(not isinstance(item, str) or not item for item in items)
+    or len(items) != len(set(items))
+    or any(item != sys.argv[2] for item in items)
+):
+    raise SystemExit("provider-only release requires public and other apps absent")
+print("present" if items else "absent")
+PY
+}

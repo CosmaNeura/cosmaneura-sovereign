@@ -5,6 +5,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/deployment-context.sh"
 load_deployment_context
+load_release_scope
 
 PROVIDER_VAULT="${PROVIDER_VAULT:-$EXPECTED_PROVIDER_VAULT}"
 PUBLIC_VAULT="${PUBLIC_VAULT:-$EXPECTED_PUBLIC_VAULT}"
@@ -83,7 +84,13 @@ if [[ -z "$provider_id" || -z "$public_id" || "$provider_id" == "$public_id" ]];
 fi
 
 verify_vault "$PROVIDER_VAULT" provider_assistant "$provider_expected"
-verify_vault "$PUBLIC_VAULT" public "$public_expected"
+if [[ "$SOVEREIGN_RELEASE_SCOPE" == "provider-only" ]]; then
+  # Prove the unused public foundation remains empty. Skipping its secrets is
+  # not an assertion that the anonymous runtime is ready to be created.
+  verify_vault "$PUBLIC_VAULT" public ""
+else
+  verify_vault "$PUBLIC_VAULT" public "$public_expected"
+fi
 DEPLOYMENT_ENVIRONMENT="$DEPLOYMENT_ENVIRONMENT" \
   "$HERE/verify-runtime-role-boundaries.sh"
-echo "both Key Vault inventories match their exact mount allowlists" >&2
+echo "both Key Vault inventories match their exact mount allowlists ($SOVEREIGN_RELEASE_SCOPE)" >&2

@@ -94,6 +94,22 @@ variable "initial_image_ref" {
   }
 }
 
+variable "bootstrap_release_scope" {
+  description = "Temporary operator-grant scope: dual preserves the existing remote build/two-vault bootstrap; provider-only is production-only local immutable publication with provider-vault seeding. Runtime roles are unchanged."
+  type        = string
+  default     = "dual"
+
+  validation {
+    condition = contains(["dual", "provider-only"], var.bootstrap_release_scope) && (
+      var.bootstrap_release_scope == "dual" || (
+        var.deployment_environment == "prod" && !var.live_apps_enabled &&
+        !var.key_vault_secrets_ready
+      )
+    )
+    error_message = "bootstrap_release_scope must be dual, or provider-only in prod with both dual-app/readiness controls false."
+  }
+}
+
 variable "bootstrap_operator_object_id" {
   description = "Temporary Entra object ID allowed to push the first image and seed both vaults"
   type        = string
