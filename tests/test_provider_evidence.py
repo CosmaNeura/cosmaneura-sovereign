@@ -19,7 +19,7 @@ from app.agents.visit_prep_agent import VisitPrepAgent
 from app.clients.platform_conversation import ConversationDeliveryError
 from app.clients.provider_evidence import (
     EVIDENCE_REVIEW_UNAVAILABLE, EVIDENCE_UNAVAILABLE,
-    evidence_prompt, validated_evidence,
+    PARTIAL_CONTEXT_UNAVAILABLE, evidence_prompt, validated_evidence,
 )
 from app.clients.provider_question_contract import ProviderQuestionResponse
 from app.config import ComplianceProfile, Persona, Settings
@@ -122,6 +122,38 @@ def test_one_invalid_citation_discards_every_excerpt_and_generated_claim(mutate)
 ])
 def test_closed_bounded_selection_rejects_duplicate_keys_free_prose_and_empty_answer(raw):
     assert validate(raw).content == EVIDENCE_UNAVAILABLE
+
+
+def test_empty_selection_discloses_incomplete_partial_preparation_without_guessing_reason():
+    raw = source_only_response("unavailable")
+    raw["result"]["completeness"] = "partial"
+    ctx = ProviderQuestionResponse.model_validate(raw).result
+
+    result = validated_evidence(output(), ctx, agent="synthetic_agent", data={})
+
+    assert result.content == PARTIAL_CONTEXT_UNAVAILABLE
+    assert "not all otherwise eligible reviewed-note content" in result.content.lower()
+    assert "selection limit" not in result.content.lower()
+    assert "outside the current selection" not in result.content.lower()
+    assert result.citations == []
+    assert result.data["record_evidence_status"] == "unavailable"
+
+
+def test_source_temporarily_unavailable_partial_context_keeps_truthful_generic_non_answer():
+    # The provider-question projection intentionally does not expose whether
+    # partial completeness came from selection_limit or
+    # source_temporarily_unavailable. Simulate the latter projection and verify
+    # Sovereign does not claim that the source was merely outside a size cap.
+    raw = source_only_response("unavailable")
+    raw["result"]["completeness"] = "partial"
+    ctx = ProviderQuestionResponse.model_validate(raw).result
+
+    result = validated_evidence(output(), ctx, agent="synthetic_agent", data={})
+
+    assert result.content == PARTIAL_CONTEXT_UNAVAILABLE
+    assert "was available to this preparation" in result.content
+    assert "outside" not in result.content.lower()
+    assert result.citations == []
 
 
 def test_partial_line_cannot_drop_correction_negation_or_the_order_status():

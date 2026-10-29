@@ -80,6 +80,35 @@ def test_actual_offline_classifier_reproduces_and_recovers_the_claude_mixed_quer
 
 
 @pytest.mark.parametrize("message", [
+    "How many cups of water does Don drink per day?",
+    "What appointment time does Don prefer?",
+])
+def test_direct_patient_fact_false_negative_still_uses_exact_reviewed_evidence(message):
+    service, context, conversation = sovereign()
+    service.router = Router(service.s, service.llm)
+    service.router.route = AsyncMock(return_value=(
+        Intent.ENGAGEMENT, DoctrinalSensitivity.LOW, "",
+    ))
+    service.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": False})
+    service.llm.complete = AsyncMock(return_value=json.dumps({
+        "excerpts": [{"source_index": 0, "section_index": 0}],
+    }))
+    context.read.return_value = ProviderQuestionResponse.model_validate(reviewed_response())
+
+    response = handle(service, message)
+
+    service.llm.classify_json.assert_not_called()
+    assert context.read.call_count == 1
+    assert "Selected reviewed-note excerpts" in response.answer
+    assert not any("medlineplus" in citation.source.lower()
+                   for citation in response.citations)
+    assert set(response.presentation.suppress) == {"intent_badge", "doctrinal_badge"}
+    assert conversation.write_final_response.call_args.kwargs["presentation"] == (
+        response.presentation.model_dump(mode="json")
+    )
+
+
+@pytest.mark.parametrize("message", [
     "Fetch the latest results from Athena.", "Show the current lab values in Epic.",
     "Query the entire chart for lab trends.", "Please order a CBC.",
     "For this patient, cancel the CBC order.", "Which notes mention fatigue? Then prescribe iron.",
