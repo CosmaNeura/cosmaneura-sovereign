@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 
-SOVEREIGN_SOURCE_COMMIT = "66bba1e6814203a2268bf2104e33b390a7c1db55"
 CONTRACT = "cosmaneura.session-prep.provider-production-preparation"
 SCHEMA_VERSION = 1
 PROVIDER_MOUNT = "provider_assistant"
@@ -67,7 +66,10 @@ def _require_digest(value: object, label: str) -> str:
 
 
 def _require_commit(value: object, label: str) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40,64}", value) is None:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is None
+    ):
         raise PreparationError(f"{label} must be one full lowercase Git object ID")
     return value
 
@@ -420,7 +422,7 @@ def prepare(
     core_oci_layout: Path,
     core_source_commit: str,
     core_image_digest: str,
-    sovereign_source_commit: str = SOVEREIGN_SOURCE_COMMIT,
+    sovereign_source_commit: str,
 ) -> dict[str, Any]:
     source = _source_identity(sovereign_repo, sovereign_source_commit)
     provider_artifact = _oci_identity(
@@ -505,7 +507,7 @@ def verify(
     core_oci_layout: Path,
     core_source_commit: str,
     core_image_digest: str,
-    sovereign_source_commit: str = SOVEREIGN_SOURCE_COMMIT,
+    sovereign_source_commit: str,
 ) -> dict[str, Any]:
     observed = _json_object(
         _read_bounded(manifest, MAX_JSON_BYTES, "preparation manifest"),
@@ -548,6 +550,7 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("prepare", "verify"):
         command = subparsers.add_parser(name)
         command.add_argument("--sovereign-repo", type=Path, required=True)
+        command.add_argument("--sovereign-source-commit", required=True)
         command.add_argument("--sovereign-oci-layout", type=Path, required=True)
         command.add_argument("--sovereign-image-digest", required=True)
         command.add_argument("--core-oci-layout", type=Path, required=True)
@@ -565,6 +568,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     common = {
         "sovereign_repo": arguments.sovereign_repo,
+        "sovereign_source_commit": arguments.sovereign_source_commit,
         "sovereign_oci_layout": arguments.sovereign_oci_layout,
         "sovereign_image_digest": arguments.sovereign_image_digest,
         "core_oci_layout": arguments.core_oci_layout,
