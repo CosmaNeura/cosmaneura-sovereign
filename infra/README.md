@@ -57,6 +57,11 @@ availability and audit-retention budget is decided separately.
   `yq` are not required.
 - Copy the two env examples for the selected boundary. Non-secret allowlisted values are literals;
   runtime secret sources remain `op://` references for the Key Vault sync.
+  Production's provider profile uses Core opaque-token authority and leaves
+  Session Prep false/synthetic by default; a reviewed activation changes the
+  pair to true/platform. It requires no Athena credentials. Staging retains
+  its existing profile and vault inventory. See the bounded
+  [production provider profile](../docs/flight-plans/session-prep-production-provider-profile.md).
   The DeID endpoint is not a file input: Terraform reads it from the existing
   production data resource or the staging-owned resource and injects it only
   into the provider app.

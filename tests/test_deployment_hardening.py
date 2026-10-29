@@ -104,11 +104,9 @@ elif args[:2] == ["containerapp", "show"]:
         runtime_identity_id = identity_id(identity_name)
         secret_names = ["azure-openai-api-key", "magisterium-api-key"]
         if provider:
-            secret_names += [
-                "athena-client-id",
-                "athena-client-secret",
-                "sovereign-record-grant-secret",
-            ]
+            secret_names += ["sovereign-record-grant-secret"]
+            if environment == "staging":
+                secret_names += ["athena-client-id", "athena-client-secret"]
         print(json.dumps({{
             "environment_id": environment_id(environment_name),
             "identity": {{

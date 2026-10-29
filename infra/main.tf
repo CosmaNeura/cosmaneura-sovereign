@@ -206,7 +206,7 @@ resource "azurerm_container_app" "sovereign" {
       }
 
       dynamic "env" {
-        for_each = var.sovereign_public_vars
+        for_each = local.provider_runtime_public_vars
         content {
           name  = env.key
           value = data.external.provider_public_config[count.index].result[env.key]
@@ -214,7 +214,7 @@ resource "azurerm_container_app" "sovereign" {
       }
 
       dynamic "env" {
-        for_each = var.sovereign_secret_vars
+        for_each = local.provider_runtime_secret_vars
         content {
           name        = env.key
           secret_name = replace(lower(env.key), "_", "-")
@@ -225,7 +225,7 @@ resource "azurerm_container_app" "sovereign" {
   }
 
   dynamic "secret" {
-    for_each = var.sovereign_secret_vars
+    for_each = local.provider_runtime_secret_vars
     content {
       name                = replace(lower(secret.key), "_", "-")
       key_vault_secret_id = local.provider_key_vault_secret_ids[secret.key]
