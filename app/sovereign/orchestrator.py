@@ -1048,20 +1048,55 @@ class Sovereign:
             # This selection does not enable labs, bypass authority, or pretend
             # to have fulfilled a live EHR/tool request.
             needs_context: bool | None = None
-            closed_record_question = Router._historical_plan_fact_candidate(request.message)
+            direct_record_question = Router._direct_patient_fact_candidate(request.message)
+            closed_record_question = (
+                Router._historical_plan_fact_candidate(request.message)
+                or direct_record_question
+            )
             historical_visit_question = intent == Intent.VISIT_PREP and closed_record_question
-            if (
-                (intent in {Intent.LAB_REVIEW, Intent.PLAN_WORKBENCH} or historical_visit_question)
-                and self.s.feature_session_prep
+            # A short question about a bound patient's recorded fact can be
+            # misclassified as logistics or an unavailable specialist skill.
+            # Select only the reviewed-note answer lane, never that skill. The
+            # same canonical turn, provider and record-capability gates below
+            # remain mandatory; ethical/doctrinal and unknown intents retain
+            # their original routing.
+            direct_fact_route = direct_record_question and intent in {
+                Intent.ENGAGEMENT, Intent.VISIT_PREP, Intent.LAB_REVIEW,
+                Intent.PLAN_WORKBENCH, Intent.SMALL_TALK, Intent.CONCIERGE,
+                Intent.REFERRAL,
+            }
+            reviewed_record_lane_available = (
+                self.s.feature_session_prep
                 and platform_turn is not None and profile.persona == Persona.PROVIDER
                 and mount.surface == "provider_assistant" and mount.auth_tier == "provider"
                 and {"education:answer", "session-prep:read"}.issubset(mount.capabilities)
+            )
+            if (
+                direct_fact_route and profile.persona == Persona.PROVIDER
+                and not reviewed_record_lane_available
+            ):
+                # Claim the provider fact question before checking availability.
+                # A lost record grant must not dispatch the incorrectly labelled
+                # logistics/specialist agent or answer from general knowledge.
+                return await self._finalize(
+                    "The reviewed visit context is unavailable for this question. "
+                    "I cannot confirm facts from prior visits without current "
+                    "Session Prep access.",
+                    Intent.ENGAGEMENT, profile, trace_id, audit_turn=audit_turn,
+                    platform_turn=platform_turn, user_receipt=user_receipt,
+                    history_context_ref=history_context_ref,
+                    safety_notice="provider_context_unavailable",
+                )
+            if (
+                (intent in {Intent.LAB_REVIEW, Intent.PLAN_WORKBENCH}
+                 or historical_visit_question or direct_fact_route)
+                and reviewed_record_lane_available
             ):
                 try:
                     # VISIT_PREP already requires record context. A closed
                     # historical question changes its answer mode, not its
                     # authority or record scope; no extra classifier is needed.
-                    needs_context = (True if historical_visit_question else
+                    needs_context = (True if historical_visit_question or direct_fact_route else
                                      await self.router.needs_provider_context(request, intent))
                 except UpstreamCallError:
                     raise
