@@ -14,7 +14,7 @@ from app.config import Persona, Settings
 from app.schemas import ChatRequest, DoctrinalSensitivity, Intent
 from app.security.mount import MountResolutionError
 from app.sovereign.router import Router
-from tests.test_provider_question_context import handle, sovereign
+from tests.test_provider_question_context import fixture, handle, sovereign
 from tests.test_provider_reviewed_sources import reviewed_response
 
 
@@ -83,11 +83,17 @@ def test_actual_offline_classifier_reproduces_and_recovers_the_claude_mixed_quer
     "How many cups of water does Don drink per day?",
     "What appointment time does Don prefer?",
 ])
-def test_direct_patient_fact_false_negative_still_uses_exact_reviewed_evidence(message):
+@pytest.mark.parametrize("classified_intent", [
+    Intent.ENGAGEMENT, Intent.VISIT_PREP, Intent.LAB_REVIEW,
+    Intent.PLAN_WORKBENCH, Intent.SMALL_TALK, Intent.CONCIERGE, Intent.REFERRAL,
+])
+def test_direct_patient_fact_false_negative_still_uses_exact_reviewed_evidence(
+    message, classified_intent,
+):
     service, context, conversation = sovereign()
     service.router = Router(service.s, service.llm)
     service.router.route = AsyncMock(return_value=(
-        Intent.ENGAGEMENT, DoctrinalSensitivity.LOW, "",
+        classified_intent, DoctrinalSensitivity.LOW, "",
     ))
     service.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": False})
     service.llm.complete = AsyncMock(return_value=json.dumps({
@@ -106,6 +112,97 @@ def test_direct_patient_fact_false_negative_still_uses_exact_reviewed_evidence(m
     assert conversation.write_final_response.call_args.kwargs["presentation"] == (
         response.presentation.model_dump(mode="json")
     )
+
+
+def test_visit_prep_classification_keeps_appointment_preference_as_dated_quote():
+    service, context, _ = sovereign()
+    service.router = Router(service.s, service.llm)
+    service.router.route = AsyncMock(return_value=(
+        Intent.VISIT_PREP, DoctrinalSensitivity.NONE, "",
+    ))
+    raw = reviewed_response()
+    for index, date in enumerate(("2026-10-20", "2026-10-25")):
+        raw["result"]["provenance"][index]["source_at"] = date + "T14:30:00Z"
+        raw["result"]["reviewed_sources"][index]["source_at"] = date + "T14:30:00Z"
+    raw["result"]["current_through"] = "2026-10-25T14:30:00Z"
+    raw["result"]["generated_at"] = "2026-10-28T12:00:00Z"
+    raw["result"]["reviewed_sources"][0]["sections"] = {
+        "Subjective": "No appointment preference was reported.",
+    }
+    raw["result"]["reviewed_sources"][1]["sections"] = {
+        "Subjective": "Don prefers appointments in the evening.",
+    }
+    context.read.return_value = ProviderQuestionResponse.model_validate(raw)
+    service.llm.complete = AsyncMock(return_value=json.dumps({
+        "excerpts": [{"source_index": 1, "section_index": 0}],
+    }))
+
+    response = handle(service, "What appointment time does Don prefer?")
+
+    assert response.intent == Intent.ENGAGEMENT
+    assert "2026-10-25 — Subjective" in response.answer
+    assert "Don prefers appointments in the evening." in response.answer
+    assert service.arbiter.review.call_args.kwargs["sensitivity"] == DoctrinalSensitivity.LOW
+
+
+@pytest.mark.parametrize("classified_intent", [
+    Intent.ENGAGEMENT, Intent.VISIT_PREP, Intent.LAB_REVIEW,
+    Intent.PLAN_WORKBENCH, Intent.SMALL_TALK, Intent.CONCIERGE, Intent.REFERRAL,
+])
+@pytest.mark.parametrize("unavailable", ["feature", "record_capability"])
+def test_direct_fact_override_requires_current_feature_and_record_grant(
+    classified_intent, unavailable,
+):
+    service, context, _ = sovereign(
+        enabled=unavailable != "feature",
+        record_capability=unavailable != "record_capability",
+    )
+    service.router = Router(service.s, service.llm)
+    service.router.route = AsyncMock(return_value=(
+        classified_intent, DoctrinalSensitivity.LOW, "",
+    ))
+    service.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": False})
+    response = handle(service, "What appointment time does Don prefer?")
+    context.read.assert_not_called()
+    assert "Selected reviewed-note excerpts" not in response.answer
+
+
+def test_direct_fact_with_legacy_summary_cannot_claim_verified_original_excerpts():
+    service, context, _ = sovereign()
+    service.router = Router(service.s, service.llm)
+    service.router.route = AsyncMock(return_value=(
+        Intent.VISIT_PREP, DoctrinalSensitivity.LOW, "",
+    ))
+    context.read.return_value = ProviderQuestionResponse.model_validate(fixture())
+    response = handle(service, "What appointment time does Don prefer?")
+    assert "No factual answer has been confirmed." in response.answer
+    assert "Selected reviewed-note excerpts" not in response.answer
+    service.llm.complete.assert_not_called()
+
+
+@pytest.mark.parametrize("classified_intent", [
+    Intent.LAB_REVIEW, Intent.PLAN_WORKBENCH, Intent.REFERRAL,
+])
+@pytest.mark.parametrize("message", [
+    "Please book Don's next appointment.",
+    "What appointment time does Don prefer? Then book it.",
+    "What treatment should Don take?",
+    "What does Don take? Query Epic for the answer.",
+])
+def test_direct_fact_override_cannot_activate_external_or_advisory_skills(
+    classified_intent, message,
+):
+    service, context, _ = sovereign()
+    service.router = Router(service.s, service.llm)
+    service.router.route = AsyncMock(return_value=(
+        classified_intent, DoctrinalSensitivity.LOW, "",
+    ))
+    service.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": False})
+    response = handle(service, message)
+    assert response.safety_notice == "capability_denied"
+    assert response.intent == classified_intent
+    context.read.assert_not_called()
+    service.llm.complete.assert_not_called()
 
 
 @pytest.mark.parametrize("message", [
@@ -171,12 +268,17 @@ def test_emergency_still_precedes_routing_context_and_canonical_work():
     conversation.write_user_accepted.assert_not_called()
 
 
-def test_ethics_context_keeps_doctrinal_review_badge():
+@pytest.mark.parametrize("message", [
+    "Does the documented prior care plan comply with Catholic ethics?",
+    "What care method does this patient prefer?",
+])
+def test_ethics_context_keeps_doctrinal_review_badge(message):
     service, _, _ = sovereign()
     service.router.route = AsyncMock(return_value=(Intent.ETHICS_CONSULT, DoctrinalSensitivity.NONE, ""))
     ethics = service.agents[Intent.ETHICS_CONSULT]
     ethics.pubmed.search = AsyncMock(return_value=[])
     ethics.llm.classify_json = AsyncMock(return_value={"topic": "clinical ethics"})
-    response = handle(service, "Does the documented prior care plan comply with Catholic ethics?")
+    response = handle(service, message)
+    assert response.intent == Intent.ETHICS_CONSULT
     assert "doctrinal_badge" not in response.presentation.suppress
     assert service.arbiter.review.call_args.kwargs["sensitivity"] == DoctrinalSensitivity.HIGH
