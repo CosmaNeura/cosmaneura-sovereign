@@ -7,6 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/deployment-context.sh"
 load_deployment_context
+load_release_scope
 
 RESOURCE_GROUP="${RESOURCE_GROUP:-$EXPECTED_RESOURCE_GROUP}"
 ACR_NAME="${ACR_NAME:-$EXPECTED_ACR_NAME}"
@@ -45,9 +46,11 @@ require_role() {
 }
 
 require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$acr_scope" "AcrPush"
-require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$acr_scope" "Container Registry Tasks Contributor"
 require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$provider_vault_scope" "Key Vault Secrets Officer"
-require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$public_vault_scope" "Key Vault Secrets Officer"
+if [[ "$SOVEREIGN_RELEASE_SCOPE" == "dual" ]]; then
+  require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$acr_scope" "Container Registry Tasks Contributor"
+  require_role "$BOOTSTRAP_OPERATOR_OBJECT_ID" "$public_vault_scope" "Key Vault Secrets Officer"
+fi
 DEPLOYMENT_ENVIRONMENT="$DEPLOYMENT_ENVIRONMENT" \
 DEID_SERVICE_ID="${DEID_SERVICE_ID:?DEID_SERVICE_ID is required}" \
   "$HERE/verify-runtime-role-boundaries.sh"

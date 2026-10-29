@@ -111,7 +111,7 @@ resource "azurerm_role_assignment" "bootstrap_acr_push" {
 # repository push/read. Remove this temporary role with the other bootstrap
 # operator grants as soon as the first immutable digest is available.
 resource "azurerm_role_assignment" "bootstrap_acr_tasks" {
-  count                = var.bootstrap_operator_object_id == null ? 0 : 1
+  count                = var.bootstrap_operator_object_id == null || var.bootstrap_release_scope == "provider-only" ? 0 : 1
   scope                = azurerm_container_registry.main.id
   role_definition_name = "Container Registry Tasks Contributor"
   principal_id         = var.bootstrap_operator_object_id
@@ -125,7 +125,7 @@ resource "azurerm_role_assignment" "bootstrap_provider_secrets" {
 }
 
 resource "azurerm_role_assignment" "bootstrap_public_secrets" {
-  count                = var.bootstrap_operator_object_id == null ? 0 : 1
+  count                = var.bootstrap_operator_object_id == null || var.bootstrap_release_scope == "provider-only" ? 0 : 1
   scope                = azurerm_key_vault.public.id
   role_definition_name = "Key Vault Secrets Officer"
   principal_id         = var.bootstrap_operator_object_id

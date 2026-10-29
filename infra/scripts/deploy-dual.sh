@@ -59,6 +59,11 @@ unset SOVEREIGN_SYNTHETIC_RECORD_GRANT
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/deployment-context.sh"
 load_deployment_context
+load_release_scope
+if [[ "$SOVEREIGN_RELEASE_SCOPE" != "dual" ]]; then
+  echo "deploy-dual cannot perform a provider-only release" >&2
+  exit 2
+fi
 : "${REGISTRY_SERVER:?REGISTRY_SERVER is required}"
 require_deployment_value RESOURCE_GROUP "$RESOURCE_GROUP" "$EXPECTED_RESOURCE_GROUP"
 require_deployment_value PROVIDER_APP "$PROVIDER_APP" "$EXPECTED_PROVIDER_APP"

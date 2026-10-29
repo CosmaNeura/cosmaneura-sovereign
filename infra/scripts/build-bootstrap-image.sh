@@ -61,6 +61,11 @@ fi
 
 source "$HERE/deployment-context.sh"
 load_deployment_context
+load_release_scope
+if [[ "$SOVEREIGN_RELEASE_SCOPE" != "dual" ]]; then
+  echo "provider-only release uses a separately verified local immutable image; remote bootstrap is not permitted" >&2
+  exit 2
+fi
 require_deployment_value REGISTRY "$REGISTRY" "$EXPECTED_REGISTRY_SERVER"
 
 if [[ ! "$REGISTRY" =~ ^[a-z0-9]{5,50}\.azurecr\.io$ ]]; then
