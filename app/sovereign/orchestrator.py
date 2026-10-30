@@ -99,7 +99,7 @@ from app.clients.labs import (
 )
 from app.clients.magisterium import MagisteriumClient
 from app.compliance import safety, sensitive_disclosure
-from app.compliance.audit import AuditLogger
+from app.compliance.audit import AuditLogger, ReviewDisposition
 from app.compliance.baa import require_baa_covered_llm
 from app.compliance.phi import deidentify
 from app.config import (PROVIDER_BETA_CAPABILITIES, ComplianceProfile, Persona,
@@ -1467,12 +1467,27 @@ class Sovereign:
                         event="phi_scrubbed_for_arbiter",
                         details={"types": deid.redacted_types},
                     )
-            verdict = await self.arbiter.review(
-                deidentified_draft=arbiter_input, intent=intent, sensitivity=sensitivity,
-                **({"historical_record_policy": True} if historical_record_policy else {}),
-            )
+            try:
+                verdict = await self.arbiter.review(
+                    deidentified_draft=arbiter_input, intent=intent, sensitivity=sensitivity,
+                    **({"historical_record_policy": True} if historical_record_policy else {}),
+                )
+            except UpstreamCallError:
+                # Only a dependency failure during this review attempt gets a
+                # review outcome. Earlier routing/drafting failures do not.
+                self.audit.record_review_disposition(
+                    trace_id=trace_id, profile=profile,
+                    disposition=ReviewDisposition.UPSTREAM_UNAVAILABLE,
+                )
+                raise
             self.audit.record(trace_id=trace_id, profile=profile, event="arbitration",
                               details={"conforms": verdict.conforms})
+            self.audit.record_review_disposition(
+                trace_id=trace_id, profile=profile,
+                disposition=ReviewDisposition.from_adjudication(
+                    verdict._adjudication_disposition,
+                ),
+            )
 
             # If non-conforming, apply Magisterium's guidance. For a REFERRAL the
             # useful payload is the matched (faithful Catholic) provider list, so we
