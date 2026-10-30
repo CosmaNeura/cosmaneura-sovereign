@@ -309,6 +309,14 @@ def test_positive_policy_judgment_with_clinical_only_limit_retains_actual_strict
     "I cannot assess clinical accuracy.",
     "This policy conforms because it is acceptable if redacted; however, "
     "I cannot assess clinical accuracy.",
+    "This policy conforms because it is acceptable as long as it is revised. "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because it is acceptable on condition that it is revised. "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because it is acceptable so long as it is revised; however, "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because acceptance is contingent on revision. "
+    "I cannot assess clinical accuracy.",
     "This policy conforms as long as it is revised. I cannot assess clinical accuracy.",
 ])
 def test_ambiguous_quoted_conditional_and_mixed_policy_refusals_remain_closed(assessment):

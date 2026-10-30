@@ -91,7 +91,9 @@ _UNRESOLVED_SCOPE_LIMITATION_RE = re.compile(
     re.IGNORECASE,
 )
 _CONDITIONAL_POLICY_RATIONALE_RE = re.compile(
-    r"\b(?:if|unless|provided|assuming|conditional(?:ly)?|subject\s+to|only\s+when)\b",
+    r"\b(?:if|unless|provided|assuming|conditional(?:ly)?|subject\s+to|"
+    r"(?:as|so)\s+long\s+as|on\s+condition(?:\s+that)?|"
+    r"contingent\s+(?:on|upon)|depending\s+on|only\s+(?:when|after))\b",
     re.IGNORECASE,
 )
 
