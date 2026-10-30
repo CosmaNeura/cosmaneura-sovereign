@@ -122,6 +122,10 @@ def _refuses_required_review(review_text: str, *, historical_policy: bool) -> bo
     permit the normal strict parser; they never grant conformance themselves.
     All other refusal matches, including mixed doctrine/clinical refusals, deny.
     """
+    if historical_policy and _CONDITIONAL_POLICY_RATIONALE_RE.search(review_text):
+        # A condition anywhere in the assessment qualifies the judgment, even
+        # when it is separate from the affirmative or clinical-only clause.
+        return True
     if not _REVIEW_REFUSAL_RE.search(review_text):
         return False
     if not historical_policy:

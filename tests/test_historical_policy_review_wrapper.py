@@ -317,6 +317,13 @@ def test_positive_policy_judgment_with_clinical_only_limit_retains_actual_strict
     "I cannot assess clinical accuracy.",
     "This policy conforms because acceptance is contingent on revision. "
     "I cannot assess clinical accuracy.",
+    "This policy conforms to Catholic teaching. Acceptance is contingent on revision. "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because it reports historical excerpts. This judgment is contingent "
+    "on removing the endorsement of prohibited care. I cannot assess clinical accuracy.",
+    "This policy conforms. It is acceptable only after revision. I cannot assess clinical accuracy.",
+    "This policy conforms to Catholic teaching. Acceptance is contingent on revision.",
+    "This policy conforms provided that it is revised.",
     "This policy conforms as long as it is revised. I cannot assess clinical accuracy.",
 ])
 def test_ambiguous_quoted_conditional_and_mixed_policy_refusals_remain_closed(assessment):

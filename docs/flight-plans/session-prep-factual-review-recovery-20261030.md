@@ -19,7 +19,9 @@ unquoted policy judgment and complete clinical-only limitation clauses, includin
 an exact judgment joined to that limitation with but/however. An unconditional
 judgment may carry a non-refusing because-rationale; conditional and mixed-scope
 claims remain denied. Explicit refusals to judge or determine the policy also
-retain the negative gate. All other refusal matches deny. The complete Magisterium assessment still passes
+retain the negative gate. A condition anywhere in the complete assessment,
+including a separate sentence, vetoes this historical-policy exception. All other
+refusal matches deny. The complete Magisterium assessment still passes
 through the existing strict boolean parser; no judgment is inferred or repaired.
 No original-note value is added to the PHI-neutral review projection.
 
