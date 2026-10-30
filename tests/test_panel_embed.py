@@ -329,6 +329,16 @@ def test_session_prep_automatic_completion_and_interrupted_delivery_runtime():
     )
 
 
+def test_chat_deadline_covers_host_callbacks_transport_body_and_exact_recovery_runtime():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable")
+    subprocess.run(
+        [node, str(ROOT / "tests/panel_chat_deadline_harness.js"), str(PANEL_PATH)],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+
+
 def test_session_prep_announcements_exclude_the_clinical_brief_body():
     panel = _panel_source()
     assert '<div class="cnp-prep-progress" role="status" aria-live="polite">' in panel
