@@ -488,6 +488,11 @@
         new TextEncoder().encode(JSON.stringify(value.history.messages)).length > 192 * 1024) return null;
     return value;
   }
+  function citationTimestamp(value) {
+    // The closed accepted DTO supplies this full clock. Preserve its precision
+    // and offset; chart-only fdate() must not collapse same-day review versions.
+    return value.replace("T", " ").replace(/Z$/, " UTC");
+  }
   function acceptedCitationLinks(b, answer, display, href) {
     if (!display || !Array.isArray(display.reviewed_citations)) return null;
     var cards = b.querySelectorAll(".cnp-evidence-card"), citations = display.reviewed_citations;
@@ -1022,8 +1027,8 @@
       if (acceptedLinks) acceptedLinks.forEach(function (item) {
         var link = document.createElement("a"); link.href = item.url; link.target = "_blank";
         link.rel = "noopener noreferrer"; link.className = "cnp-reviewed-citation";
-        link.textContent = "Open reviewed source · visit " + fdate(item.citation.source_at) +
-          " · reviewed " + fdate(item.citation.reviewed_at);
+        link.textContent = "[" + item.citation.ordinal + "] Open reviewed source · visit " + citationTimestamp(item.citation.source_at) +
+          " · reviewed " + citationTimestamp(item.citation.reviewed_at);
         item.card.appendChild(link);
       });
       var attributionRequired = typeof opts.loadCitationHistory === "function" &&
