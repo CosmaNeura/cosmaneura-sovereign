@@ -1191,11 +1191,17 @@
         return sameDay ? date.replace("T", " ").replace(/Z$/, " UTC").replace(/([+-]\d{2}:\d{2})$/, " $1") : date.slice(0, 10);
       }
       var notice = document.createElement("p"); notice.className = "cnp-facts-notice";
-      notice.textContent = "Dated observations from reviewed notes. This is not a complete medication list or order ledger. Note dates: " +
+      notice.textContent = (facts.facts.length ? "Dated observations from reviewed notes. " :
+        "The medication, order and measurement tables have no entries for these notes. " +
+        (value.prepared_brief ? "Other chart details may appear in the recap or reviewed notes. " :
+          "Read the reviewed notes for chart details. ") +
+        "This does not establish absence from the chart. ") +
+        "This is not a complete medication list or order ledger. Note dates: " +
         facts.source_dates.map(factDateLabel).join(", ") + ".";
       if (facts.selection_limited || facts.facts_limited)
         notice.textContent += " Some sources or observations are omitted by preparation limits; consult reviewed notes.";
       prepView.appendChild(notice);
+      if (!facts.facts.length) return; // An empty bounded table is not an empty chart or an unavailable recap.
       [ ["medication", "Medication observations"], ["order", "Order observations"], ["vital", "Measurements"] ].forEach(function (group) {
         // Display grouping preserves every original evidence item and the unchanged payload.
         var rows = [], identities = new Map();
@@ -1248,7 +1254,6 @@
         });
         table.appendChild(body); prepView.appendChild(table);
       });
-      if (!facts.facts.length) prepSection("Dated observations", ["No supported observations are shown. This does not establish absence from the chart."]);
     }
     function currentPrep(cycle) {
       return cycle && state.prepCycle === cycle &&
@@ -1305,9 +1310,10 @@
         Promise.resolve().then(function () {
           if (currentPrep(cycle)) return opts.onSessionPrepStateChange(value.state);
         }).catch(function () {});
+      var hasObservations = value.facts_state === "ready" && value.structured_facts.facts.length > 0;
       prepProgress.textContent = value.state === "ready"
         ? "Your prepared brief is ready." : value.facts_state === "ready"
-          ? "Reviewed-source observations are ready; the brief is " + value.state + "."
+          ? (hasObservations ? "Reviewed-source observations are ready" : "Reviewed notes are available") + "; the brief is " + value.state + "."
           : "Session Prep is unavailable.";
       prepView.innerHTML = "";
       prepView.hidden = false;
@@ -1322,8 +1328,8 @@
       if (value.state === "pending" || value.state === "unavailable") {
         var empty = document.createElement("p");
         empty.textContent = value.state === "pending"
-          ? value.facts_state === "ready" ? "The prepared brief is still being generated. Reviewed-source observations are available below." : "The prepared brief is still being generated. No clinical content is available yet."
-          : value.facts_state === "ready" ? "The prepared brief is unavailable. Reviewed-source observations are available below." : value.reason_code === "no_eligible_sources"
+          ? value.facts_state === "ready" ? "The prepared brief is still being generated. " + (hasObservations ? "Reviewed-source observations are available below." : "Read the reviewed notes while you wait.") : "The prepared brief is still being generated. No clinical content is available yet."
+          : value.facts_state === "ready" ? "The prepared brief is unavailable. " + (hasObservations ? "Reviewed-source observations are available below." : "Read the reviewed notes for chart details.") : value.reason_code === "no_eligible_sources"
             ? "No eligible finalized notes are available for this encounter."
             : "We couldn’t load a prepared brief for this encounter. Try again; if the problem continues, contact support with the request reference below.";
         prepView.appendChild(empty);
