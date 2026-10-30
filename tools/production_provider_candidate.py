@@ -381,7 +381,7 @@ def archive_record(raw: bytes, expected_digest: str) -> Any:
         item = entries[0]
         require(item.filename == "candidate.json" and not item.is_dir())
         require(not item.flag_bits & 1 and 0 < item.file_size <= MAX_JSON)
-        require(not stat.S_ISLNK(item.external_attr >> 16))
+        require(stat.S_IFMT(item.external_attr >> 16) in (0, stat.S_IFREG))
         with archive.open(item) as stream:
             return decode(stream.read(MAX_JSON + 1))
 

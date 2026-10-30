@@ -1,14 +1,12 @@
 # Provider-only immutable artifact preparation and selection
 
-Risk: Tier 2 (production artifact/provenance control). Source-only work. This
-change adds no app deployment, activation, identities, roles, configuration or
-database operation. Only the founder can dispatch the new manual workflow.
+Risk: Tier 2 (production artifact/provenance). Source-only; no deployment, activation,
+identity, role, configuration or database changes. Founder dispatch only.
 
 ## Problem and resulting behavior
 
-The legacy dual workflow builds immediately before deploying both mounts. It
-cannot supply a separately accepted provider-only artifact. The offline OCI
-pair tool proves bytes but authorizes no promotion. Both stay unchanged.
+The legacy dual workflow builds before deploying both mounts; it cannot supply a provider-only artifact.
+The offline OCI pair tool proves bytes and authorizes no promotion. Both stay unchanged.
 
 `Prepare provider production artifact` provides two separate modes:
 

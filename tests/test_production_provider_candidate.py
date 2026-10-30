@@ -316,6 +316,8 @@ def test_extra_record_fields_and_same_selection_run_are_refused():
     [
         ("../candidate.json", stat.S_IFREG),
         ("candidate.json", stat.S_IFLNK),
+        ("candidate.json", stat.S_IFIFO),
+        ("candidate.json", stat.S_IFDIR),
         ("other.json", stat.S_IFREG),
     ],
 )
