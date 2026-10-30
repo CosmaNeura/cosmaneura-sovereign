@@ -1021,7 +1021,8 @@
         var retained = document.createElement("div"); retained.className = "cnp-meta"; retained.setAttribute("role", "status");
         retained.textContent = acceptedDisplay.display_state === "superseded"
           ? "Historical answer · its reviewed sources have since changed. It is preserved for reference."
-          : "Historical answer · reviewed-source attribution preserved.";
+          : acceptedLinks && acceptedLinks.length ? "Historical answer · reviewed-source attribution preserved."
+          : "Historical answer.";
         b.insertBefore(retained, b.firstChild);
       }
       if (acceptedLinks) acceptedLinks.forEach(function (item) {
