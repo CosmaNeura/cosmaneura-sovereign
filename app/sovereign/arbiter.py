@@ -57,7 +57,7 @@ REVIEW_ASSESSMENT_UNAVAILABLE = (
 _REVIEW_REFUSAL_RE = re.compile(
     r"\b(?:cannot|can['’]t|unable to|not able to|not qualified to|not equipped to|"
     r"do not|don['’]t)\s+"
-    r"(?:(?:assess|evaluate|review|revise|edit|analy[sz]e|answer|respond|comment)\b|"
+    r"(?:(?:assess|evaluate|review|judge|determine|revise|edit|analy[sz]e|answer|respond|comment)\b|"
     r"(?:provide|offer|give|perform|make)\s+(?:[\w'-]+\s+){0,6}"
     r"(?:assessments?|evaluations?|reviews?|revisions?|analys(?:is|es)|answers?|"
     r"responses?|opinions?|feedback|"
@@ -65,7 +65,7 @@ _REVIEW_REFUSAL_RE = re.compile(
     r"\b(?:outside|beyond)\s+(?:my|its|the)\s+(?:scope|expertise)\b",
     re.IGNORECASE,
 )
-# These complete sentences describe the intentionally excluded clinical task,
+# These complete clauses describe the intentionally excluded clinical task,
 # not refusal of the policy question. Keep recognition narrow: a mixed or
 # ambiguous limitation must retain the existing negative gate.
 _CLINICAL_SCOPE_LIMITATION_RE = re.compile(
@@ -90,13 +90,33 @@ _UNRESOLVED_SCOPE_LIMITATION_RE = re.compile(
     r"\b(?:does not|doesn['’]t|not)\s+(?:conform|consistent)\b|\bnon[- ]conform",
     re.IGNORECASE,
 )
+_CONDITIONAL_POLICY_RATIONALE_RE = re.compile(
+    r"\b(?:if|unless|provided|assuming|conditional(?:ly)?|subject\s+to|only\s+when)\b",
+    re.IGNORECASE,
+)
+
+
+def _affirmative_policy_clause(text: str) -> bool:
+    """Recognize the explicit policy judgment, without granting conformance.
+
+    A non-refusing rationale may follow an explicit judgment. The unchanged
+    verdict parser still has to accept the reviewer's complete assessment.
+    """
+    if _AFFIRMATIVE_POLICY_JUDGMENT_RE.fullmatch(text):
+        return True
+    parts = re.split(r"\s+because\s+", text, maxsplit=1, flags=re.IGNORECASE)
+    return (len(parts) == 2
+            and _AFFIRMATIVE_POLICY_JUDGMENT_RE.fullmatch(parts[0].rstrip(",;")) is not None
+            and bool(parts[1].strip())
+            and not _UNRESOLVED_SCOPE_LIMITATION_RE.search(parts[1])
+            and not _CONDITIONAL_POLICY_RATIONALE_RE.search(parts[1]))
 
 
 def _refuses_required_review(review_text: str, *, historical_policy: bool) -> bool:
     """Preserve refusals without mistaking the narrow clinical exclusion for one.
 
     Only the validated historical-policy wrapper can use this distinction. An
-    explicit policy judgment and entirely clinical limitation sentences merely
+    explicit policy judgment and entirely clinical limitation clauses merely
     permit the normal strict parser; they never grant conformance themselves.
     All other refusal matches, including mixed doctrine/clinical refusals, deny.
     """
@@ -106,10 +126,19 @@ def _refuses_required_review(review_text: str, *, historical_policy: bool) -> bo
         return True
     sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+|[\r\n]+", review_text)
                  if part.strip()]
-    if not any(_AFFIRMATIVE_POLICY_JUDGMENT_RE.fullmatch(part) for part in sentences):
+    clauses = []
+    for sentence in sentences:
+        parts = re.split(r"\s*[,;]\s*(?:but|however)\s*,?\s*|\s+but\s+", sentence,
+                         maxsplit=1, flags=re.IGNORECASE)
+        if (len(parts) == 2 and _affirmative_policy_clause(parts[0])
+                and _CLINICAL_SCOPE_LIMITATION_RE.fullmatch(parts[1])):
+            clauses.extend(parts)
+        else:
+            clauses.append(sentence)
+    if not any(_affirmative_policy_clause(part) for part in clauses):
         return True
     return any(_UNRESOLVED_SCOPE_LIMITATION_RE.search(part)
-               and not _CLINICAL_SCOPE_LIMITATION_RE.fullmatch(part) for part in sentences)
+               and not _CLINICAL_SCOPE_LIMITATION_RE.fullmatch(part) for part in clauses)
 
 
 class DoctrinalArbiter:

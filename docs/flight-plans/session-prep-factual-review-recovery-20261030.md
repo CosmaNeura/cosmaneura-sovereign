@@ -15,8 +15,11 @@ clinical-accuracy limitation, before the strict verdict parser can run.
 
 Distinguish that narrow limitation only inside the internally validated
 LOW/ENGAGEMENT historical-policy wrapper. Require an explicit, unconditional,
-unquoted policy judgment and complete clinical-only limitation sentences. All
-other refusal matches deny. The complete Magisterium assessment still passes
+unquoted policy judgment and complete clinical-only limitation clauses, including
+an exact judgment joined to that limitation with but/however. An unconditional
+judgment may carry a non-refusing because-rationale; conditional and mixed-scope
+claims remain denied. Explicit refusals to judge or determine the policy also
+retain the negative gate. All other refusal matches deny. The complete Magisterium assessment still passes
 through the existing strict boolean parser; no judgment is inferred or repaired.
 No original-note value is added to the PHI-neutral review projection.
 
@@ -37,10 +40,10 @@ responses and old-generation timers cannot render into or unlock another turn.
 
 ## Current state and release dependencies
 
-Retain the existing staging pair pending independent review and live retest:
+Retain the last verified staging pair (2026-10-30) pending independent review and live retest:
 
-- Core source `9a6fc4635c81e300312f44f212390d03f19e6c72`, PR894, digest
-  `17292b82478794f59ea00fba8989717c69bb6f8d508f3171f794c24666ae8eaf`.
+- Core source `5033ea3aedb827e509f70b8f2c47a08c1a430c3b`, PR892, digest
+  `cbdfcbe170431a0c7edcc09c26985ebcc751519470ed61a70f2b2416a9269b5e`.
 - Provider source `d1b32d84b61a34f61427429b957d056f1636dba2`, digest
   `92ee6f32a4419be01ae525058441d8009a92a58072f7e7b1b16cd3e91f35c684`.
 
