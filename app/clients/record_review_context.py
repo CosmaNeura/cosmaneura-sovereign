@@ -25,6 +25,7 @@ from pydantic import Field, PrivateAttr, StrictInt, ValidationError
 
 from app.clients.llm import LLMClient
 from app.clients.provider_question_contract import ReviewedProviderQuestionResult
+from app.clients.reviewed_excerpts_contract import ReviewedExcerpts
 from app.clients.session_prep_contract import ClosedModel
 from app.compliance.baa import require_baa_covered_llm
 from app.config import ComplianceProfile, Persona
@@ -175,7 +176,8 @@ def _input_digest(
 ) -> str:
     """Server-computed binding; no model/client digest or authority claim is used."""
     try:
-        if (type(question) is not str or not question.strip() or len(question) > 8000
+        if (not isinstance(result, AgentResult)
+                or type(question) is not str or not question.strip() or len(question) > 8000
                 or type(result.content) is not str or not result.content.strip()
                 or len(result.content) > 18_000
                 or result.data.get("record_evidence_status") != "validated_excerpts"
@@ -195,6 +197,10 @@ def _input_digest(
             "selected_spans": spans,
             "canonical_answer": result.content,
             "selection_mode": mode,
+            "reviewed_excerpts": _checked_excerpt_namespace(
+                result, context, spans, mode,
+            ),
+            "reviewed_excerpts_version": context._reviewed_excerpts_version,
         }
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -203,6 +209,57 @@ def _input_digest(
         return hashlib.sha256(raw).hexdigest()
     except (ValueError, TypeError, UnicodeError, RecursionError):
         raise RecordReviewContextUnavailable() from None
+
+
+def _checked_excerpt_namespace(
+    result: AgentResult, context: ReviewedProviderQuestionResult,
+    spans: tuple[tuple[int, int], ...], mode: Literal["selector", "timeline"],
+) -> dict | None:
+    """Validate only the declared typed base-result evidence association.
+
+    This private namespace belongs to the server renderer. Matching text or
+    dates never substitute for its exact original source/section coordinates.
+    Revalidation also rejects an association mutated after model construction.
+    """
+    version = context._reviewed_excerpts_version
+    association = result._reviewed_excerpts
+    if version is None and association is None:
+        return None
+    if version != "1.0.0" or not isinstance(association, ReviewedExcerpts):
+        raise RecordReviewContextUnavailable()
+    checked = ReviewedExcerpts.model_validate(association)
+    ordered = [
+        [source.source_ref, source.source_version, source.source_at.isoformat(),
+         list(source.sections.items())]
+        for source in context.reviewed_sources
+    ]
+    enumeration = hashlib.sha256(json.dumps(
+        ordered, ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    if (checked.mode != ("timeline" if mode == "timeline" else "selected")
+            or checked.enumeration_sha256 != enumeration
+            or tuple((item.source_index, item.section_index)
+                     for item in checked.excerpts) != spans):
+        raise RecordReviewContextUnavailable()
+    return checked.model_dump(mode="json")
+
+
+def _typed_review_result(
+    result: AgentResult, *, context: ReviewedProviderQuestionResult,
+    spans: tuple[tuple[int, int], ...], mode: Literal["selector", "timeline"],
+) -> RecordReviewAgentResult:
+    """Clone public fields and the one declared, validated private association.
+
+    Never copy arbitrary private attributes, dynamic model data or model-written
+    citation identities. A fresh typed namespace avoids mutable aliasing with
+    the pre-wrapper renderer result while preserving the original coordinates.
+    """
+    namespace = _checked_excerpt_namespace(result, context, spans, mode)
+    annotated = RecordReviewAgentResult.model_validate(result.model_dump())
+    annotated._reviewed_excerpts = (
+        ReviewedExcerpts.model_validate(namespace) if namespace is not None else None
+    )
+    return annotated
 
 
 def bind_record_review_context(
@@ -243,7 +300,9 @@ def bind_record_review_context(
         bound = BoundRecordReviewContext(
             digest, spans, tuple(selected[span] for span in spans), selection_mode,
         )
-        annotated = RecordReviewAgentResult.model_validate(result.model_dump())
+        annotated = _typed_review_result(
+            result, context=context, spans=spans, mode=selection_mode,
+        )
         annotated._record_review_context = bound
         return annotated
     except (ValueError, TypeError, IndexError, RecursionError, ValidationError):

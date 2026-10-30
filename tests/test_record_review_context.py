@@ -25,6 +25,7 @@ from app.clients.record_review_context import (
     parse_record_review_descriptor,
     record_review_projection,
 )
+from app.clients.reviewed_excerpts_contract import ReviewedExcerpt, ReviewedExcerpts
 from app.config import ComplianceProfile, Persona, Settings
 
 
@@ -111,6 +112,101 @@ def test_historical_instruction_is_represented_as_source_posture_not_new_medical
     assert "source-authored historical instructions" in frame
     assert "not an assistant-authored instruction to carry it out" in frame
     assert "moral permissibility from a negative keyword screen" in frame
+
+
+def negotiated_context():
+    ctx = context()
+    ctx._reviewed_excerpts_version = "1.0.0"
+    return ctx
+
+
+def test_combined_emitter_wrapper_preserves_only_typed_private_namespace_without_aliasing():
+    ctx = negotiated_context()
+    original = canonical(ctx)
+    expected = original._reviewed_excerpts.model_dump(mode="json")
+    original._untrusted_model_private = {"url": "https://synthetic.example.test"}
+    wrapped = bind(ctx, answer=original)
+    assert wrapped._reviewed_excerpts.model_dump(mode="json") == expected
+    assert wrapped._reviewed_excerpts is not original._reviewed_excerpts
+    assert wrapped._reviewed_excerpts.excerpts[0] is not original._reviewed_excerpts.excerpts[0]
+    assert not hasattr(wrapped, "_untrusted_model_private")
+    assert wrapped.model_dump() == original.model_dump()
+    assert "reviewed_excerpts" not in wrapped.model_dump_json()
+    original._reviewed_excerpts.excerpts[0].section_index = 1
+    assert wrapped._reviewed_excerpts.model_dump(mode="json") == expected
+    assert record_review_projection(wrapped, context=ctx, question=QUESTION)
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "coordinate", "ordinal", "mode", "digest", "boolean_index",
+    "dict_association", "version_removed", "version_unknown",
+])
+def test_combined_emitter_mutable_private_namespace_cannot_diverge_from_binding(mutation):
+    ctx = negotiated_context()
+    result = bind(ctx)
+    namespace = result._reviewed_excerpts
+    if mutation == "missing":
+        result._reviewed_excerpts = None
+    elif mutation == "coordinate":
+        namespace.excerpts[0].section_index = 1
+    elif mutation == "ordinal":
+        namespace.excerpts[0].ordinal = 2
+    elif mutation == "mode":
+        namespace.mode = "timeline"
+    elif mutation == "digest":
+        namespace.enumeration_sha256 = "f" * 64
+    elif mutation == "boolean_index":
+        namespace.excerpts[0] = ReviewedExcerpt.model_construct(
+            ordinal=1, source_index=True, section_index=0,
+        )
+    elif mutation == "dict_association":
+        result._reviewed_excerpts = namespace.model_dump()
+    elif mutation == "version_removed":
+        ctx._reviewed_excerpts_version = None
+    else:
+        ctx._reviewed_excerpts_version = "9.9.9"
+    with pytest.raises(RecordReviewContextUnavailable):
+        record_review_projection(result, context=ctx, question=QUESTION)
+
+
+def test_same_day_identical_source_text_cannot_substitute_emitter_coordinates():
+    ctx = negotiated_context()
+    second = ctx.reviewed_sources[0].model_copy(deep=True)
+    second.source_ref = "note_synthetic_002"
+    ctx.reviewed_sources.append(second)
+    first = canonical(ctx, ((0, 0),))
+    other = canonical(ctx, ((1, 0),))
+    assert first.content == other.content
+    assert first._reviewed_excerpts.enumeration_sha256 == other._reviewed_excerpts.enumeration_sha256
+    with pytest.raises(RecordReviewContextUnavailable):
+        bind(ctx, answer=first, value=descriptor(ctx, ((1, 0),)), spans=((1, 0),))
+    wrapped = bind(ctx, answer=first)
+    wrapped._reviewed_excerpts = ReviewedExcerpts.model_validate(
+        other._reviewed_excerpts.model_dump(),
+    )
+    with pytest.raises(RecordReviewContextUnavailable):
+        record_review_projection(wrapped, context=ctx, question=QUESTION)
+
+
+def test_negotiated_renderer_namespace_cannot_be_missing_at_initial_binding():
+    ctx = negotiated_context()
+    result = canonical(ctx)
+    result._reviewed_excerpts = None
+    with pytest.raises(RecordReviewContextUnavailable):
+        bind(ctx, answer=result)
+
+
+def test_combined_timeline_namespace_mode_and_rendered_original_order_are_preserved():
+    ctx = negotiated_context()
+    result = reviewed_timeline_evidence(ctx, agent="synthetic", data={})
+    spans = tuple((item.source_index, item.section_index)
+                  for item in result._reviewed_excerpts.excerpts)
+    wrapped = bind_record_review_context(
+        descriptor(ctx, spans), result=result, context=ctx, question=QUESTION,
+        selected_spans=spans, selection_mode="timeline",
+    )
+    assert wrapped._reviewed_excerpts.model_dump() == result._reviewed_excerpts.model_dump()
+    assert record_review_projection(wrapped, context=ctx, question=QUESTION)
 
 
 @pytest.mark.parametrize("mutation", [
