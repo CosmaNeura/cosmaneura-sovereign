@@ -1,0 +1,160 @@
+name: Promote established dark provider artifact
+
+# Standalone image-only consumer. Both credentials and the latch are absent/off
+# until separately provisioned and founder-selected; no creation or activation.
+on:
+  workflow_dispatch:
+    inputs:
+      provider_run_id:
+        type: string
+        required: true
+      provider_attempt:
+        type: string
+        required: true
+      provider_artifact_id:
+        type: string
+        required: true
+      core_run_id:
+        type: string
+        required: true
+      core_attempt:
+        type: string
+        required: true
+      core_artifact_id:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+concurrency:
+  group: sovereign-production-container-apps
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.repository == 'CosmaNeura/cosmaneura-sovereign' &&
+          github.ref == 'refs/heads/main' &&
+          github.actor == 'JohnClem' && github.triggering_actor == 'JohnClem' &&
+          vars.SOVEREIGN_PROVIDER_IMMUTABLE_PROMOTION_ENABLED == 'true' }}
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROVIDER_IMMUTABLE_PROMOTION_ENABLED: ${{ vars.SOVEREIGN_PROVIDER_IMMUTABLE_PROMOTION_ENABLED }}
+      PROVIDER_PROMOTION_CLIENT_ID: ${{ vars.AZURE_PROVIDER_PROMOTION_CLIENT_ID }}
+      LEGACY_DEPLOY_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARTIFACT_PREPARATION_CLIENT_ID: ${{ vars.AZURE_PROVIDER_ARTIFACT_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: provider
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Verify own founder workflow and current source before credentials
+        working-directory: provider
+        run: PYTHONPATH=. python3 -B -m tools.production_provider_promotion context
+
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: authorize
+    environment: production
+    if: >-
+      ${{ needs.authorize.result == 'success' &&
+          github.event_name == 'workflow_dispatch' &&
+          github.repository == 'CosmaNeura/cosmaneura-sovereign' &&
+          github.ref == 'refs/heads/main' &&
+          github.actor == 'JohnClem' && github.triggering_actor == 'JohnClem' &&
+          vars.SOVEREIGN_PROVIDER_IMMUTABLE_PROMOTION_ENABLED == 'true' }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: provider
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROVIDER_IMMUTABLE_PROMOTION_ENABLED: ${{ vars.SOVEREIGN_PROVIDER_IMMUTABLE_PROMOTION_ENABLED }}
+      PROVIDER_PROMOTION_CLIENT_ID: ${{ vars.AZURE_PROVIDER_PROMOTION_CLIENT_ID }}
+      LEGACY_DEPLOY_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARTIFACT_PREPARATION_CLIENT_ID: ${{ vars.AZURE_PROVIDER_ARTIFACT_CLIENT_ID }}
+      PROVIDER_RUN_ID: ${{ inputs.provider_run_id }}
+      PROVIDER_ATTEMPT: ${{ inputs.provider_attempt }}
+      PROVIDER_ARTIFACT_ID: ${{ inputs.provider_artifact_id }}
+      CORE_RUN_ID: ${{ inputs.core_run_id }}
+      CORE_ATTEMPT: ${{ inputs.core_attempt }}
+      CORE_ARTIFACT_ID: ${{ inputs.core_artifact_id }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: provider
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Authenticate the successful provider producer before Azure
+        run: |
+          PYTHONPATH=. python3 -B -m tools.production_provider_promotion admit \
+            --provider-run-id "$PROVIDER_RUN_ID" --provider-attempt "$PROVIDER_ATTEMPT" \
+            --provider-artifact-id "$PROVIDER_ARTIFACT_ID"
+      - name: Resolve trusted merged current Core source
+        id: core-source
+        env:
+          CORE_ARTIFACT_READ_TOKEN: ${{ secrets.CORE_ARTIFACT_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha=$(PYTHONPATH=. python3 -B -m tools.production_provider_promotion core-source)
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: CosmaNeura/cosmaneura
+          token: ${{ secrets.CORE_ARTIFACT_READ_TOKEN }}
+          ref: ${{ steps.core-source.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: core
+      - name: Verify exact clean Core checkout before Azure
+        env:
+          CORE_ARTIFACT_READ_TOKEN: ${{ secrets.CORE_ARTIFACT_READ_TOKEN }}
+        run: |
+          PYTHONPATH=. python3 -B -m tools.production_provider_promotion core-source \
+            --core-checkout "$GITHUB_WORKSPACE/core"
+      - uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3
+        with:
+          client-id: ${{ vars.AZURE_PROVIDER_PROMOTION_CLIENT_ID }}
+          tenant-id: d51754d0-bba5-4810-820e-afac542844d6
+          subscription-id: bab2a709-1fcb-4c87-a9fc-802f7477ec13
+      - name: Reauthenticate and update only the established dark provider image
+        env:
+          CORE_ARTIFACT_READ_TOKEN: ${{ secrets.CORE_ARTIFACT_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/provider-dark-promotion"
+          PYTHONPATH=. python3 -B -m tools.production_provider_promotion promote \
+            --provider-run-id "$PROVIDER_RUN_ID" --provider-attempt "$PROVIDER_ATTEMPT" \
+            --provider-artifact-id "$PROVIDER_ARTIFACT_ID" \
+            --core-run-id "$CORE_RUN_ID" --core-attempt "$CORE_ATTEMPT" \
+            --core-artifact-id "$CORE_ARTIFACT_ID" \
+            --core-checkout "$GITHUB_WORKSPACE/core" \
+            --output "$RUNNER_TEMP/provider-dark-promotion/receipt.json"
+      - name: Retain image-only dark update facts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-dark-image-update-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/provider-dark-promotion/receipt.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 30
