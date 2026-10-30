@@ -27,7 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ".github/workflows/promote_established_provider_candidate.yml"
 WORKFLOW_REF = f"{producer.REPOSITORY}/{WORKFLOW}@refs/heads/main"
 CORE_REPOSITORY = "CosmaNeura/cosmaneura"
-CORE_REVIEWED_HEAD = "47e2742bcefbddbac42155070f54a851c14f5d0f"
+# Exact locally integrated PR902 candidate; publication and merge are still required.
+CORE_REVIEWED_HEAD = "418c8a55f836dbf793a71f6e6d43481b66ce8aa4"
 CORE_BINDING_PR = 902
 SUBSCRIPTION = "bab2a709-1fcb-4c87-a9fc-802f7477ec13"
 TENANT = "d51754d0-bba5-4810-820e-afac542844d6"
