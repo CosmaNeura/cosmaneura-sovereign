@@ -19,16 +19,17 @@ vm.runInThisContext(fs.readFileSync(process.argv[2], "utf8"));
 function projection(turn, mode) {
   const corrections = new Map();
   facts.facts.forEach(fact => fact.supersedes.forEach(ref => corrections.set(ref, fact.correction_evidence)));
-  const content = mode === "ready" || mode === "legacy";
+  const stateMode = mode === "zero-pending" ? "pending" : mode === "zero-unavailable" ? "unavailable" : mode === "zero-limited" ? "ready" : mode;
+  const content = ["ready", "legacy", "zero"].includes(stateMode);
   const body = {
-    client_turn_id: turn, state: content ? "ready" : mode === "unavailable" ? "unavailable" : "pending",
+    client_turn_id: turn, state: content ? "ready" : stateMode === "unavailable" ? "unavailable" : "pending",
     freshness: content ? "current" : "none", current_through: content ? "2026-09-02T12:00:00Z" : null,
     source_count: content ? 3 : 0, prepared_brief: content ? {
       recap: "Synthetic brief", trajectory_and_material_changes: [], talking_points: ["Review interval changes"],
       open_threads: [], cautions: [], suggested_outline: ["Review prior plans"], patient_reported: null,
     } : null,
-    retry_after_seconds: content || mode === "unavailable" ? null : 5,
-    reason_code: content ? null : mode === "unavailable" ? "context_not_available" : "generation_pending",
+    retry_after_seconds: content || stateMode === "unavailable" ? null : 5,
+    reason_code: content ? null : stateMode === "unavailable" ? "context_not_available" : "generation_pending",
   };
   if (mode === "legacy") return body;
   body.schema_version = "1.1.0"; body.facts_state = "ready";
@@ -44,7 +45,10 @@ function projection(turn, mode) {
       };
     }),
   };
-  if (mode === "zero") body.structured_facts.facts = [];
+  if (mode.startsWith("zero")) body.structured_facts.facts = [];
+  if (mode === "zero-limited") {
+    body.structured_facts.selection_limited = true; body.structured_facts.facts_limited = true;
+  }
   if (mode === "malformed") body.structured_facts.facts[0].state = "confirmed_taking";
   if (mode === "literal") body.structured_facts.facts[0].quote += " **Keep this literal** [external](https://example.invalid)";
   return body;
@@ -126,7 +130,21 @@ async function main() {
     f.record = "record_b"; await f.panel.setRecord(f.record);
     assert(!f.has("148/92 mmHg"), "record switch retained another patient's facts"); f.end();
   }
-  { const f = await fixture("zero"); assert(f.has("does not establish absence from the chart"), "empty facts infer absence"); f.end(); }
+  for (const mode of ["zero", "zero-pending", "zero-unavailable", "zero-limited"]) {
+    const f = await fixture(mode), ready = f.projection.prepared_brief !== null;
+    assert(f.has("tables have no entries") && f.has("does not establish absence from the chart"), "empty bounded tables imply an empty chart");
+    assert(f.has("not a complete medication list or order ledger") && f.has("Note dates: 2026-08-12"), "empty table notice lost coverage or dated source selection");
+    assert(ready === f.has("Synthetic brief"), "empty tables hid a valid recap or invented one while pending");
+    assert(ready === f.has("recap or reviewed notes"), "empty table guidance points to a recap that is not available");
+    assert(!find(f.view, node => node.tagName === "table" || node.className === "cnp-fact-quote"), "empty observations invented table entries or source quotations");
+    assert(f.view.children.filter(node => node.className === "cnp-facts-notice").length === 1 &&
+      !find(f.view, node => node.tagName === "h4" && node.textContent === "Dated observations"), "empty state duplicates the observation heading/notice");
+    if (!ready) assert(!f.has("observations are available below"), "source availability was confused with nonempty observations");
+    assert((mode === "zero-limited") === f.has("omitted by preparation limits"), "empty state lost or invented preparation limit warning");
+    assert(f.requests.length === 1 && JSON.stringify(f.projection) === f.originalProjection &&
+      f.projection.structured_facts.facts.length === 0, "empty display performed inference, refetched or altered source payload");
+    f.end();
+  }
   { const f = await fixture("malformed"); assert(!f.has("148/92 mmHg") && !f.has("Medication observations"), "malformed facts rendered"); f.end(); }
   { const f = await fixture("legacy"); assert(f.has("Synthetic brief") && !f.has("Medication observations"), "v1 brief compatibility lost"); f.end(); }
   { const f = await fixture("literal"); assert(f.has("**Keep this literal** [external](https://example.invalid)"), "quotation became markdown"); f.end(); }

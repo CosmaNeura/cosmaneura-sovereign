@@ -208,6 +208,8 @@ class Router:
         canonical record grants are still required; this match grants nothing.
         """
         text = " ".join(message.casefold().split())
+        if not Router._record_fact_candidate(text):
+            return False
         date = (
             r"(?:january|february|march|april|may|june|july|august|september|"
             r"october|november|december) \d{1,2}(?:, \d{4})?|\d{4}-\d{2}-\d{2}"
@@ -219,6 +221,7 @@ class Router:
         source = r"(?:the )?(?:prior|previous|reviewed|recorded|historical) notes?"
         source_time = rf"(?:on {date}|in {source})"
         status = r"(?:stopped|increased|continued|decreased|planned|superseded)"
+        finding = r"(?:breathing|chest[- ]pain|nausea)"
         forms = (
             rf"what office {bp} was documented on {date}"
             r"(?:[.?] include (?:the )?visit date)?",
@@ -241,6 +244,12 @@ class Router:
             rf"what was the recorded medication plan at the {date} visit",
             rf"what (?:office|home) {bp}(?: range)? was (?:recorded|documented) {source_time}",
             rf"what (?:medication dose|dose of {drug}) was (?:recorded|documented) {source_time}",
+            # Observed own-record symptom/follow-up lookups are factual reads,
+            # not an invitation to synthesize an overview or propose new care.
+            rf"what {finding}(?: and {finding})? findings were recorded"
+            r"(?:,? and what follow[- ]up date was scheduled)?",
+            rf"what changed with {finding} and what follow[- ]up was recorded",
+            r"what follow[- ]up date was (?:scheduled|recorded|documented)",
         )
         return any(re.fullmatch(form + r"[.?]?", text) for form in forms)
 
