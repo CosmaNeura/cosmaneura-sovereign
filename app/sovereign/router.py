@@ -244,6 +244,9 @@ class Router:
             rf"what was the recorded medication plan at the {date} visit",
             rf"what (?:office|home) {bp}(?: range)? was (?:recorded|documented) {source_time}",
             rf"what (?:medication dose|dose of {drug}) was (?:recorded|documented) {source_time}",
+            # Preserve the complete observed medication-status/lab-result lookup.
+            # Matching only admits the existing reviewed-note scope selector.
+            rf"what is the {drug} status and what a1c result is available",
             # Observed own-record symptom/follow-up lookups are factual reads,
             # not an invitation to synthesize an overview or propose new care.
             rf"what {finding}(?: and {finding})? findings were recorded"
