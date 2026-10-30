@@ -244,9 +244,12 @@ class Router:
             rf"what was the recorded medication plan at the {date} visit",
             rf"what (?:office|home) {bp}(?: range)? was (?:recorded|documented) {source_time}",
             rf"what (?:medication dose|dose of {drug}) was (?:recorded|documented) {source_time}",
-            # Preserve the complete observed medication-status/lab-result lookup.
-            # Matching only admits the existing reviewed-note scope selector.
+            # Keep complete observed fact questions in the reviewed-note lane.
+            # Matching only admits the existing scope selector, not a care action.
+            rf"what {drug} dose was recorded most recently, and was this a dose change or a correction",
+            r"what happened to the basic metabolic panel, and is there a new result",
             rf"what is the {drug} status and what a1c result is available",
+            r"what changed in the medications and what is the blood[- ]count result",
             # Observed own-record symptom/follow-up lookups are factual reads,
             # not an invitation to synthesize an overview or propose new care.
             rf"what {finding}(?: and {finding})? findings were recorded"
