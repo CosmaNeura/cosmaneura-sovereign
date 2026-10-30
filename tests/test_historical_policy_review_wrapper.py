@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -13,15 +14,18 @@ from app.clients.provider_evidence import (
     EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE, EVIDENCE_REVIEW_UNAVAILABLE, EVIDENCE_UNAVAILABLE,
 )
 from app.clients.provider_question_contract import ProviderQuestionResponse
+from app.clients.actual_record_review_frame_contract import is_actual_record_review_frame
 from app.config import Persona, Settings
 from app.schemas import AgentResult, ChatRequest, DoctrinalSensitivity, Intent
 from app.sovereign.arbiter import (
     DoctrinalArbiter, _HISTORICAL_POLICY_REVIEW_QUESTION, _REVIEW_SYSTEM,
+    _ACTUAL_RECORD_REVIEW_SYSTEM, _ACTUAL_RECORD_REVIEW_QUESTION,
 )
 from app.sovereign.orchestrator import _neutral_record_review_projection
 from tests.test_historical_plan_question_routing import setup as routing_setup
 from tests.test_provider_question_context import TURN_ID, fixture, handle, sovereign
 from tests.test_provider_source_readiness import source_only_response
+from tests.test_record_review_context import descriptor
 
 CBC_QUESTION = (
     "What is the documented CBC order status across the October 7 and October 8 notes? "
@@ -61,9 +65,13 @@ def setup(*, tier=DoctrinalSensitivity.LOW, verdict='{"conforms":true,"needs_rev
     service, context, conversation = sovereign()
     context.read.return_value = ProviderQuestionResponse.model_validate(raw or captured_context())
     service.router.route.return_value = (Intent.ENGAGEMENT, tier, "")
+    selected = dict(selection)
+    selected["review_context"] = descriptor(context.read.return_value.result, tuple(
+        (row["source_index"], row["section_index"]) for row in selection["excerpts"]
+    ))
 
     async def complete(**kwargs):
-        return verdict if kwargs.get("usage_purpose") == "doctrinal_verdict_parse" else json.dumps(selection)
+        return verdict if kwargs.get("usage_purpose") == "doctrinal_verdict_parse" else json.dumps(selected)
 
     service.llm.complete = AsyncMock(side_effect=complete)
     service.arbiter = DoctrinalArbiter(service.s, llm=service.llm)
@@ -71,22 +79,46 @@ def setup(*, tier=DoctrinalSensitivity.LOW, verdict='{"conforms":true,"needs_rev
     return service, context, conversation
 
 
+def actual_assessment(text):
+    """Adapt only explicit scripted policy clauses to this particular answer.
+
+    Original policy cases remain below and also run through the legacy arbiter.
+    This is synthetic test wording, never a model response or acceptance repair.
+    """
+    return re.sub(r"\b(?:(?:neutral|historical-reporting|reporting)\s+){0,2}policy\b",
+                  "answer", text, flags=re.IGNORECASE)
+
+
+def legacy_review(assessment, verdict='{"conforms":true,"needs_revision":false}'):
+    arbiter = DoctrinalArbiter(Settings(_env_file=None, mock_mode=True))
+    arbiter.magisterium.ask = AsyncMock(return_value=(assessment, []))
+    arbiter.llm.complete = AsyncMock(return_value=verdict)
+    result = asyncio.run(arbiter.review(deidentified_draft=_neutral_record_review_projection(),
+                                     intent=Intent.ENGAGEMENT, sensitivity=DoctrinalSensitivity.LOW,
+                                     historical_record_policy=True))
+    assert arbiter.magisterium.ask.call_args.kwargs["user_content"].startswith("HISTORICAL REPORTING POLICY:")
+    assert arbiter.magisterium.ask.call_args.kwargs["user_content"].endswith(_HISTORICAL_POLICY_REVIEW_QUESTION)
+    return result, arbiter
+
+
 @pytest.mark.parametrize("tier", [DoctrinalSensitivity.LOW, DoctrinalSensitivity.NONE])
-def test_actual_cbc_sections_use_policy_question_with_one_required_review(tier):
-    service, context, conversation = setup(tier=tier)
+def test_actual_cbc_sections_use_particular_answer_question_with_one_required_review(tier):
+    assessment = actual_assessment(ASSESSMENT)
+    service, context, conversation = setup(tier=tier, assessment=assessment)
     response = handle(service, CBC_QUESTION)
     call = service.arbiter.magisterium.ask.call_args.kwargs
     assert call == {
-        "system": _REVIEW_SYSTEM,
-        "user_content": ("HISTORICAL REPORTING POLICY:\n" + _neutral_record_review_projection()
-                         + "\n\n" + _HISTORICAL_POLICY_REVIEW_QUESTION),
+        "system": _ACTUAL_RECORD_REVIEW_SYSTEM,
+        "user_content": call["user_content"],
         "usage_purpose": "doctrinal_review",
     }
+    frame, question = call["user_content"].removeprefix("REPRESENTED ACTUAL ANSWER CONTEXT:\n").split("\n\n")
+    assert is_actual_record_review_frame(frame) and question == _ACTUAL_RECORD_REVIEW_QUESTION
     service.arbiter.magisterium.ask.assert_called_once()
     assert service.llm.complete.call_count == 2  # One selector plus one actual strict parser.
     parser = service.llm.complete.call_args.kwargs
     assert parser["usage_purpose"] == "doctrinal_verdict_parse" and parser["max_tokens"] == 300
-    assert parser["prompt"] == f"Reviewer assessment:\n{ASSESSMENT}\n\nFields: conforms (bool), needs_revision (bool)."
+    assert parser["prompt"] == f"Reviewer assessment:\n{assessment}\n\nFields: conforms (bool), needs_revision (bool)."
     for absent in ("DRAFT ANSWER:", "give the corrected version", "CBC", "losartan", "148/92",
                    "2026-10-07", "2026-10-08", "note_synthetic_", context.read.return_value.tool_call_ref):
         assert absent not in call["user_content"]
@@ -150,7 +182,7 @@ def test_policy_wrapper_never_accepts_negative_refused_or_unusable_review(verdic
     response = handle(service, CBC_QUESTION)
     assert service.arbiter.magisterium.ask.call_count == 1
     assert service.llm.complete.call_count == 1 + parse_calls
-    assert service.arbiter.magisterium.ask.call_args.kwargs["user_content"].startswith("HISTORICAL REPORTING POLICY:")
+    assert service.arbiter.magisterium.ask.call_args.kwargs["user_content"].startswith("REPRESENTED ACTUAL ANSWER CONTEXT:")
     assert response.answer.startswith(lead)
     assert response.safety_notice == "record_evidence_unavailable"
     assert response.doctrinal_review is None and response.citations == []
@@ -268,7 +300,14 @@ POLICY_CLAUSE_ASSESSMENTS = [
 
 
 @pytest.mark.parametrize("assessment", POLICY_CLAUSE_ASSESSMENTS)
-def test_positive_policy_judgment_with_clinical_only_limit_retains_actual_strict_parse(assessment):
+@pytest.mark.parametrize("mode", ["legacy_policy", "actual_answer"])
+def test_positive_judgment_with_clinical_only_limit_retains_actual_strict_parse(assessment, mode):
+    if mode == "legacy_policy":
+        result, arbiter = legacy_review(assessment)
+        assert result.conforms is True
+        arbiter.llm.complete.assert_awaited_once()
+        return
+    assessment = actual_assessment(assessment)
     service, context, conversation = setup(assessment=assessment)
     response = handle(service, CBC_QUESTION)
     assert response.structured["record_evidence_status"] == "validated_excerpts"
@@ -326,7 +365,14 @@ def test_positive_policy_judgment_with_clinical_only_limit_retains_actual_strict
     "This policy conforms provided that it is revised.",
     "This policy conforms as long as it is revised. I cannot assess clinical accuracy.",
 ])
-def test_ambiguous_quoted_conditional_and_mixed_policy_refusals_remain_closed(assessment):
+@pytest.mark.parametrize("mode", ["legacy_policy", "actual_answer"])
+def test_ambiguous_quoted_conditional_and_mixed_policy_refusals_remain_closed(assessment, mode):
+    if mode == "legacy_policy":
+        result, arbiter = legacy_review(assessment)
+        assert result.conforms is False and result._adjudication_disposition == "scope_refused"
+        arbiter.llm.complete.assert_not_awaited()
+        return
+    assessment = actual_assessment(assessment)
     service, _, conversation = setup(assessment=assessment)
     response = handle(service, CBC_QUESTION)
     assert response.answer.startswith(EVIDENCE_REVIEW_UNAVAILABLE)
@@ -343,7 +389,14 @@ def test_ambiguous_quoted_conditional_and_mixed_policy_refusals_remain_closed(as
     ('{"conforms":false,"conforms":true}', EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE),
 ])
 @pytest.mark.parametrize("assessment", [POLICY_CLAUSE_ASSESSMENTS[0], POLICY_CLAUSE_ASSESSMENTS[-1]])
-def test_clinical_only_limit_never_infers_conformance_or_repairs_parser(verdict, lead, assessment):
+@pytest.mark.parametrize("mode", ["legacy_policy", "actual_answer"])
+def test_clinical_only_limit_never_infers_conformance_or_repairs_parser(verdict, lead, assessment, mode):
+    if mode == "legacy_policy":
+        result, arbiter = legacy_review(assessment, verdict)
+        assert result.conforms is False
+        arbiter.llm.complete.assert_awaited_once()
+        return
+    assessment = actual_assessment(assessment)
     service, _, conversation = setup(assessment=assessment, verdict=verdict)
     response = handle(service, CBC_QUESTION)
     assert response.answer.startswith(lead) and response.doctrinal_review is None

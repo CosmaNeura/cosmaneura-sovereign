@@ -18,7 +18,7 @@ from app.compliance.safety import disclaimer_for
 from app.config import Persona, Settings
 from app.schemas import Citation, DoctrinalSensitivity, DoctrinalVerdict, Intent
 from app.sovereign.arbiter import DoctrinalArbiter, REVIEW_ASSESSMENT_UNAVAILABLE
-from tests.test_provider_evidence import output, selected
+from tests.test_provider_evidence import reviewed_output, selected
 from tests.test_provider_question_context import handle, sovereign
 from tests.test_provider_source_readiness import source_only_response
 
@@ -152,7 +152,7 @@ def factual_service(flag, review_text=REVIEW, *, exact=True):
     service, read, conversation = sovereign()
     if exact:
         read.read.return_value = ProviderQuestionResponse.model_validate(source_only_response("unavailable"))
-        service.llm.complete.return_value = output(selected())
+        service.llm.complete.return_value = reviewed_output(read.read.return_value.result, selected())
     service.magisterium.ask = AsyncMock(return_value=(review_text, [Citation(
         source="PRIVATE_CITATION_SENTINEL", url="https://synthetic.invalid/private-review",
     )]))
@@ -284,7 +284,7 @@ def positive_parser_for(service, draft):
 @pytest.mark.parametrize("assessment", ABSENT_ASSESSMENTS)
 def test_factual_absent_assessment_is_static_unavailable_after_selection(assessment):
     service, read, conversation = factual_service({"conforms": True}, assessment)
-    positive_parser_for(service, output(selected()))
+    positive_parser_for(service, reviewed_output(read.read.return_value.result, selected()))
     response = handle(service, QUESTION)
     assert response.answer.startswith(EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE)
     assert response.safety_notice == "record_evidence_unavailable"

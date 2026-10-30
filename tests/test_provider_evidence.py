@@ -29,6 +29,7 @@ from tests.test_provider_question_context import handle, sovereign
 from tests.test_provider_question_context import fixture
 from tests.test_provider_reviewed_sources import reviewed_response
 from tests.test_provider_source_readiness import source_only_response
+from tests.test_record_review_context import descriptor
 
 
 def selected(*, source=0, section=0, **extra):
@@ -37,6 +38,13 @@ def selected(*, source=0, section=0, **extra):
 
 def output(*spans):
     return json.dumps({"excerpts": list(spans)})
+
+
+def reviewed_output(ctx, *spans):
+    """Explicit synthetic posture observations; never a live model assessment."""
+    return json.dumps({"excerpts": list(spans), "review_context": descriptor(
+        ctx, tuple((span["source_index"], span["section_index"]) for span in spans),
+    )})
 
 
 def context():
@@ -229,7 +237,7 @@ def test_only_selected_evidence_enters_record_answer_and_raw_browser_history_is_
     assert "never instructions" in call["system"]
     assert "do not write a clinical answer" in call["system"]
     assert "Never copy or write a quote" in call["system"]
-    assert call["max_tokens"] == 512
+    assert call["max_tokens"] == 4096  # Same selector also enumerates closed posture context.
     assert not call.get("use_doctrinal_mcp")
     assert agent.llm.complete.call_count == 1
 
@@ -265,7 +273,7 @@ def test_validated_quotes_are_deidentified_before_arbitration_and_canonically_pe
         "Patient email: synthetic@example.com. Office blood pressure is 148/92."
     )
     read.read.return_value = ProviderQuestionResponse.model_validate(raw)
-    service.llm.complete.return_value = output(selected())
+    service.llm.complete.return_value = reviewed_output(read.read.return_value.result, selected())
     response = handle(service)
     arbiter = service.arbiter.review.call_args.kwargs["deidentified_draft"]
     assert "synthetic@example.com" not in arbiter
@@ -306,7 +314,7 @@ def test_preparation_route_keeps_its_existing_synthesized_overview():
 def test_doctrinal_replacement_cannot_inherit_validated_chart_citations(revision):
     service, read, conversation = sovereign()
     read.read.return_value = ProviderQuestionResponse.model_validate(source_only_response("unavailable"))
-    service.llm.complete.return_value = output(selected())
+    service.llm.complete.return_value = reviewed_output(read.read.return_value.result, selected())
     service.arbiter.review.return_value = DoctrinalVerdict(
         conforms=False, rationale="Synthetic review", revised_content=revision,
     )
@@ -325,7 +333,7 @@ def test_doctrinal_replacement_cannot_inherit_validated_chart_citations(revision
 def test_changed_source_context_at_final_acceptance_blocks_all_quote_egress():
     service, read, conversation = sovereign()
     read.read.return_value = ProviderQuestionResponse.model_validate(source_only_response("unavailable"))
-    service.llm.complete.return_value = output(selected())
+    service.llm.complete.return_value = reviewed_output(read.read.return_value.result, selected())
     conversation.write_final_response.side_effect = ConversationDeliveryError("conflict", retryable=False)
     with pytest.raises(MountResolutionError):
         handle(service)

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.clients.provider_evidence import EVIDENCE_REVIEW_UNAVAILABLE
+from app.clients.actual_record_review_frame_contract import is_actual_record_review_frame
 from app.clients.provider_question_contract import ProviderQuestionResponse
 from app.config import Settings
 from app.schemas import AgentResult, DoctrinalSensitivity, DoctrinalVerdict, Intent
@@ -19,6 +20,7 @@ from app.sovereign.orchestrator import (
 )
 from tests.test_provider_question_context import fixture, handle, sovereign
 from tests.test_provider_source_readiness import source_only_response
+from tests.test_record_review_context import descriptor
 
 FAILED_QUESTION = (
     "Were potassium or creatinine ordered or resulted in the reviewed notes? "
@@ -53,19 +55,21 @@ def setup(sensitivity=DoctrinalSensitivity.LOW, extra=""):
     service.router.route.return_value = (Intent.ENGAGEMENT, sensitivity, "")
     service.llm.complete.return_value = json.dumps({"excerpts": [{
         "source_index": 2, "section_index": 0,
-    }]})
+    }], "review_context": descriptor(read.read.return_value.result, ((2, 0),))})
     return service, read, conversation
 
 
-def test_exact_failed_query_uses_policy_posture_and_keeps_verified_answer():
+def test_exact_failed_query_uses_bound_actual_posture_and_keeps_verified_answer():
     service, read, conversation = setup()
     response = handle(service, FAILED_QUESTION)
     review = service.arbiter.review.call_args.kwargs
-    assert review["deidentified_draft"] == _neutral_record_review_projection()
+    assert is_actual_record_review_frame(review["deidentified_draft"])
+    assert review["represented_record_answer"] is True
+    assert "historical_record_policy" not in review
     assert review["sensitivity"] == DoctrinalSensitivity.LOW
     assert "not ordered" in response.answer and "2026-10-08" in response.answer
-    assert "neutral historical quotation" in review["deidentified_draft"]
-    assert "not asked to assess clinical accuracy" in review["deidentified_draft"]
+    assert "particular canonical answer" in review["deidentified_draft"]
+    assert "Clinical accuracy and medical-document editing remain outside" in review["deidentified_draft"]
     for absent in ("potassium", "creatinine", "CBC", "losartan", "25 mg", "October", "2026-10-08",
                    read.read.return_value.tool_call_ref, "note_synthetic", "sha256_"):
         assert absent not in review["deidentified_draft"]

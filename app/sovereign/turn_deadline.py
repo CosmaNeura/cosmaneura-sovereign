@@ -24,6 +24,7 @@ class ProviderTurnClosure:
     dependency_pending: bool = False
     final_arguments: dict[str, object] | None = field(default=None, repr=False)
     final_committed: bool = False
+    work_deadline: float | None = None
 
 
 ACTIVE_PROVIDER_TURN: ContextVar[ProviderTurnClosure | None] = ContextVar(

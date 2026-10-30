@@ -15,6 +15,7 @@ from app.security.mount import MountResolutionError
 from app.sovereign.router import Router
 from tests.test_provider_question_context import handle, sovereign
 from tests.test_record_policy_review import corrected_context
+from tests.test_record_review_context import descriptor
 
 
 # Existing staging questions. MD/RN are workflow perspectives, not
@@ -56,11 +57,13 @@ def setup(intent=Intent.PLAN_WORKBENCH, *, decision=True, sensitivity=DoctrinalS
     context.read.return_value = corrected_context()
     # Select complete sections of all three dated synthetic sources. This is
     # scripted selection; it verifies dispatch/provenance, not live relevance.
+    spans = tuple((source_index, section_index)
+                  for source_index, source in enumerate(context.read.return_value.result.reviewed_sources)
+                  for section_index in range(len(source.sections)))
     service.llm.complete = AsyncMock(return_value=json.dumps({"excerpts": [
         {"source_index": source_index, "section_index": section_index}
-        for source_index, source in enumerate(context.read.return_value.result.reviewed_sources)
-        for section_index in range(len(source.sections))
-    ]}))
+        for source_index, section_index in spans
+    ], "review_context": descriptor(context.read.return_value.result, spans)}))
     return service, context, conversation
 
 
@@ -69,6 +72,9 @@ def setup(intent=Intent.PLAN_WORKBENCH, *, decision=True, sensitivity=DoctrinalS
 @pytest.mark.parametrize("question", QUESTIONS)
 def test_six_exact_history_questions_reach_existing_source_answer_lane(intent, question):
     service, context, conversation = setup(intent)
+    if question == QUESTIONS[-1]:
+        selected = json.loads(service.llm.complete.return_value)
+        service.llm.complete.return_value = json.dumps(selected["review_context"])
     response = handle(service, question)
     assert response.intent == Intent.ENGAGEMENT
     assert response.safety_notice is None
@@ -78,7 +84,8 @@ def test_six_exact_history_questions_reach_existing_source_answer_lane(intent, q
         assert service.llm.classify_json.call_args.kwargs["prompt"] == question
     assert context.read.call_count == 1
     if question == QUESTIONS[-1]:
-        service.llm.complete.assert_not_called()
+        service.llm.complete.assert_called_once()
+        assert service.llm.complete.call_args.kwargs["usage_purpose"] == "record_review_context"
         assert response.structured["record_evidence_mode"] == "reviewed_timeline"
     else:
         assert service.llm.complete.call_count == 1
@@ -201,7 +208,7 @@ def test_observed_symptom_followup_lookups_use_exact_sources_across_known_labels
     context.read.return_value = type(context.read.return_value).model_validate(raw)
     service.llm.complete.return_value = json.dumps({"excerpts": [
         {"source_index": 0, "section_index": 0}, {"source_index": 0, "section_index": 1},
-    ]})
+    ], "review_context": descriptor(context.read.return_value.result, ((0, 0), (0, 1)))})
     response = handle(service, question)
     assert response.intent == Intent.ENGAGEMENT
     assert response.structured["record_evidence_status"] == "validated_excerpts"
