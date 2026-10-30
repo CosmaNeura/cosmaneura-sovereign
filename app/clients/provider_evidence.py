@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 
 from pydantic import Field, StrictInt, ValidationError
 
 from app.clients.llm import LLMClient
 from app.clients.provider_question_contract import ReviewedProviderQuestionResult
+from app.clients.reviewed_excerpts_contract import ReviewedExcerpt, ReviewedExcerpts
 from app.clients.session_prep_contract import ClosedModel
 from app.schemas import AgentResult, Citation
 
@@ -136,6 +138,37 @@ def evidence_prompt(context: ReviewedProviderQuestionResult) -> str:
     return json.dumps(projection, ensure_ascii=True)
 
 
+def enumeration_digest(context: ReviewedProviderQuestionResult) -> str:
+    """Bind the complete source/section enumeration exactly as received."""
+    ordered = [
+        [source.source_ref, source.source_version, source.source_at.isoformat(),
+         list(source.sections.items())]
+        for source in context.reviewed_sources
+    ]
+    return hashlib.sha256(json.dumps(
+        ordered, ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def _with_reviewed_excerpts(
+    result: AgentResult, context: ReviewedProviderQuestionResult,
+    coordinates: list[tuple[int, int]], *, timeline: bool = False,
+) -> AgentResult:
+    version = context._reviewed_excerpts_version
+    if version is None or result.data.get("record_evidence_status") != "validated_excerpts":
+        return result
+    if version != "1.0.0":
+        raise ValueError("unknown reviewed-excerpt support")
+    result._reviewed_excerpts = ReviewedExcerpts(
+        schema_version="1.0.0", enumeration_sha256=enumeration_digest(context),
+        mode="timeline" if timeline else "selected",
+        excerpts=[ReviewedExcerpt(ordinal=ordinal, source_index=source_index,
+                                  section_index=section_index)
+                  for ordinal, (source_index, section_index) in enumerate(coordinates, 1)],
+    )
+    return result
+
+
 def validated_evidence(
     raw: str, context: ReviewedProviderQuestionResult, *, agent: str, data: dict,
 ) -> AgentResult:
@@ -150,6 +183,7 @@ def validated_evidence(
         if not parsed.excerpts:
             raise ValueError("empty or unbounded evidence")
         selected: list[tuple[str, str, str]] = []
+        coordinates: list[tuple[int, int]] = []
         seen: set[tuple[int, int]] = set()
         total_characters = 0
         for span in parsed.excerpts:
@@ -164,6 +198,7 @@ def validated_evidence(
                 raise ValueError("invalid evidence membership")
             seen.add(identity)
             selected.append((text, source.source_at.date().isoformat(), section))
+            coordinates.append(identity)
     except (ValueError, TypeError, IndexError, RecursionError, ValidationError):
         return AgentResult(
             agent=agent,
@@ -173,7 +208,9 @@ def validated_evidence(
             data={**data, "record_evidence_status": "unavailable"},
         )
 
-    return _quoted_result(selected, agent=agent, data=data)
+    return _with_reviewed_excerpts(
+        _quoted_result(selected, agent=agent, data=data), context, coordinates,
+    )
 
 
 def _quoted_result(
@@ -239,15 +276,18 @@ def reviewed_timeline_evidence(
     response: never salvage a partial timeline or fall back to generated prose.
     """
     selected: list[tuple[str, str, str]] = []
+    coordinates: list[tuple[int, int]] = []
     total = 0
     if context.state == "ready":
-        for source in sorted(context.reviewed_sources, key=lambda source: source.source_at):
+        for source_index, source in sorted(enumerate(context.reviewed_sources),
+                                           key=lambda item: item[1].source_at):
             start = len(selected)
-            for section, text in source.sections.items():
+            for section_index, (section, text) in enumerate(source.sections.items()):
                 if not text.strip() or not _timeline_section(section):
                     continue
                 total += len(text)
                 selected.append((text, source.source_at.date().isoformat(), section))
+                coordinates.append((source_index, section_index))
                 if len(text) > 3000 or total > 8000 or len(selected) > MAX_TIMELINE_SECTIONS:
                     selected = []
                     break
@@ -260,8 +300,10 @@ def reviewed_timeline_evidence(
             data={**data, "record_evidence_status": "unavailable",
                   "record_evidence_mode": "reviewed_timeline"},
         )
-    return _quoted_result(
-        selected, agent=agent, data=data, timeline_sources=len(context.reviewed_sources),
+    return _with_reviewed_excerpts(
+        _quoted_result(selected, agent=agent, data=data,
+                       timeline_sources=len(context.reviewed_sources)),
+        context, coordinates, timeline=True,
     )
 
 

@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from app.clients.session_prep_contract import (
     ClosedModel, Digest, OpaqueRef, SessionPrepPreparedBrief, Version,
@@ -35,6 +35,9 @@ class ProviderQuestionRequest(ClosedModel):
 
 
 class ProviderQuestionResult(ClosedModel):
+    # Transport negotiation only; excluded from JSON and model/reviewer prompts.
+    _reviewed_excerpts_version: Literal["1.0.0"] | None = PrivateAttr(default=None)
+
     schema_version: Literal["1.0.0"]
     state: Literal["ready", "pending", "unavailable"]
     reason_code: Literal[
