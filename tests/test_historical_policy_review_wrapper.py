@@ -244,3 +244,91 @@ def test_none_default_bypass_is_unchanged_and_option_is_not_a_new_wire_field():
     arbiter.magisterium.ask.assert_not_called()
     arbiter.llm.complete.assert_not_called()
     assert "historical_record_policy" not in ChatRequest.model_json_schema()["properties"]
+
+
+CLINICAL_LIMITATIONS = [
+    "I cannot assess clinical accuracy.",
+    "I can't evaluate clinical correctness.",
+    "However, I am unable to assess clinical accuracy or rewrite clinician-note wording.",
+    "Do not assess clinical accuracy or rewrite clinician-note wording.",
+]
+
+
+@pytest.mark.parametrize("limitation", CLINICAL_LIMITATIONS)
+def test_positive_policy_judgment_with_clinical_only_limit_retains_actual_strict_parse(limitation):
+    assessment = ASSESSMENT + " " + limitation
+    service, context, conversation = setup(assessment=assessment)
+    response = handle(service, CBC_QUESTION)
+    assert response.structured["record_evidence_status"] == "validated_excerpts"
+    assert "CBC order cancelled" in response.answer
+    assert response.doctrinal_review.conforms is True
+    service.arbiter.magisterium.ask.assert_called_once()
+    assert service.llm.complete.call_count == 2
+    assert service.llm.complete.call_args.kwargs["prompt"] == (
+        f"Reviewer assessment:\n{assessment}\n\nFields: conforms (bool), needs_revision (bool)."
+    )
+    call = service.arbiter.magisterium.ask.call_args.kwargs
+    assert "CBC" not in call["user_content"] and "losartan" not in call["user_content"]
+    assert conversation.write_final_response.call_args.kwargs["outcome"] == "completed"
+    assert conversation.write_final_response.call_args.kwargs["provider_context_ref"] == context.read.return_value.tool_call_ref
+
+
+@pytest.mark.parametrize("assessment", [
+    "I cannot assess clinical accuracy.",  # No policy judgment for the parser to interpret.
+    '"The reporting policy conforms." I cannot assess clinical accuracy.',
+    "If this reporting policy conforms. I cannot assess clinical accuracy.",
+    "The user says this reporting policy conforms. I cannot assess clinical accuracy.",
+    "The reporting policy does not conform. I cannot assess clinical accuracy.",
+    ASSESSMENT + " I cannot assess the reporting policy.",
+    ASSESSMENT + " I cannot assess Catholic teaching or clinical accuracy.",
+    ASSESSMENT + " I cannot assess clinical accuracy or doctrinal conformance.",
+    ASSESSMENT + " Clinical accuracy is outside my scope; so is this policy.",
+    ASSESSMENT + " I cannot assess clinical accuracy, and I cannot judge policy conformance.",
+    ASSESSMENT + " I cannot review this clinical question.",
+    ASSESSMENT + " I cannot determine whether this policy conforms. I cannot assess clinical accuracy.",
+    ASSESSMENT + " I will not judge the policy. I cannot assess clinical accuracy.",
+    ASSESSMENT + " I decline to judge doctrine. I cannot assess clinical accuracy.",
+    ASSESSMENT + " This policy does not conform to Catholic teaching. I cannot assess clinical accuracy.",
+])
+def test_ambiguous_quoted_conditional_and_mixed_policy_refusals_remain_closed(assessment):
+    service, _, conversation = setup(assessment=assessment)
+    response = handle(service, CBC_QUESTION)
+    assert response.answer.startswith(EVIDENCE_REVIEW_UNAVAILABLE)
+    assert response.doctrinal_review is None and response.citations == []
+    service.arbiter.magisterium.ask.assert_called_once()
+    assert service.llm.complete.call_count == 1  # Selector only; no positive parser can override refusal.
+    assert conversation.write_final_response.call_args.kwargs["outcome"] == "unavailable"
+
+
+@pytest.mark.parametrize("verdict,lead", [
+    ('{"conforms":false}', EVIDENCE_REVIEW_UNAVAILABLE),
+    ('{"conforms":"true"}', EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE),
+    ('{"conforms":true,"needs_revision":true}', EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE),
+    ('{"conforms":false,"conforms":true}', EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE),
+])
+def test_clinical_only_limit_never_infers_conformance_or_repairs_parser(verdict, lead):
+    service, _, conversation = setup(assessment=ASSESSMENT + " I cannot assess clinical accuracy.", verdict=verdict)
+    response = handle(service, CBC_QUESTION)
+    assert response.answer.startswith(lead) and response.doctrinal_review is None
+    assert "CBC order cancelled" not in response.answer
+    service.arbiter.magisterium.ask.assert_called_once()
+    assert service.llm.complete.call_count == 2
+    assert conversation.write_final_response.call_args.kwargs["outcome"] == "unavailable"
+
+
+@pytest.mark.parametrize("intent,tier,option", [
+    (Intent.ENGAGEMENT, DoctrinalSensitivity.HIGH, True),
+    (Intent.ETHICS_CONSULT, DoctrinalSensitivity.HIGH, True),
+    (Intent.VISIT_PREP, DoctrinalSensitivity.LOW, True),
+    (Intent.ENGAGEMENT, DoctrinalSensitivity.LOW, False),
+    (Intent.ENGAGEMENT, DoctrinalSensitivity.LOW, "true"),
+])
+def test_clinical_scope_distinction_is_internal_low_historical_policy_only(intent, tier, option):
+    arbiter = DoctrinalArbiter(Settings(_env_file=None, mock_mode=True))
+    arbiter.magisterium.ask = AsyncMock(return_value=(ASSESSMENT + " I cannot assess clinical accuracy.", []))
+    arbiter.llm.classify_json = AsyncMock(return_value={"conforms": True})
+    verdict = asyncio.run(arbiter.review(deidentified_draft="Synthetic only", intent=intent,
+                                       sensitivity=tier, historical_record_policy=option))
+    assert verdict.conforms is False and verdict._adjudication_disposition == "scope_refused"
+    arbiter.magisterium.ask.assert_called_once()
+    arbiter.llm.classify_json.assert_not_called()

@@ -17,7 +17,7 @@ from tests.test_provider_question_context import handle, sovereign
 from tests.test_record_policy_review import corrected_context
 
 
-# Exact six existing staging questions. MD/RN are workflow perspectives, not
+# Existing staging questions. MD/RN are workflow perspectives, not
 # role delegation or an authorization change. Upstream decisions are scripted.
 QUESTIONS = [
     "What office blood pressure was documented on September 30, 2026? Include the visit date.",
@@ -26,6 +26,10 @@ QUESTIONS = [
     "What is the documented CBC order status across the October 7 and October 8 notes? Are there any CBC results?",
     "Were potassium or creatinine ordered or resulted in the reviewed notes? Use the October 8 correction.",
     "Summarize the reviewed visit timeline and identify the medication correction and outstanding documentation gaps.",
+]
+SYMPTOM_FOLLOWUP_QUESTIONS = [
+    "What breathing and chest-pain findings were recorded, and what follow-up date was scheduled?",
+    "What changed with nausea and what follow-up was recorded?",
 ]
 
 HISTORICAL_VARIANTS = [
@@ -37,6 +41,9 @@ HISTORICAL_VARIANTS = [
     "What is the documented medication dose?",
     "What dose of losartan was documented in the prior notes?",
     "What office BP was recorded on 2026-09-30?",
+    "What breathing and chest-pain findings were recorded, and what follow-up date was scheduled?",
+    "What changed with nausea and what follow-up was recorded?",
+    "What follow-up date was documented?",
 ]
 
 
@@ -89,6 +96,12 @@ def test_six_exact_history_questions_reach_existing_source_answer_lane(intent, q
 
 
 ACTION_OR_OTHER_SCOPE = [
+    "What breathing and chest-pain findings were recorded, and what follow-up date should be scheduled?",
+    "What changed with nausea and what follow-up was recorded? Prescribe medication.",
+    "What changed with nausea and what follow-up was recorded and should I change treatment?",
+    "What breathing findings were recorded? Fetch the latest hospital record.",
+    "What breathing findings were recorded, and what follow-up date was scheduled? Explain Catholic ethics.",
+    "Summarize the breathing and chest-pain findings and recommend follow-up.",
     "What was the prior dose, administer losartan 50 mg?",
     "What is the documented medication dose, give losartan 50 mg.",
     "What does the prior note say: restart losartan tonight?",
@@ -170,6 +183,33 @@ def test_closed_historical_status_variants_recover_without_inventing_current_car
     assert response.structured["record_evidence_status"] == "validated_excerpts"
     assert context.read.call_count == 1
     assert service.llm.classify_json.call_args.kwargs["prompt"] == question
+    assert conversation.write_final_response.call_args.kwargs["outcome"] == "completed"
+
+
+@pytest.mark.parametrize("intent", [Intent.ENGAGEMENT, Intent.VISIT_PREP,
+                                   Intent.PLAN_WORKBENCH, Intent.LAB_REVIEW])
+@pytest.mark.parametrize("question", SYMPTOM_FOLLOWUP_QUESTIONS)
+def test_observed_symptom_followup_lookups_use_exact_sources_across_known_labels(intent, question):
+    service, context, conversation = setup(intent)
+    service.agents[Intent.VISIT_PREP].run = AsyncMock(side_effect=AssertionError("Factual lookup must not synthesize"))
+    raw = context.read.return_value.model_dump(mode="json")
+    for source in raw["result"]["reviewed_sources"]:
+        source["sections"] = {
+            "Recorded symptoms": "Breathing improved. No new chest pain. Nausea resolved.",
+            "Recorded follow-up": "Follow-up appointment not yet scheduled.",
+        }
+    context.read.return_value = type(context.read.return_value).model_validate(raw)
+    service.llm.complete.return_value = json.dumps({"excerpts": [
+        {"source_index": 0, "section_index": 0}, {"source_index": 0, "section_index": 1},
+    ]})
+    response = handle(service, question)
+    assert response.intent == Intent.ENGAGEMENT
+    assert response.structured["record_evidence_status"] == "validated_excerpts"
+    assert '> Breathing improved. No new chest pain. Nausea resolved.' in response.answer
+    assert '> Follow-up appointment not yet scheduled.' in response.answer
+    assert len(response.citations) == 2 and all(c.title.startswith("2026-09-30") for c in response.citations)
+    service.agents[Intent.VISIT_PREP].run.assert_not_called()
+    service.arbiter.review.assert_called_once()
     assert conversation.write_final_response.call_args.kwargs["outcome"] == "completed"
 
 
