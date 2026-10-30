@@ -1191,11 +1191,17 @@
         return sameDay ? date.replace("T", " ").replace(/Z$/, " UTC").replace(/([+-]\d{2}:\d{2})$/, " $1") : date.slice(0, 10);
       }
       var notice = document.createElement("p"); notice.className = "cnp-facts-notice";
-      notice.textContent = "Dated observations from reviewed notes. This is not a complete medication list or order ledger. Note dates: " +
+      notice.textContent = (facts.facts.length ? "Dated observations from reviewed notes. " :
+        "The medication, order and measurement tables have no entries for these notes. " +
+        (value.prepared_brief ? "Other chart details may appear in the recap or reviewed notes. " :
+          "Read the reviewed notes for chart details. ") +
+        "This does not establish absence from the chart. ") +
+        "This is not a complete medication list or order ledger. Note dates: " +
         facts.source_dates.map(factDateLabel).join(", ") + ".";
       if (facts.selection_limited || facts.facts_limited)
         notice.textContent += " Some sources or observations are omitted by preparation limits; consult reviewed notes.";
       prepView.appendChild(notice);
+      if (!facts.facts.length) return; // An empty bounded table is not an empty chart or an unavailable recap.
       [ ["medication", "Medication observations"], ["order", "Order observations"], ["vital", "Measurements"] ].forEach(function (group) {
         // Display grouping preserves every original evidence item and the unchanged payload.
         var rows = [], identities = new Map();
@@ -1248,7 +1254,6 @@
         });
         table.appendChild(body); prepView.appendChild(table);
       });
-      if (!facts.facts.length) prepSection("Dated observations", ["No supported observations are shown. This does not establish absence from the chart."]);
     }
     function currentPrep(cycle) {
       return cycle && state.prepCycle === cycle &&
@@ -1305,9 +1310,10 @@
         Promise.resolve().then(function () {
           if (currentPrep(cycle)) return opts.onSessionPrepStateChange(value.state);
         }).catch(function () {});
+      var hasObservations = value.facts_state === "ready" && value.structured_facts.facts.length > 0;
       prepProgress.textContent = value.state === "ready"
         ? "Your prepared brief is ready." : value.facts_state === "ready"
-          ? "Reviewed-source observations are ready; the brief is " + value.state + "."
+          ? (hasObservations ? "Reviewed-source observations are ready" : "Reviewed notes are available") + "; the brief is " + value.state + "."
           : "Session Prep is unavailable.";
       prepView.innerHTML = "";
       prepView.hidden = false;
@@ -1322,8 +1328,8 @@
       if (value.state === "pending" || value.state === "unavailable") {
         var empty = document.createElement("p");
         empty.textContent = value.state === "pending"
-          ? value.facts_state === "ready" ? "The prepared brief is still being generated. Reviewed-source observations are available below." : "The prepared brief is still being generated. No clinical content is available yet."
-          : value.facts_state === "ready" ? "The prepared brief is unavailable. Reviewed-source observations are available below." : value.reason_code === "no_eligible_sources"
+          ? value.facts_state === "ready" ? "The prepared brief is still being generated. " + (hasObservations ? "Reviewed-source observations are available below." : "Read the reviewed notes while you wait.") : "The prepared brief is still being generated. No clinical content is available yet."
+          : value.facts_state === "ready" ? "The prepared brief is unavailable. " + (hasObservations ? "Reviewed-source observations are available below." : "Read the reviewed notes for chart details.") : value.reason_code === "no_eligible_sources"
             ? "No eligible finalized notes are available for this encounter."
             : "We couldn’t load a prepared brief for this encounter. Try again; if the problem continues, contact support with the request reference below.";
         prepView.appendChild(empty);
@@ -1539,16 +1545,20 @@
         paintPrepFailure({ cycle: cycle }, "Couldn’t initialize Session Prep for this encounter.", false);
       }
     }
-    async function headersForAttempt(attempt) {
+    async function headersForAttempt(attempt, controller) {
       var headers;
       if (attempt.initialHeaders) {
         headers = attempt.initialHeaders;
         attempt.initialHeaders = null;
       } else { // Explicit retry preserves the request body/UUID/draft, authenticates first, and only then reacquires the record context.
         var refreshedHeaders = await freshBearerHeaders();
-        if (!currentGeneration(attempt.generation)) throw new DOMException("stale", "AbortError");
+        if (!currentGeneration(attempt.generation) || (controller &&
+            (controller.signal.aborted || state.chatController !== controller)))
+          throw new DOMException("stale", "AbortError");
         var refreshedContext = await opts.getContext();
-        if (!currentGeneration(attempt.generation)) throw new DOMException("stale", "AbortError");
+        if (!currentGeneration(attempt.generation) || (controller &&
+            (controller.signal.aborted || state.chatController !== controller)))
+          throw new DOMException("stale", "AbortError");
         if (!governedContext(refreshedContext, attempt.recordId)) {
           loadThreadFor(null);
           throw new DOMException("record mismatch", "AbortError");
@@ -1587,7 +1597,7 @@
         }, { once: true });
       });
       async function deliver() {
-        var headers = await headersForAttempt(attempt);
+        var headers = await headersForAttempt(attempt, controller);
         delete headers["x-cosmaneura-client-turn-id"];
         if (!currentGeneration(attempt.generation) || controller.signal.aborted) return;
         var response = await fetch(url + "/embed/history", {
@@ -1655,15 +1665,44 @@
       };
       b.appendChild(retry);
     }
+    function boundedChatWait(controller, milliseconds) {
+      // The provider owns a 180-second total turn budget. A 190-second browser
+      // deadline allows its terminal receipt to arrive, while also bounding host
+      // callbacks and transports which ignore AbortSignal. Cancellation releases
+      // this UI; it does not claim that the server canceled or failed the turn.
+      var timedOut = false;
+      var rejectCancellation;
+      var cancelled = new Promise(function (_resolve, reject) { rejectCancellation = reject; });
+      function onAbort() {
+        rejectCancellation(new DOMException(timedOut ? "deadline" : "canceled",
+                                            timedOut ? "TimeoutError" : "AbortError"));
+      }
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      var timer = setTimeout(function () { timedOut = true; controller.abort(); }, milliseconds);
+      return {
+        wait: function (promise) { return Promise.race([promise, cancelled]); },
+        close: function () {
+          clearTimeout(timer);
+          controller.signal.removeEventListener("abort", onAbort);
+        },
+      };
+    }
     async function runAttempt(attempt, b) {
       if (!currentGeneration(attempt.generation) || state.switching) return;
       state.busy = true; syncControls();
       b.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
       var controller = new AbortController();
       state.chatController = controller;
-      try { // There is deliberately one fetch per user action. An explicit retry reuses the same serialized body, UUID, draft, and record generation while acquiring a fresh bearer.
-        var requestHeaders = await headersForAttempt(attempt);
-        if (!currentGeneration(attempt.generation)) return;
+      var deadline = boundedChatWait(controller, 190000);
+      var progress = setTimeout(function () {
+        if (currentGeneration(attempt.generation) && state.chatController === controller &&
+            !controller.signal.aborted)
+          b.innerHTML = '<p role="status">The response is still processing. Your question is preserved.</p>';
+      }, 30000);
+      async function deliver() { // There is deliberately one fetch per user action. An explicit retry reuses the same serialized body, UUID, draft, and record generation while acquiring a fresh bearer.
+        var requestHeaders = await headersForAttempt(attempt, controller);
+        if (!currentGeneration(attempt.generation) || state.chatController !== controller ||
+            controller.signal.aborted) return;
         var r = await fetch(attempt.url, {
           method: "POST",
           headers: requestHeaders,
@@ -1671,7 +1710,7 @@
           signal: controller.signal,
         });
         if (!currentGeneration(attempt.generation) ||
-            state.chatController !== controller) return;
+            state.chatController !== controller || controller.signal.aborted) return;
         if (r.status === 401 || r.status === 403) {
           lockNamedBeta();
           return;
@@ -1687,7 +1726,7 @@
         if (!r.ok) {
           var problem = await safeProblem(r);
           if (!currentGeneration(attempt.generation) ||
-              state.chatController !== controller) return;
+              state.chatController !== controller || controller.signal.aborted) return;
           if (problem && problem.safety_fallback) {
             render(b, {
               answer: problem.safety_fallback.answer,
@@ -1721,7 +1760,7 @@
         }
         var d = await r.json();
         if (!currentGeneration(attempt.generation) ||
-            state.chatController !== controller) return;
+            state.chatController !== controller || controller.signal.aborted) return;
         if (d.client_turn_id !== attempt.clientTurnId) {
           paintAttemptFailure(
             b, attempt,
@@ -1733,19 +1772,25 @@
         render(b, d, attempt.recordId, attempt.generation, false);
         state.retryAttempt = null;
         if (input.value === attempt.text) input.value = "";
+      }
+      try {
+        await deadline.wait(deliver());
       } catch (error) {
         if (currentGeneration(attempt.generation) && error.authenticationUnavailable) {
           lockNamedBeta();
         } else if (currentGeneration(attempt.generation) && error.name !== "AbortError") {
           paintAttemptFailure(
             b, attempt,
-            error instanceof TypeError
+            error.name === "TimeoutError"
+              ? "The response is taking longer than expected. Your question is preserved. Check for a saved answer before trying again."
+              : error instanceof TypeError
               ? "The connection was interrupted. Your exact draft is preserved."
               : "The assistant request could not be verified. Your draft is preserved.",
-            error instanceof TypeError
+            error.name === "TimeoutError" || error instanceof TypeError
           );
         }
       } finally {
+        deadline.close(); clearTimeout(progress);
         if (currentGeneration(attempt.generation) &&
             state.chatController === controller) {
           state.chatController = null;
@@ -1763,12 +1808,15 @@
       var b = null;
       var handedOff = false;
       state.busy = true; state.retryAttempt = null; syncControls();
+      var controller = new AbortController();
+      state.chatController = controller;
+      var deadline = boundedChatWait(controller, 30000);
       try {
-        var initialHeaders = await freshBearerHeaders();
-        if (!currentGeneration(generation)) return;
+        var initialHeaders = await deadline.wait(freshBearerHeaders());
+        if (!currentGeneration(generation) || state.chatController !== controller || controller.signal.aborted) return;
         var recordId = state.clientId;
-        var suppliedContext = await opts.getContext();
-        if (!currentGeneration(generation)) return;
+        var suppliedContext = await deadline.wait(opts.getContext());
+        if (!currentGeneration(generation) || state.chatController !== controller || controller.signal.aborted) return;
         var context = governedContext(suppliedContext, recordId);
         if (!context) {
           loadThreadFor(null);
@@ -1794,6 +1842,7 @@
         };
         state.retryAttempt = attempt;
         input.value = ""; input.style.height = "auto";
+        deadline.close();
         handedOff = true;
         await runAttempt(attempt, b);
       } catch (error) {
@@ -1802,10 +1851,14 @@
         } else if (currentGeneration(generation) && error.name !== "AbortError") {
           if (!b) b = bubble("a");
           input.value = text;
-          b.innerHTML = "<p>Couldn’t initialize the assistant request. Your draft is preserved.</p>";
+          b.innerHTML = error.name === "TimeoutError"
+            ? "<p>The assistant request could not be initialized in time. Your draft is preserved; no question was sent.</p>"
+            : "<p>Couldn’t initialize the assistant request. Your draft is preserved.</p>";
         }
       } finally {
-        if (!handedOff && currentGeneration(generation)) {
+        deadline.close();
+        if (!handedOff && currentGeneration(generation) && state.chatController === controller) {
+          state.chatController = null;
           state.busy = false; syncControls(); focusChatInput();
         }
       }

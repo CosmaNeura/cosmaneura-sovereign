@@ -57,7 +57,7 @@ REVIEW_ASSESSMENT_UNAVAILABLE = (
 _REVIEW_REFUSAL_RE = re.compile(
     r"\b(?:cannot|can['’]t|unable to|not able to|not qualified to|not equipped to|"
     r"do not|don['’]t)\s+"
-    r"(?:(?:assess|evaluate|review|revise|edit|analy[sz]e|answer|respond|comment)\b|"
+    r"(?:(?:assess|evaluate|review|judge|determine|revise|edit|analy[sz]e|answer|respond|comment)\b|"
     r"(?:provide|offer|give|perform|make)\s+(?:[\w'-]+\s+){0,6}"
     r"(?:assessments?|evaluations?|reviews?|revisions?|analys(?:is|es)|answers?|"
     r"responses?|opinions?|feedback|"
@@ -65,6 +65,86 @@ _REVIEW_REFUSAL_RE = re.compile(
     r"\b(?:outside|beyond)\s+(?:my|its|the)\s+(?:scope|expertise)\b",
     re.IGNORECASE,
 )
+# These complete clauses describe the intentionally excluded clinical task,
+# not refusal of the policy question. Keep recognition narrow: a mixed or
+# ambiguous limitation must retain the existing negative gate.
+_CLINICAL_SCOPE_LIMITATION_RE = re.compile(
+    r"(?:(?:however|but)\s*,?\s*)?"
+    r"(?:(?:I|we)\s+(?:cannot|can['’]t|am unable to|are unable to|"
+    r"am not able to|are not able to)|do not|don['’]t)\s+"
+    r"(?:assess|evaluate|review)\s+(?:the\s+)?clinical\s+(?:accuracy|correctness)"
+    r"(?:\s+or\s+(?:rewrite|edit|revise)\s+(?:the\s+)?"
+    r"(?:clinician[- ]note|medical[- ]document)\s+wording)?[.!]?",
+    re.IGNORECASE,
+)
+_AFFIRMATIVE_POLICY_JUDGMENT_RE = re.compile(
+    r"(?:this|the)\s+(?:neutral\s+)?(?:historical[- ](?:reporting\s+)?|reporting\s+)?"
+    r"policy\s+(?:conforms(?:\s+to\s+(?:Catholic teaching|the teaching of the Catholic Church)"
+    r"(?:\s+and\s+(?:the\s+)?(?:USCCB\s+)?(?:ERDs|Ethical and Religious Directives))?)?"
+    r"|is\s+consistent\s+with\s+Catholic teaching)[.!]?",
+    re.IGNORECASE,
+)
+_UNRESOLVED_SCOPE_LIMITATION_RE = re.compile(
+    r"\b(?:cannot|can['’]t|unable|not able|not qualified|not equipped|do not|don['’]t|"
+    r"will not|won['’]t|refuse|decline|outside|beyond)\b|"
+    r"\b(?:does not|doesn['’]t|not)\s+(?:conform|consistent)\b|\bnon[- ]conform",
+    re.IGNORECASE,
+)
+_CONDITIONAL_POLICY_RATIONALE_RE = re.compile(
+    r"\b(?:if|unless|provided|assuming|conditional(?:ly)?|subject\s+to|"
+    r"(?:as|so)\s+long\s+as|on\s+condition(?:\s+that)?|"
+    r"contingent\s+(?:on|upon)|depending\s+on|only\s+(?:when|after))\b",
+    re.IGNORECASE,
+)
+
+
+def _affirmative_policy_clause(text: str) -> bool:
+    """Recognize the explicit policy judgment, without granting conformance.
+
+    A non-refusing rationale may follow an explicit judgment. The unchanged
+    verdict parser still has to accept the reviewer's complete assessment.
+    """
+    if _AFFIRMATIVE_POLICY_JUDGMENT_RE.fullmatch(text):
+        return True
+    parts = re.split(r"\s+because\s+", text, maxsplit=1, flags=re.IGNORECASE)
+    return (len(parts) == 2
+            and _AFFIRMATIVE_POLICY_JUDGMENT_RE.fullmatch(parts[0].rstrip(",;")) is not None
+            and bool(parts[1].strip())
+            and not _UNRESOLVED_SCOPE_LIMITATION_RE.search(parts[1])
+            and not _CONDITIONAL_POLICY_RATIONALE_RE.search(parts[1]))
+
+
+def _refuses_required_review(review_text: str, *, historical_policy: bool) -> bool:
+    """Preserve refusals without mistaking the narrow clinical exclusion for one.
+
+    Only the validated historical-policy wrapper can use this distinction. An
+    explicit policy judgment and entirely clinical limitation clauses merely
+    permit the normal strict parser; they never grant conformance themselves.
+    All other refusal matches, including mixed doctrine/clinical refusals, deny.
+    """
+    if historical_policy and _CONDITIONAL_POLICY_RATIONALE_RE.search(review_text):
+        # A condition anywhere in the assessment qualifies the judgment, even
+        # when it is separate from the affirmative or clinical-only clause.
+        return True
+    if not _REVIEW_REFUSAL_RE.search(review_text):
+        return False
+    if not historical_policy:
+        return True
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+|[\r\n]+", review_text)
+                 if part.strip()]
+    clauses = []
+    for sentence in sentences:
+        parts = re.split(r"\s*[,;]\s*(?:but|however)\s*,?\s*|\s+but\s+", sentence,
+                         maxsplit=1, flags=re.IGNORECASE)
+        if (len(parts) == 2 and _affirmative_policy_clause(parts[0])
+                and _CLINICAL_SCOPE_LIMITATION_RE.fullmatch(parts[1])):
+            clauses.extend(parts)
+        else:
+            clauses.append(sentence)
+    if not any(_affirmative_policy_clause(part) for part in clauses):
+        return True
+    return any(_UNRESOLVED_SCOPE_LIMITATION_RE.search(part)
+               and not _CLINICAL_SCOPE_LIMITATION_RE.fullmatch(part) for part in clauses)
 
 
 class DoctrinalArbiter:
@@ -111,8 +191,9 @@ class DoctrinalArbiter:
 
         user_content = (f"DRAFT ANSWER:\n{deidentified_draft}\n\n"
                         "Does this conform? If not, give the corrected version.")
-        if (historical_record_policy is True and intent == Intent.ENGAGEMENT
-                and sensitivity == DoctrinalSensitivity.LOW):
+        historical_policy = (historical_record_policy is True and intent == Intent.ENGAGEMENT
+                             and sensitivity == DoctrinalSensitivity.LOW)
+        if historical_policy:
             user_content = (f"HISTORICAL REPORTING POLICY:\n{deidentified_draft}\n\n"
                             + _HISTORICAL_POLICY_REVIEW_QUESTION)
         review_text, citations = await self.magisterium.ask(
@@ -133,7 +214,7 @@ class DoctrinalArbiter:
         # An explicit topic-scope refusal is not a conformance judgment. Do not
         # let an erroneous positive parser flag manufacture one. This is only a
         # negative gate; all other assessments retain the normal verdict parse.
-        if _REVIEW_REFUSAL_RE.search(review_text):
+        if _refuses_required_review(review_text, historical_policy=historical_policy):
             verdict = DoctrinalVerdict(
                 conforms=False, rationale=review_text,
                 revised_content=review_text, citations=citations,

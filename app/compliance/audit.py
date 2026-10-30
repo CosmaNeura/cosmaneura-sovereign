@@ -21,6 +21,7 @@ import os
 import sys
 import threading
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Optional
 
 from app.config import ComplianceProfile, Settings, get_settings
@@ -30,12 +31,53 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+class ReviewDisposition(Enum):
+    """Code-owned review outcomes; never reviewer prose or upstream errors."""
+
+    NOT_ADJUDICATED = "not_adjudicated"
+    CONFORMS = "conforms"
+    NONCONFORMS = "nonconforms"
+    SCOPE_REFUSED = "scope_refused"
+    INVALID_VERDICT = "invalid_verdict"
+    ASSESSMENT_UNAVAILABLE = "assessment_unavailable"
+    UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+    UNRECOGNIZED_DISPOSITION = "unrecognized_disposition"
+
+    @classmethod
+    def from_adjudication(cls, value: object) -> ReviewDisposition:
+        # PrivateAttr's annotation is not runtime validation. Do not stringify
+        # or log arbitrary values; the six arbiter-owned outcomes are closed.
+        if type(value) is str and value in {
+            "not_adjudicated", "conforms", "nonconforms", "scope_refused",
+            "invalid_verdict", "assessment_unavailable",
+        }:
+            return cls(value)
+        return cls.UNRECOGNIZED_DISPOSITION
+
+
 class AuditLogger:
     def __init__(self, settings: Optional[Settings] = None):
         self.s = settings or get_settings()
         if not self.s.platform_agent_api_enabled:
             self._lock = threading.Lock()
             self._prev_chain = "0" * 64  # legacy process-local continuity only
+
+    def record_review_disposition(
+        self, *, trace_id: str, profile: ComplianceProfile,
+        disposition: ReviewDisposition,
+    ) -> None:
+        """Add one existing-shape operational event with no new wire fields.
+
+        The platform observer remains status-only and unchanged. This local
+        breadcrumb establishes an outcome only when actually collected for the
+        request trace; its absence is not evidence of a reviewer failure type.
+        """
+        if type(disposition) is not ReviewDisposition:
+            raise ValueError("review disposition must be code-controlled")
+        self.record(
+            trace_id=trace_id, profile=profile,
+            event=f"review_disposition.{disposition.value}",
+        )
 
     def record(
         self,
