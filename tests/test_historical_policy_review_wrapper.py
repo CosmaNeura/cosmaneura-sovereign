@@ -254,9 +254,21 @@ CLINICAL_LIMITATIONS = [
 ]
 
 
-@pytest.mark.parametrize("limitation", CLINICAL_LIMITATIONS)
-def test_positive_policy_judgment_with_clinical_only_limit_retains_actual_strict_parse(limitation):
-    assessment = ASSESSMENT + " " + limitation
+POLICY_CLAUSE_ASSESSMENTS = [
+    ASSESSMENT + " " + limitation for limitation in CLINICAL_LIMITATIONS
+] + [
+    "This policy conforms to Catholic teaching, but I cannot assess clinical accuracy.",
+    "The reporting policy conforms; however, I can't evaluate clinical correctness.",
+    "This policy is consistent with Catholic teaching but I cannot assess clinical accuracy.",
+    "The historical-reporting policy conforms to Catholic teaching because it reports sourced "
+    "excerpts. I cannot assess clinical accuracy.",
+    "The neutral reporting policy conforms because it provides no new care recommendation; "
+    "however, I cannot assess clinical accuracy or rewrite clinician-note wording.",
+]
+
+
+@pytest.mark.parametrize("assessment", POLICY_CLAUSE_ASSESSMENTS)
+def test_positive_policy_judgment_with_clinical_only_limit_retains_actual_strict_parse(assessment):
     service, context, conversation = setup(assessment=assessment)
     response = handle(service, CBC_QUESTION)
     assert response.structured["record_evidence_status"] == "validated_excerpts"
@@ -289,6 +301,30 @@ def test_positive_policy_judgment_with_clinical_only_limit_retains_actual_strict
     ASSESSMENT + " I will not judge the policy. I cannot assess clinical accuracy.",
     ASSESSMENT + " I decline to judge doctrine. I cannot assess clinical accuracy.",
     ASSESSMENT + " This policy does not conform to Catholic teaching. I cannot assess clinical accuracy.",
+    "This policy conforms to Catholic teaching, but I cannot judge policy conformance.",
+    "This policy conforms, but I cannot determine whether it is doctrinally valid.",
+    "This policy conforms, but I cannot assess clinical accuracy or Catholic teaching.",
+    "If this policy conforms, but I cannot assess clinical accuracy.",
+    "This policy conforms because I cannot determine its doctrinal validity. "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because it is acceptable if redacted; however, "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because it is acceptable as long as it is revised. "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because it is acceptable on condition that it is revised. "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because it is acceptable so long as it is revised; however, "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because acceptance is contingent on revision. "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms to Catholic teaching. Acceptance is contingent on revision. "
+    "I cannot assess clinical accuracy.",
+    "This policy conforms because it reports historical excerpts. This judgment is contingent "
+    "on removing the endorsement of prohibited care. I cannot assess clinical accuracy.",
+    "This policy conforms. It is acceptable only after revision. I cannot assess clinical accuracy.",
+    "This policy conforms to Catholic teaching. Acceptance is contingent on revision.",
+    "This policy conforms provided that it is revised.",
+    "This policy conforms as long as it is revised. I cannot assess clinical accuracy.",
 ])
 def test_ambiguous_quoted_conditional_and_mixed_policy_refusals_remain_closed(assessment):
     service, _, conversation = setup(assessment=assessment)
@@ -306,8 +342,9 @@ def test_ambiguous_quoted_conditional_and_mixed_policy_refusals_remain_closed(as
     ('{"conforms":true,"needs_revision":true}', EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE),
     ('{"conforms":false,"conforms":true}', EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE),
 ])
-def test_clinical_only_limit_never_infers_conformance_or_repairs_parser(verdict, lead):
-    service, _, conversation = setup(assessment=ASSESSMENT + " I cannot assess clinical accuracy.", verdict=verdict)
+@pytest.mark.parametrize("assessment", [POLICY_CLAUSE_ASSESSMENTS[0], POLICY_CLAUSE_ASSESSMENTS[-1]])
+def test_clinical_only_limit_never_infers_conformance_or_repairs_parser(verdict, lead, assessment):
+    service, _, conversation = setup(assessment=assessment, verdict=verdict)
     response = handle(service, CBC_QUESTION)
     assert response.answer.startswith(lead) and response.doctrinal_review is None
     assert "CBC order cancelled" not in response.answer
@@ -323,9 +360,10 @@ def test_clinical_only_limit_never_infers_conformance_or_repairs_parser(verdict,
     (Intent.ENGAGEMENT, DoctrinalSensitivity.LOW, False),
     (Intent.ENGAGEMENT, DoctrinalSensitivity.LOW, "true"),
 ])
-def test_clinical_scope_distinction_is_internal_low_historical_policy_only(intent, tier, option):
+@pytest.mark.parametrize("assessment", [POLICY_CLAUSE_ASSESSMENTS[0], POLICY_CLAUSE_ASSESSMENTS[-1]])
+def test_clinical_scope_distinction_is_internal_low_historical_policy_only(intent, tier, option, assessment):
     arbiter = DoctrinalArbiter(Settings(_env_file=None, mock_mode=True))
-    arbiter.magisterium.ask = AsyncMock(return_value=(ASSESSMENT + " I cannot assess clinical accuracy.", []))
+    arbiter.magisterium.ask = AsyncMock(return_value=(assessment, []))
     arbiter.llm.classify_json = AsyncMock(return_value={"conforms": True})
     verdict = asyncio.run(arbiter.review(deidentified_draft="Synthetic only", intent=intent,
                                        sensitivity=tier, historical_record_policy=option))
