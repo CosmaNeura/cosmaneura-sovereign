@@ -197,8 +197,7 @@ def source_context() -> dict[str, Any]:
 
 
 def source_identity(sha: str) -> dict[str, str]:
-    # Trusted current main need not be a merge. Do not relax the separate offline
-    # pair preparer's two-parent constraint or its fully disabled authorization.
+    # Preserve the offline pair preparer's two-parent/all-false contract separately.
     filters = _git(
         ROOT, "config", "--includes", "--get-regexp", r"^filter\.", check=False
     )
@@ -620,6 +619,7 @@ def build() -> None:
                 + " ".join(key + "=" + value for key, value in DARK_ENV.items())
                 + "\n"
             )
+        os.utime(dockerfile, (int(epoch), int(epoch)))
         require(source_context() == context)
         command(
             [
