@@ -12,7 +12,7 @@ byte-pinned Core browser consumer. Missing support retains the old panel's
 history behavior. The new panel fails closed on malformed supported display,
 keeps useful canonical answers without unverified links, and suppresses
 attributed export when the accepted map cannot be verified. Record changes and
-authority loss cancel and discard old requests and bytes. No schema/flag change
+authority loss cancel and discard old requests and bytes. No database schema/deployment-flag change
 or production activation is part of this source proposal.
 
 `app/panel.js` is the readable source. The optional `/embed/v1/panel.delivery.js`
