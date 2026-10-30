@@ -232,6 +232,28 @@ class ConversationReadClient(SessionPrepClient):
             )).model_dump(mode="json"), response_type=ConversationContextResponse,
         )
 
+    async def read_display(self, *, mount_context_token: str, trace_id: str, request):
+        """Separate accepted-map reads; never used by read_context/inference."""
+        from app.clients.conversation_citation_display_contract import (
+            CitationReadRequest, CitationReadResponse, RetainedDisplayRequest, RetainedDisplayResponse,
+        )
+        if isinstance(request, CitationReadRequest):
+            suffix, response_type = "read-with-citations", CitationReadResponse
+        elif isinstance(request, RetainedDisplayRequest):
+            suffix, response_type = "read-retained", RetainedDisplayResponse
+        else:
+            raise ConversationReadError(503)
+        response = await self._exchange(
+            endpoint=self._endpoint.removesuffix("/tools/invoke") + "/conversation-turns/" + suffix,
+            headers={"X-Cosmaneura-Mount-Context": mount_context_token, "X-Trace-ID": trace_id},
+            payload=request.model_dump(mode="json"), response_type=response_type,
+        )
+        if request.mode == "turn" and (
+            len(response.turns) != 1 or response.turns[0].client_turn_id != request.client_turn_id
+        ):
+            raise ConversationReadError(503)
+        return response
+
 
 CONVERSATION_RULES = (
     "\nEarlier messages below are bounded recent conversation for this encounter, "
