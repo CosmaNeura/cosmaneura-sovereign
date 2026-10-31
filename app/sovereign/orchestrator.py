@@ -71,6 +71,7 @@ from app.clients.platform_usage import (
     settle_pending_usage,
 )
 from app.clients.provider_question import ProviderQuestionClient
+from app.clients.reviewed_excerpts_contract import ReviewedExcerpts
 from app.clients.provider_evidence import (
     EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE, EVIDENCE_REVIEW_UNAVAILABLE,
     EVIDENCE_UNAVAILABLE, TIMELINE_UNAVAILABLE,
@@ -1560,6 +1561,11 @@ class Sovereign:
                                       and not evidence_unavailable
                                       and not assessment_unavailable
                                   ),
+                                  reviewed_excerpts=(
+                                      result._reviewed_excerpts
+                                      if verdict.conforms and not evidence_unavailable
+                                      and not assessment_unavailable else None
+                                  ),
                                   safety_notice=("record_evidence_unavailable"
                                                  if evidence_unavailable else
                                                  "upstream_unavailable" if assessment_unavailable else None),
@@ -1793,6 +1799,7 @@ class Sovereign:
         provider_context_ref: Optional[str] = None,
         history_context_ref: Optional[str] = None,
         record_fact_presentation: bool = False,
+        reviewed_excerpts: ReviewedExcerpts | None = None,
     ) -> ChatResponse:
         upstream_unavailable = safety_notice == "upstream_unavailable"
         record_evidence_unavailable = safety_notice == "record_evidence_unavailable"
@@ -1809,6 +1816,12 @@ class Sovereign:
             or provider_context_ref is None or safety_notice is not None
         ):
             raise ValueError("record fact presentation requires a grounded provider answer")
+        if reviewed_excerpts is not None and (
+            not record_fact_presentation or intent != Intent.ENGAGEMENT
+            or (structured or {}).get("record_evidence_status") != "validated_excerpts"
+            or doctrinal is None or not doctrinal.conforms
+        ):
+            raise ValueError("reviewed excerpts require accepted provider record evidence")
         if sensitive_mode:
             final = answer
             presentation = _sensitive_presentation()
@@ -1846,6 +1859,8 @@ class Sovereign:
                     presentation=presentation.model_dump(mode="json"),
                     **context_dependency,
                 )
+                if reviewed_excerpts is not None:
+                    final_arguments["reviewed_excerpts"] = reviewed_excerpts
                 closure = ACTIVE_PROVIDER_TURN.get()
                 if closure is not None:
                     closure.final_arguments = final_arguments

@@ -9,7 +9,7 @@ import httpx
 
 from app.clients.platform_conversation import PlatformTurn, derive_operation_token
 from app.clients.provider_question_contract import (
-    ProviderQuestionRequest, ProviderQuestionResponse,
+    ProviderQuestionRequest, ProviderQuestionResponse, ReviewedProviderQuestionResult,
 )
 from app.clients.session_prep import (
     SessionPrepClient, SessionPrepDeliveryError, _closed_json_object, _failure_category,
@@ -121,6 +121,13 @@ class ProviderQuestionClient(SessionPrepClient):
             ))
             if parsed.result.schema_version != request.tool_version:
                 raise ValueError("provider question response version mismatch")
+            support = response.headers.get_list("x-cosmaneura-reviewed-excerpts")
+            if support:
+                if (support != ["1.0.0"]
+                        or not isinstance(parsed.result, ReviewedProviderQuestionResult)
+                        or parsed.result.state != "ready"):
+                    raise ValueError("invalid reviewed-excerpt support header")
+                parsed.result._reviewed_excerpts_version = "1.0.0"
             return parsed
         except (KeyError, TypeError, ValueError, RecursionError):
             raise SessionPrepDeliveryError(

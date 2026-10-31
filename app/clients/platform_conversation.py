@@ -23,6 +23,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.compliance.netsec import assert_safe_outbound_url
+from app.clients.reviewed_excerpts_contract import ReviewedExcerpts
 
 
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._~-]{16,128}$")
@@ -384,6 +385,7 @@ class PlatformConversationClient:
         presentation: dict[str, object],
         provider_context_ref: Optional[str] = None,
         history_context_ref: Optional[str] = None,
+        reviewed_excerpts: ReviewedExcerpts | None = None,
     ) -> ConversationReceipt:
         payload: dict[str, object] = {
             "phase": "final_response",
@@ -399,6 +401,12 @@ class PlatformConversationClient:
             if not re.fullmatch(r"[A-Za-z0-9._~-]{8,160}", history_context_ref):
                 raise ValueError("invalid history context reference")
             payload["history_context_ref"] = history_context_ref
+        if reviewed_excerpts is not None:
+            if outcome != "completed" or provider_context_ref is None:
+                raise ValueError("reviewed excerpts require a completed provider context")
+            # Revalidate even an internally constructed instance before transport.
+            namespace = ReviewedExcerpts.model_validate(reviewed_excerpts)
+            payload["reviewed_excerpts"] = namespace.model_dump(mode="json")
         return await self._write(
             turn=turn,
             phase="final_response",

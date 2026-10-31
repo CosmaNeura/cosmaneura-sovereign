@@ -10,6 +10,7 @@ from pydantic import (BaseModel, BeforeValidator, ConfigDict, Field, PrivateAttr
                       field_validator, model_validator)
 
 from app.config import Persona
+from app.clients.reviewed_excerpts_contract import ReviewedExcerpts
 
 
 class Intent(str, Enum):
@@ -125,6 +126,9 @@ class Citation(ClosedWireModel):
 
 
 class AgentResult(BaseModel):
+    # Internal evidence association, never exposed as model-written structured data.
+    _reviewed_excerpts: ReviewedExcerpts | None = PrivateAttr(default=None)
+
     agent: str
     content: str
     citations: list[Citation] = Field(default_factory=list)
