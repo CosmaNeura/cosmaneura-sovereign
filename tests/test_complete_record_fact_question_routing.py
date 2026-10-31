@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.clients.llm import LLMClient
+from app.clients.actual_record_review_frame_contract import is_actual_record_review_frame
 from app.clients.provider_question_contract import ProviderQuestionResponse
 from app.schemas import DoctrinalSensitivity, DoctrinalVerdict, Intent
 from app.sovereign.arbiter import DoctrinalArbiter
@@ -17,6 +18,7 @@ from app.sovereign.router import Router
 from tests.test_historical_plan_question_routing import setup as routing_setup
 from tests.test_provider_question_context import handle
 from tests.test_provider_source_readiness import source_only_response
+from tests.test_record_review_context import descriptor
 
 
 # Original MD acceptance questions, kept whole. These are fictional beta cases.
@@ -114,11 +116,13 @@ def setup(intent=Intent.PLAN_WORKBENCH, *, index=2, **kwargs):
         })
     raw["result"]["current_through"] = raw["result"]["provenance"][-1]["source_at"]
     context.read.return_value = ProviderQuestionResponse.model_validate(raw)
+    spans = tuple((source_index, list(CASE_SOURCES[index][source_index]).index(section))
+                  for source_index, section in CASE_SELECTIONS[index])
     service.llm.complete.return_value = json.dumps({"excerpts": [
         {"source_index": source_index,
-         "section_index": list(CASE_SOURCES[index][source_index]).index(section)}
-        for source_index, section in CASE_SELECTIONS[index]
-    ]})
+         "section_index": section_index}
+        for source_index, section_index in spans
+    ], "review_context": descriptor(context.read.return_value.result, spans)})
     return service, context, conversation
 
 
@@ -161,8 +165,9 @@ def test_complete_original_questions_use_two_full_source_sections_and_keep_revie
     review = service.arbiter.review.call_args.kwargs
     expected = DoctrinalSensitivity.HIGH if sensitivity == DoctrinalSensitivity.HIGH else DoctrinalSensitivity.LOW
     assert review["sensitivity"] == expected
-    assert (review["deidentified_draft"] == _neutral_record_review_projection()) == (expected != DoctrinalSensitivity.HIGH)
-    assert review.get("historical_record_policy", False) == (expected != DoctrinalSensitivity.HIGH)
+    assert is_actual_record_review_frame(review["deidentified_draft"]) == (expected != DoctrinalSensitivity.HIGH)
+    assert review.get("represented_record_answer", False) == (expected != DoctrinalSensitivity.HIGH)
+    assert not review.get("historical_record_policy", False)
     final = conversation.write_final_response.call_args.kwargs
     assert final["outcome"] == "completed"
     assert final["provider_context_ref"] == context.read.return_value.tool_call_ref
@@ -268,16 +273,17 @@ def test_unselected_moral_source_keeps_full_review_for_every_complete_route(inde
     assert not review.get("historical_record_policy", False)
 
 
-def test_full_compound_route_uses_real_policy_wrapper_and_strict_parser_offline():
+def test_full_compound_route_uses_real_actual_context_wrapper_and_strict_parser_offline():
     service, context, conversation = setup()
+    selection = service.llm.complete.return_value
     service.arbiter = DoctrinalArbiter(service.s, llm=service.llm)
     service.arbiter.magisterium.ask = AsyncMock(return_value=(
-        "The neutral historical-reporting policy conforms to Catholic teaching.", [],
+        "This represented answer conforms to Catholic teaching.", [],
     ))
 
     async def complete(**kwargs):
         return ('{"conforms":true,"needs_revision":false}'
-                if kwargs.get("usage_purpose") == "doctrinal_verdict_parse" else json.dumps(SELECTION))
+                if kwargs.get("usage_purpose") == "doctrinal_verdict_parse" else selection)
 
     async def classify_json(**kwargs):
         if kwargs.get("usage_purpose") == "doctrinal_verdict_parse":
@@ -289,7 +295,8 @@ def test_full_compound_route_uses_real_policy_wrapper_and_strict_parser_offline(
     response = handle(service, QUESTION)
     assert response.structured["record_evidence_status"] == "validated_excerpts"
     call = service.arbiter.magisterium.ask.call_args.kwargs
-    assert "HISTORICAL REPORTING POLICY:" in call["user_content"]
+    assert "REPRESENTED ACTUAL ANSWER CONTEXT:" in call["user_content"]
+    assert "HISTORICAL REPORTING POLICY:" not in call["user_content"]
     assert "Metformin" not in call["user_content"] and "A1C" not in call["user_content"]
     assert service.llm.complete.call_count == 2  # Actual selector and strict verdict parser.
     assert conversation.write_final_response.call_args.kwargs["outcome"] == "completed"

@@ -32,6 +32,7 @@ from app.sovereign.turn_deadline import ACTIVE_PROVIDER_TURN
 from tests.test_provider_question_context import fixture, handle, headers, sovereign, turn
 from tests.test_provider_reviewed_sources import reviewed_response
 from tests.test_provider_source_readiness import source_only_response
+from tests.test_record_review_context import descriptor
 
 HEADER = "X-Cosmaneura-Reviewed-Excerpts"
 QUESTION = "What office blood pressure was documented on September 30?"
@@ -305,7 +306,7 @@ def pipeline(*, supported=True, intent=Intent.ENGAGEMENT):
     service.router.route.return_value = (intent, service.router.route.return_value[1], "")
     service.llm.complete.return_value = json.dumps({"excerpts": [
         {"source_index": 0, "section_index": 0}, {"source_index": 1, "section_index": 1},
-    ]})
+    ], "review_context": descriptor(response.result, ((0, 0), (1, 1)))})
     return service, read, conversation
 
 

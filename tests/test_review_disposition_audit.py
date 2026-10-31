@@ -29,7 +29,7 @@ def review_events(captured):
     ({"conforms": True}, PRIVATE_REVIEW, "conforms", "completed"),
     ({"conforms": False}, PRIVATE_REVIEW, "nonconforms", "failed"),
     ({"conforms": True}, "I cannot review this question. " + PRIVATE_REVIEW, "scope_refused", "failed"),
-    ({"conforms": True}, "The reporting policy conforms. I cannot assess clinical accuracy.",
+    ({"conforms": True}, "This represented answer conforms. I cannot assess clinical accuracy.",
      "conforms", "completed"),
     ({"conforms": "true"}, PRIVATE_REVIEW, "invalid_verdict", "failed"),
     ({"conforms": True, "needs_revision": True}, PRIVATE_REVIEW, "invalid_verdict", "failed"),

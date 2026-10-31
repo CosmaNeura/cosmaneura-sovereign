@@ -21,6 +21,7 @@ from typing import Optional
 
 from app.clients.llm import LLMClient
 from app.clients.magisterium import MagisteriumClient
+from app.clients.actual_record_review_frame_contract import is_actual_record_review_frame
 from app.config import Settings, get_settings
 from app.schemas import DoctrinalSensitivity, DoctrinalVerdict, Intent
 
@@ -50,6 +51,24 @@ _HISTORICAL_POLICY_REVIEW_QUESTION = (
     "the reporting policy only; do not assess clinical accuracy or rewrite "
     "clinician-note wording."
 )
+_ACTUAL_RECORD_REVIEW_SYSTEM = (
+    "You are the required final doctrinal reviewer for a Catholic healthcare assistant. "
+    "Evaluate the moral use and posture of the represented particular answer against "
+    "Catholic teaching and the USCCB Ethical and Religious Directives. The covered "
+    "selector's observations are fallible interpretations, not a doctrinal verdict "
+    "or proof that moral risk is absent. Do not assume conformance or certify future "
+    "excerpts. If this supplied context is insufficient for the required judgment, "
+    "refuse rather than guess. Clinical accuracy and medical-document editing are "
+    "outside this review task."
+)
+_ACTUAL_RECORD_REVIEW_QUESTION = (
+    "Does this represented particular answer's moral use and posture conform to "
+    "Catholic teaching and the USCCB Ethical and Religious Directives? State your "
+    "judgment and rationale about this answer. If it does not conform, identify "
+    "the moral conflict. If the represented context does not support a judgment, "
+    "say so. Do not evaluate a policy for all future excerpts, assess clinical "
+    "accuracy, or rewrite clinician-note wording."
+)
 REVIEW_ASSESSMENT_UNAVAILABLE = (
     "The required review was unavailable. No reviewed answer is available. "
     "Please ask a new question later."
@@ -66,7 +85,7 @@ _REVIEW_REFUSAL_RE = re.compile(
     re.IGNORECASE,
 )
 # These complete clauses describe the intentionally excluded clinical task,
-# not refusal of the policy question. Keep recognition narrow: a mixed or
+# not refusal of the bounded moral question. Keep recognition narrow: a mixed or
 # ambiguous limitation must retain the existing negative gate.
 _CLINICAL_SCOPE_LIMITATION_RE = re.compile(
     r"(?:(?:however|but)\s*,?\s*)?"
@@ -80,6 +99,13 @@ _CLINICAL_SCOPE_LIMITATION_RE = re.compile(
 _AFFIRMATIVE_POLICY_JUDGMENT_RE = re.compile(
     r"(?:this|the)\s+(?:neutral\s+)?(?:historical[- ](?:reporting\s+)?|reporting\s+)?"
     r"policy\s+(?:conforms(?:\s+to\s+(?:Catholic teaching|the teaching of the Catholic Church)"
+    r"(?:\s+and\s+(?:the\s+)?(?:USCCB\s+)?(?:ERDs|Ethical and Religious Directives))?)?"
+    r"|is\s+consistent\s+with\s+Catholic teaching)[.!]?",
+    re.IGNORECASE,
+)
+_AFFIRMATIVE_ANSWER_JUDGMENT_RE = re.compile(
+    r"(?:this|the)\s+(?:(?:represented|particular|displayed)\s+){0,2}answer\s+"
+    r"(?:conforms(?:\s+to\s+(?:Catholic teaching|the teaching of the Catholic Church)"
     r"(?:\s+and\s+(?:the\s+)?(?:USCCB\s+)?(?:ERDs|Ethical and Religious Directives))?)?"
     r"|is\s+consistent\s+with\s+Catholic teaching)[.!]?",
     re.IGNORECASE,
@@ -98,37 +124,42 @@ _CONDITIONAL_POLICY_RATIONALE_RE = re.compile(
 )
 
 
-def _affirmative_policy_clause(text: str) -> bool:
-    """Recognize the explicit policy judgment, without granting conformance.
+def _affirmative_policy_clause(text: str, *, represented_answer: bool = False) -> bool:
+    """Recognize the explicit corresponding judgment, without granting conformance.
 
     A non-refusing rationale may follow an explicit judgment. The unchanged
     verdict parser still has to accept the reviewer's complete assessment.
     """
-    if _AFFIRMATIVE_POLICY_JUDGMENT_RE.fullmatch(text):
+    judgment = (_AFFIRMATIVE_ANSWER_JUDGMENT_RE if represented_answer
+                else _AFFIRMATIVE_POLICY_JUDGMENT_RE)
+    if judgment.fullmatch(text):
         return True
     parts = re.split(r"\s+because\s+", text, maxsplit=1, flags=re.IGNORECASE)
     return (len(parts) == 2
-            and _AFFIRMATIVE_POLICY_JUDGMENT_RE.fullmatch(parts[0].rstrip(",;")) is not None
+            and judgment.fullmatch(parts[0].rstrip(",;")) is not None
             and bool(parts[1].strip())
             and not _UNRESOLVED_SCOPE_LIMITATION_RE.search(parts[1])
             and not _CONDITIONAL_POLICY_RATIONALE_RE.search(parts[1]))
 
 
-def _refuses_required_review(review_text: str, *, historical_policy: bool) -> bool:
+def _refuses_required_review(review_text: str, *, historical_policy: bool,
+                            represented_answer: bool = False) -> bool:
     """Preserve refusals without mistaking the narrow clinical exclusion for one.
 
-    Only the validated historical-policy wrapper can use this distinction. An
-    explicit policy judgment and entirely clinical limitation clauses merely
+    Only a bounded policy or closed actual-answer wrapper uses this distinction.
+    An explicit corresponding judgment and entirely clinical limitation clauses
+    merely
     permit the normal strict parser; they never grant conformance themselves.
     All other refusal matches, including mixed doctrine/clinical refusals, deny.
     """
-    if historical_policy and _CONDITIONAL_POLICY_RATIONALE_RE.search(review_text):
+    bounded_context = historical_policy or represented_answer
+    if bounded_context and _CONDITIONAL_POLICY_RATIONALE_RE.search(review_text):
         # A condition anywhere in the assessment qualifies the judgment, even
         # when it is separate from the affirmative or clinical-only clause.
         return True
     if not _REVIEW_REFUSAL_RE.search(review_text):
         return False
-    if not historical_policy:
+    if not bounded_context:
         return True
     sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+|[\r\n]+", review_text)
                  if part.strip()]
@@ -136,12 +167,12 @@ def _refuses_required_review(review_text: str, *, historical_policy: bool) -> bo
     for sentence in sentences:
         parts = re.split(r"\s*[,;]\s*(?:but|however)\s*,?\s*|\s+but\s+", sentence,
                          maxsplit=1, flags=re.IGNORECASE)
-        if (len(parts) == 2 and _affirmative_policy_clause(parts[0])
+        if (len(parts) == 2 and _affirmative_policy_clause(parts[0], represented_answer=represented_answer)
                 and _CLINICAL_SCOPE_LIMITATION_RE.fullmatch(parts[1])):
             clauses.extend(parts)
         else:
             clauses.append(sentence)
-    if not any(_affirmative_policy_clause(part) for part in clauses):
+    if not any(_affirmative_policy_clause(part, represented_answer=represented_answer) for part in clauses):
         return True
     return any(_UNRESOLVED_SCOPE_LIMITATION_RE.search(part)
                and not _CLINICAL_SCOPE_LIMITATION_RE.fullmatch(part) for part in clauses)
@@ -172,6 +203,7 @@ class DoctrinalArbiter:
         self, *, deidentified_draft: str, intent: Intent,
         sensitivity: DoctrinalSensitivity,
         historical_record_policy: bool = False,
+        represented_record_answer: bool = False,
     ) -> DoctrinalVerdict:
         """
         Conformity check on an agent-produced draft.
@@ -180,11 +212,19 @@ class DoctrinalArbiter:
           * NONE  -> trust the draft (pure logistics), no Magisterium call.
           * LOW/HIGH -> ask Magisterium to review and, if needed, correct.
 
-        The orchestrator selects historical_record_policy only after validating
-        neutral source excerpts. Its LOW/ENGAGEMENT wrapper asks for a policy
-        judgment without asking the reviewer to edit medical-document wording.
-        This internal option does not change the required review or verdict gate.
+        The orchestrator selects represented_record_answer only after a private
+        binding validates the actual neutral answer, question and full context.
+        Its closed LOW/ENGAGEMENT frame asks about this particular moral use.
+        The legacy historical_record_policy option retains its separate policy
+        question. Neither internal option grants conformance or changes parsing.
         """
+        actual_context = represented_record_answer is True
+        if actual_context and (
+            intent != Intent.ENGAGEMENT or sensitivity != DoctrinalSensitivity.LOW
+            or historical_record_policy is not False
+            or not is_actual_record_review_frame(deidentified_draft)
+        ):
+            raise ValueError("actual record review requires a closed LOW engagement context")
         if sensitivity == DoctrinalSensitivity.NONE:
             return DoctrinalVerdict(conforms=True,
                                     rationale="No doctrinal sensitivity; passed.")
@@ -196,8 +236,11 @@ class DoctrinalArbiter:
         if historical_policy:
             user_content = (f"HISTORICAL REPORTING POLICY:\n{deidentified_draft}\n\n"
                             + _HISTORICAL_POLICY_REVIEW_QUESTION)
+        elif actual_context:
+            user_content = (f"REPRESENTED ACTUAL ANSWER CONTEXT:\n{deidentified_draft}\n\n"
+                            + _ACTUAL_RECORD_REVIEW_QUESTION)
         review_text, citations = await self.magisterium.ask(
-            system=_REVIEW_SYSTEM,
+            system=_ACTUAL_RECORD_REVIEW_SYSTEM if actual_context else _REVIEW_SYSTEM,
             user_content=user_content,
             usage_purpose="doctrinal_review",
         )
@@ -214,7 +257,8 @@ class DoctrinalArbiter:
         # An explicit topic-scope refusal is not a conformance judgment. Do not
         # let an erroneous positive parser flag manufacture one. This is only a
         # negative gate; all other assessments retain the normal verdict parse.
-        if _refuses_required_review(review_text, historical_policy=historical_policy):
+        if _refuses_required_review(review_text, historical_policy=historical_policy,
+                                   represented_answer=actual_context):
             verdict = DoctrinalVerdict(
                 conforms=False, rationale=review_text,
                 revised_content=review_text, citations=citations,

@@ -128,6 +128,7 @@ class Citation(ClosedWireModel):
 class AgentResult(BaseModel):
     # Internal evidence association, never exposed as model-written structured data.
     _reviewed_excerpts: ReviewedExcerpts | None = PrivateAttr(default=None)
+    _record_evidence_spans: tuple[tuple[int, int], ...] | None = PrivateAttr(default=None)
 
     agent: str
     content: str

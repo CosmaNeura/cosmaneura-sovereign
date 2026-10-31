@@ -19,6 +19,7 @@ from app.clients.provider_question_contract import (
 from app.clients.session_prep import SessionPrepDeliveryError
 from tests.test_provider_question_context import fixture, handle, headers, sovereign, turn
 from tests.test_provider_reviewed_sources import reviewed_response
+from tests.test_record_review_context import descriptor
 
 
 def source_only_response(brief_state="ready", *, sources_ready=True):
@@ -92,7 +93,7 @@ def test_factual_answer_can_finalize_from_sources_without_building_or_waiting_fo
     context.read.return_value = ProviderQuestionResponse.model_validate(source_only_response(brief_state))
     service.llm.complete.return_value = json.dumps({"excerpts": [{
         "source_index": 0, "section_index": 0,
-    }]})
+    }], "review_context": descriptor(context.read.return_value.result, ((0, 0),))})
     response = handle(service, "What office blood pressure was documented on September 30?")
     prompt = service.llm.complete.call_args.kwargs["prompt"]
     assert "148/92" in prompt

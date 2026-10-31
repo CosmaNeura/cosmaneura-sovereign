@@ -265,10 +265,12 @@ def test_response_version_mismatch_and_new_payload_on_legacy_read_fail_closed():
 def test_actual_read_scope_survives_doctrinal_replacement_and_canonical_acceptance(full_sources):
     service, context, conversation = sovereign()
     if full_sources:
+        from tests.test_record_review_context import descriptor
+
         context.read.return_value = ProviderQuestionResponse.model_validate(reviewed_response())
         service.llm.complete.return_value = json.dumps({"excerpts": [{
             "source_index": 0, "section_index": 0,
-        }]})
+        }], "review_context": descriptor(context.read.return_value.result, ((0, 0),))})
     service.arbiter.review.return_value = DoctrinalVerdict(
         conforms=False, rationale="Synthetic policy review", revised_content="Synthetic reviewed replacement.",
     )

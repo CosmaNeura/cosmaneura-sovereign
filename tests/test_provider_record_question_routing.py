@@ -16,6 +16,7 @@ from app.security.mount import MountResolutionError
 from app.sovereign.router import Router
 from tests.test_provider_question_context import fixture, handle, sovereign
 from tests.test_provider_reviewed_sources import reviewed_response
+from tests.test_record_review_context import descriptor
 
 
 CORPUS = json.loads((Path(__file__).parents[1]
@@ -33,16 +34,16 @@ def test_twenty_clinician_queries_use_grounded_prompt_or_retain_hidden_skill_ref
     # stochastic accuracy or the correctness of a live generated answer.
     service.router.route = AsyncMock(return_value=(classified_intent, DoctrinalSensitivity.LOW, ""))
     service.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": case["record_fact"]})
+    context.read.return_value = ProviderQuestionResponse.model_validate(reviewed_response())
     # Selection is also scripted: this verifies routing/citation dispatch, not
     # live relevance or whether these excerpts fully answer each corpus item.
     selected_answer = json.dumps({"excerpts": [{
         "source_index": 0, "section_index": 0,
-    }]})
+    }], "review_context": descriptor(context.read.return_value.result, ((0, 0),))})
     service.llm.complete = AsyncMock(return_value=(
         selected_answer if classified_intent in {Intent.ENGAGEMENT, Intent.LAB_REVIEW}
         else "Synthetic clinician-facing answer."
     ))
-    context.read.return_value = ProviderQuestionResponse.model_validate(reviewed_response())
     response = handle(service, case["message"])
 
     if not case["record_fact"]:
@@ -96,10 +97,11 @@ def test_direct_patient_fact_false_negative_still_uses_exact_reviewed_evidence(
         classified_intent, DoctrinalSensitivity.LOW, "",
     ))
     service.llm.classify_json = AsyncMock(return_value={"requires_prepared_context": False})
+    context.read.return_value = ProviderQuestionResponse.model_validate(reviewed_response())
     service.llm.complete = AsyncMock(return_value=json.dumps({
         "excerpts": [{"source_index": 0, "section_index": 0}],
+        "review_context": descriptor(context.read.return_value.result, ((0, 0),)),
     }))
-    context.read.return_value = ProviderQuestionResponse.model_validate(reviewed_response())
 
     response = handle(service, message)
 
@@ -135,6 +137,7 @@ def test_visit_prep_classification_keeps_appointment_preference_as_dated_quote()
     context.read.return_value = ProviderQuestionResponse.model_validate(raw)
     service.llm.complete = AsyncMock(return_value=json.dumps({
         "excerpts": [{"source_index": 1, "section_index": 0}],
+        "review_context": descriptor(context.read.return_value.result, ((1, 0),)),
     }))
 
     response = handle(service, "What appointment time does Don prefer?")

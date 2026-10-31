@@ -28,6 +28,7 @@ from tests.test_provider_evidence import RenderedEvidence, panel_render
 from tests.test_provider_question_context import fixture, handle
 from tests.test_provider_question_context import TURN_ID
 from tests.test_record_policy_review import corrected_context
+from tests.test_record_review_context import descriptor
 
 QUESTION = QUESTIONS[-1]
 CLINICAL_HEADINGS = {
@@ -63,10 +64,15 @@ def timeline_context():
 def setup_timeline(intent=Intent.VISIT_PREP):
     service, read, conversation = setup(intent)
     read.read.return_value = timeline_context()
-    # A plan-only or stale clinical synthesis cannot determine timeline output.
-    service.llm.complete.return_value = json.dumps({"excerpts": [{
-        "source_index": 0, "section_index": 4,
-    }]})
+    # One explicitly scripted posture assessment cannot choose or rewrite the
+    # deterministic clinical sections. It is not a live semantic judgment.
+    ctx = read.read.return_value.result
+    spans = tuple((source_index, section_index)
+                  for source_index, source in sorted(enumerate(ctx.reviewed_sources),
+                                                    key=lambda row: row[1].source_at)
+                  for section_index, heading in enumerate(source.sections)
+                  if heading in CLINICAL_HEADINGS)
+    service.llm.complete.return_value = json.dumps(descriptor(ctx, spans))
     return service, read, conversation
 
 
@@ -189,7 +195,8 @@ def test_unique_clinical_heading_evidence_cannot_be_dropped_as_a_template(headin
     assert text in groups.card_quotes
     assert any(c.title == "2026-10-08 — " + heading for c in response.citations)
     assert conversation.write_final_response.call_args.kwargs["answer"] == response.answer
-    service.llm.complete.assert_not_called()
+    service.llm.complete.assert_called_once()
+    assert service.llm.complete.call_args.kwargs["usage_purpose"] == "record_review_context"
 
 
 def test_known_background_omission_is_disclosed_and_unknown_clinical_heading_retained():
@@ -241,7 +248,8 @@ def test_three_date_timeline_retains_measurements_correction_and_gap_sections(in
     assert response.safety_notice is None
     assert response.structured["record_evidence_mode"] == "reviewed_timeline"
     assert response.structured["record_evidence_source_count"] == 3
-    service.llm.complete.assert_not_called()
+    service.llm.complete.assert_called_once()
+    assert service.llm.complete.call_args.kwargs["usage_purpose"] == "record_review_context"
     service.session_prep.read.assert_not_called()
     assert read.read.call_count == 1
     assert "148/92" in response.answer and "128 to 136" in response.answer
@@ -403,7 +411,8 @@ def test_fresh_context_changes_are_copied_without_old_model_or_summary_text():
     response = handle(service, QUESTION)
     assert "the dose is not confirmed; review required" in response.answer
     assert "Losartan 25 mg daily (continue; supersedes" not in response.answer
-    service.llm.complete.assert_not_called()
+    service.llm.complete.assert_called_once()
+    assert service.llm.complete.call_args.kwargs["usage_purpose"] == "record_review_context"
 
 
 def test_unknown_headings_source_markup_and_instruction_strings_remain_literal():

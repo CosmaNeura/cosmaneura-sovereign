@@ -72,6 +72,10 @@ from app.clients.platform_usage import (
 )
 from app.clients.provider_question import ProviderQuestionClient
 from app.clients.reviewed_excerpts_contract import ReviewedExcerpts
+from app.clients.record_review_context import (
+    RecordReviewContextUnavailable, assess_timeline_record_review_context,
+    record_review_projection,
+)
 from app.clients.provider_evidence import (
     EVIDENCE_REVIEW_INTERPRETATION_UNAVAILABLE, EVIDENCE_REVIEW_UNAVAILABLE,
     EVIDENCE_UNAVAILABLE, TIMELINE_UNAVAILABLE,
@@ -106,7 +110,7 @@ from app.compliance.phi import deidentify
 from app.config import (PROVIDER_BETA_CAPABILITIES, ComplianceProfile, Persona,
                         Settings, get_settings)
 from app.feature_catalog import visible_paths
-from app.schemas import (ALL_PRESENTATION_SUPPRESSIONS, ChatRequest,
+from app.schemas import (ALL_PRESENTATION_SUPPRESSIONS, AgentResult, ChatRequest,
                          ChatResponse, Citation, CompassionateSafetyFallback,
                          DigestRequest, DigestResponse, DoctrinalSensitivity,
                          EmergencyPresentation, Intent,
@@ -703,7 +707,8 @@ class Sovereign:
         token = ACTIVE_PROVIDER_TURN.set(state)
         started = asyncio.get_running_loop().time()
         total = asyncio.timeout_at(started + PROVIDER_TOTAL_SECONDS)
-        work = asyncio.timeout_at(started + PROVIDER_WORK_SECONDS)
+        state.work_deadline = started + PROVIDER_WORK_SECONDS
+        work = asyncio.timeout_at(state.work_deadline)
         try:
             async with total:
                 try:
@@ -1435,6 +1440,7 @@ class Sovereign:
                 # veto must never route a validated excerpt into NONE's bypass.
                 sensitivity = DoctrinalSensitivity.LOW
             historical_record_policy = False
+            represented_record_answer = False
             if intent == Intent.LAB_REVIEW:
                 safe_lab_projection = _value_safe_lab_review_projection(
                     result.content, result.data
@@ -1449,11 +1455,29 @@ class Sovereign:
                 question=request.message, answer=result.content, intent=intent,
                 sensitivity=sensitivity, result_data=result.data, context=provider_context,
             ):
-                # Historical quotation is not a new clinical action. Ask the
-                # reviewer about that policy posture without sending medical
-                # wording for it to edit. A refusal still fails closed below.
-                arbiter_input = deidentify(_neutral_record_review_projection()).text
-                historical_record_policy = True
+                try:
+                    if result.data.get("record_evidence_mode") == "reviewed_timeline":
+                        closure = ACTIVE_PROVIDER_TURN.get()
+                        if closure is None or closure.work_deadline is None:
+                            raise RecordReviewContextUnavailable()
+                        result = await assess_timeline_record_review_context(
+                            llm=self.llm, profile=profile, result=result,
+                            context=provider_context, question=request.message,
+                            selected_spans=result._record_evidence_spans,
+                            deadline=closure.work_deadline,
+                        )
+                    arbiter_input = deidentify(record_review_projection(
+                        result, context=provider_context, question=request.message,
+                    )).text
+                    represented_record_answer = True
+                except RecordReviewContextUnavailable:
+                    # A missing/stale semantic context never authorizes a generic
+                    # policy or source-text fallback. Review this static failure.
+                    result = AgentResult(
+                        agent=result.agent, content=EVIDENCE_UNAVAILABLE,
+                        data={"record_evidence_status": "unavailable"},
+                    )
+                    arbiter_input = result.content
                 self.audit.record(
                     trace_id=trace_id, profile=profile,
                     event="record_excerpts_withheld_from_non_baa_arbiter",
@@ -1472,6 +1496,7 @@ class Sovereign:
                 verdict = await self.arbiter.review(
                     deidentified_draft=arbiter_input, intent=intent, sensitivity=sensitivity,
                     **({"historical_record_policy": True} if historical_record_policy else {}),
+                    **({"represented_record_answer": True} if represented_record_answer else {}),
                 )
             except UpstreamCallError:
                 # Only a dependency failure during this review attempt gets a
@@ -1542,6 +1567,18 @@ class Sovereign:
                 notice = LITERATURE_NOTICES.get(result.data.get("literature_status"))
                 if notice:
                     answer += "\n\n" + notice
+
+            if represented_record_answer and verdict.conforms and not evidence_unavailable:
+                try:
+                    # The awaited review cannot donate changed content or excerpt
+                    # identities to a final. Recheck the same private binding.
+                    record_review_projection(result, context=provider_context,
+                                             question=request.message)
+                except RecordReviewContextUnavailable:
+                    answer = EVIDENCE_UNAVAILABLE
+                    evidence_unavailable = True
+                    result_citations = []
+                    result_data = {"record_evidence_status": "unavailable"}
 
             if provider_context is not None:
                 # The actual retrieval scope survives any doctrinal replacement
