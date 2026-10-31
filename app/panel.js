@@ -188,7 +188,7 @@
               evidenceHtml += '<details class="cnp-evidence-visit"' + (groupDate === lastDate ? " open" : "") +
                 '><summary>' + esc(groupDate) + " — clinical-section excerpts</summary>";
             }
-            evidenceHtml += '<section class="cnp-evidence-card" aria-label="Reviewed-note excerpt">' +
+            evidenceHtml += '<section class="cnp-evidence-card" data-citation-ordinal="' + expected + '" aria-label="Reviewed-note excerpt">' +
               '<h4 class="cnp-evidence-source">' + esc(label[2]) + '</h4>' +
               evidenceBody(quote.join("\n")) + '</section>';
             expected += 1; e = cursor - 1; continue;
@@ -436,6 +436,81 @@
       }
     }
     return position === value.history.messages.length ? value : null;
+  }
+  function governedCitationConversation(value, version) {
+    if (!closedObject(value, ["schema_version", "history", "turns"]) ||
+        value.schema_version !== version || !value.history ||
+        !Array.isArray(value.history.messages) || value.history.messages.length > 12) return null;
+    var legacy = { schema_version: "1.0.0", turns: value.turns,
+      history: { thread_ref: value.history.thread_ref, next_cursor: value.history.next_cursor, messages: [] } };
+    if (!closedObject(value.history, ["thread_ref", "messages", "next_cursor"])) return null;
+    for (var i = 0; i < value.history.messages.length; i++) {
+      var message = value.history.messages[i], keys = ["turn_ref", "client_turn_id", "role",
+        "content", "recorded_at", "presentation", "reviewed_citations"];
+      if (version === "1.2.0") keys.push("display_state");
+      if (!closedObject(message, keys)) return null;
+      var citations = message.reviewed_citations;
+      if (message.role === "user") {
+        if (version === "1.2.0" ? citations !== null || message.display_state !== null
+            : !Array.isArray(citations) || citations.length !== 0) return null;
+      } else {
+        if (!Array.isArray(citations) || citations.length > 64 ||
+            (version === "1.2.0" && ["historical", "superseded"].indexOf(message.display_state) < 0)) return null;
+        var prefix = "";
+        for (var j = 0; j < citations.length; j++) {
+          var citation = citations[j];
+          if (!closedObject(citation, ["citation_ref", "ordinal", "source_at", "reviewed_at", "section"]) ||
+              !Number.isInteger(citation.ordinal) || citation.ordinal !== j + 1 ||
+              typeof citation.citation_ref !== "string" || !OPAQUE_REF.test(citation.citation_ref) ||
+              !/^conversation_final_phase_[0-9a-hjkmnp-tv-z]{26}\.[1-9][0-9]?$/.test(citation.citation_ref) ||
+              typeof citation.section !== "string" || !citation.section.length ||
+              Array.from(citation.section).length > 200 ||
+              [citation.source_at, citation.reviewed_at].some(function (time) {
+                return typeof time !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(time) || isNaN(Date.parse(time));
+              })) return null;
+          var part = citation.citation_ref.slice(0, citation.citation_ref.lastIndexOf("."));
+          if (!prefix) prefix = part;
+          if (citation.citation_ref !== prefix + "." + citation.ordinal) return null;
+        }
+      }
+      var copy = {};
+      ["turn_ref", "client_turn_id", "role", "content", "recorded_at", "presentation"].forEach(function (key) {
+        copy[key] = message[key];
+      });
+      legacy.history.messages.push(copy);
+    }
+    if (value.turns.some(function (turn) {
+      return turn.outcome !== "completed" && value.history.messages.some(function (message) {
+        return message.client_turn_id === turn.client_turn_id && message.role === "assistant" && message.reviewed_citations.length;
+      });
+    })) return null;
+    if (!governedConversation(legacy) ||
+        new TextEncoder().encode(JSON.stringify(value.history.messages)).length > 192 * 1024) return null;
+    return value;
+  }
+  function citationTimestamp(value) {
+    // The closed accepted DTO supplies this full clock. Preserve its precision
+    // and offset; chart-only fdate() must not collapse same-day review versions.
+    return value.replace("T", " ").replace(/Z$/, " UTC");
+  }
+  function acceptedCitationLinks(b, answer, display, href) {
+    if (!display || !Array.isArray(display.reviewed_citations)) return null;
+    var cards = b.querySelectorAll(".cnp-evidence-card"), citations = display.reviewed_citations;
+    if (!citations.length) return [];
+    if (cards.length !== citations.length || typeof href !== "function") return null;
+    var links = [];
+    for (var i = 0; i < citations.length; i++) {
+      var citation = citations[i], card = cards[i], heading = card.querySelector(".cnp-evidence-source");
+      if (Number(card.getAttribute("data-citation-ordinal")) !== citation.ordinal || !heading ||
+          heading.textContent !== new Date(citation.source_at).toISOString().slice(0, 10) + " — " + citation.section) return null;
+      var candidate;
+      try { candidate = new URL(href(citation.citation_ref)); } catch (_error) { return null; }
+      if (candidate.origin !== window.location.origin || candidate.username || candidate.password ||
+          candidate.search || candidate.hash || candidate.pathname !==
+            "/session-prep/citations/" + encodeURIComponent(citation.citation_ref)) return null;
+      links.push({ citation: citation, url: candidate.href, card: card });
+    }
+    return links;
   }
   function mount(opts) {
     opts = opts || {};
@@ -806,11 +881,14 @@
           throw mismatch;
         }
         state.recordHeaders = headers; // Never ask the host for governed history until the server-side role check succeeds and the opaque record context validates locally.
-        var history = opts.loadHistory
-          ? await opts.loadHistory(recordId, { signal: recordController.signal })
-          : null;
+        var history = typeof opts.loadCitationHistory === "function"
+          ? await opts.loadCitationHistory(recordId, { signal: recordController.signal,
+              version: "1.2.0", mode: "recent", clientTurnId: null })
+          : opts.loadHistory ? await opts.loadHistory(recordId, { signal: recordController.signal }) : null;
         if (!currentGeneration(generation)) return null;
-        var conversation = history && history.schema_version ? governedConversation(history) : null;
+        var conversation = history && history.schema_version ?
+          (typeof opts.loadCitationHistory === "function" ? governedCitationConversation(history, "1.2.0")
+            : governedConversation(history)) : null;
         var loaded = history === null ? null : conversation ? conversation.history : governedHistory(history);
         if (history !== null && !loaded)
           throw new Error("governed history is invalid");
@@ -825,7 +903,7 @@
             doctrinal_review: null,
             structured: {},
             safety_notice: null,
-          }, recordId, generation, true);
+          }, recordId, generation, true, conversation && conversation.schema_version === "1.2.0" ? m : null);
         }
         if (conversation) {
           var notice = document.createElement("div");
@@ -916,7 +994,7 @@
         }
       }
     }
-    function render(b, d, recordId, generation, hydrated) {
+    function render(b, d, recordId, generation, hydrated, acceptedDisplay) {
       var presentation = governedPresentation(d.presentation);
       if (!presentation) throw new Error("assistant presentation is invalid");
       var suppressed = new Set(presentation.suppress);
@@ -937,6 +1015,30 @@
         html += '<div class="cnp-sandbox">' + esc(d.structured.sandbox_label) + "</div>";
       html += md(d.answer || "");
       b.innerHTML = html;
+      var acceptedLinks = !suppressed.has("citations")
+        ? acceptedCitationLinks(b, d.answer, acceptedDisplay, opts.citationHref) : [];
+      if (acceptedDisplay && acceptedDisplay.display_state) {
+        var retained = document.createElement("div"); retained.className = "cnp-meta"; retained.setAttribute("role", "status");
+        retained.textContent = acceptedDisplay.display_state === "superseded"
+          ? "Historical answer · its reviewed sources have since changed. It is preserved for reference."
+          : acceptedLinks && acceptedLinks.length ? "Historical answer · reviewed-source attribution preserved."
+          : "Historical answer.";
+        b.insertBefore(retained, b.firstChild);
+      }
+      if (acceptedLinks) acceptedLinks.forEach(function (item) {
+        var link = document.createElement("a"); link.href = item.url; link.target = "_blank";
+        link.rel = "noopener noreferrer"; link.className = "cnp-reviewed-citation";
+        link.textContent = "[" + item.citation.ordinal + "] Open reviewed source · visit " + citationTimestamp(item.citation.source_at) +
+          " · reviewed " + citationTimestamp(item.citation.reviewed_at);
+        item.card.appendChild(link);
+      });
+      var attributionRequired = typeof opts.loadCitationHistory === "function" &&
+        /^Selected reviewed-note excerpts for your question:|^Reviewed visit timeline — exact source sections:/.test(d.answer || "");
+      if (attributionRequired && (!acceptedDisplay || !acceptedLinks || !acceptedLinks.length)) {
+        var missing = document.createElement("div"); missing.className = "cnp-meta"; missing.setAttribute("role", "status");
+        missing.textContent = "Reviewed-source links could not be verified. Attributed export is unavailable.";
+        b.appendChild(missing);
+      }
       var cites = (d.citations || []).map(function (c) { return c.source; }).filter(Boolean);
       if (!suppressed.has("citations") && cites.length) {
         var e = document.createElement("div"); e.className = "cnp-cite";
@@ -999,14 +1101,21 @@
       }
       function saveAnswer(filename) {
         var a = document.createElement("a");
-        a.href = URL.createObjectURL(new Blob([d.answer || ""], { type: "text/markdown" }));
+        var exported = d.answer || "";
+        if (acceptedDisplay && acceptedDisplay.display_state) exported += "\n\n" +
+          (acceptedDisplay.display_state === "superseded" ? "Historical answer — sources superseded." : "Historical answer.");
+        if (acceptedLinks && acceptedLinks.length) exported += "\n\nReviewed-source attribution:\n" +
+          acceptedLinks.map(function (item) { return "[" + item.citation.ordinal + "] Visit " + item.citation.source_at +
+            "; reviewed " + item.citation.reviewed_at + "; section " + JSON.stringify(item.citation.section) + "\n" + item.url; }).join("\n\n");
+        a.href = URL.createObjectURL(new Blob([exported], { type: "text/markdown" }));
         a.download = filename; a.click();
       }
-      if (!hydrated && !suppressed.has("feature_actions") && ofmt === "document")
+      if (!attributionRequired && !hydrated && !suppressed.has("feature_actions") && ofmt === "document")
         act("Download .md", function () { saveAnswer("cosmaneura-" + (d.intent || "output") + ".md"); });
       // Chat and history save canonical answer text; Document retains its original download action.
       if (presentation.mode === "standard" && !suppressed.has("feature_actions") &&
-          (hydrated || ofmt !== "document"))
+          (hydrated || ofmt !== "document") &&
+          (!attributionRequired || acceptedDisplay && acceptedLinks && acceptedLinks.length))
         act("Save answer .md", function () { saveAnswer("cosmaneura-saved-answer.md"); });
       if (presentation.human_contact) {
         var contact = presentation.human_contact;
@@ -1571,7 +1680,7 @@
       return headers;
     }
     function appendResponseCheck(b, attempt) {
-      if (typeof opts.loadHistory !== "function") return;
+      if (typeof opts.loadHistory !== "function" && typeof opts.loadCitationHistory !== "function") return;
       var check = document.createElement("button");
       check.className = "cnp-retry cnp-check-response"; check.textContent = "Check response";
       check.onclick = function () { return checkResponse(attempt, b); };
@@ -1600,6 +1709,12 @@
         var headers = await headersForAttempt(attempt, controller);
         delete headers["x-cosmaneura-client-turn-id"];
         if (!currentGeneration(attempt.generation) || controller.signal.aborted) return;
+        var value;
+        if (typeof opts.loadCitationHistory === "function") {
+          value = governedCitationConversation(await opts.loadCitationHistory(attempt.recordId, {
+            signal: controller.signal, version: "1.2.0", mode: "turn", clientTurnId: attempt.clientTurnId,
+          }), "1.2.0");
+        } else {
         var response = await fetch(url + "/embed/history", {
           method: "POST", headers: headers, signal: controller.signal,
           body: JSON.stringify({ schema_version: "1.0.0", mode: "turn",
@@ -1616,7 +1731,8 @@
           appendResponseCheck(b, attempt);
           return;
         }
-        var value = governedConversation(await response.json());
+        value = governedConversation(await response.json());
+        }
         if (!currentGeneration(attempt.generation) || state.chatController !== controller) return;
         if (!value || value.turns.length !== 1 ||
             value.turns[0].client_turn_id !== attempt.clientTurnId) throw new Error("unmatched response");
@@ -1628,7 +1744,7 @@
         var message = value.history.messages[1];
         render(b, { answer: message.content, presentation: message.presentation,
           citations: [], doctrinal_review: null, structured: {}, safety_notice: null,
-        }, attempt.recordId, attempt.generation, true);
+        }, attempt.recordId, attempt.generation, true, value.schema_version === "1.2.0" ? message : null);
         if (state.retryAttempt === attempt) state.retryAttempt = null; // Reading a stored response never replaces a new draft or resends it.
       }
       try {
@@ -1769,7 +1885,23 @@
           );
           return;
         }
-        render(b, d, attempt.recordId, attempt.generation, false);
+        var accepted = null;
+        if (typeof opts.loadCitationHistory === "function") {
+          try {
+            var read = governedCitationConversation(await opts.loadCitationHistory(attempt.recordId, {
+              signal: controller.signal, version: "1.1.0", mode: "turn", clientTurnId: attempt.clientTurnId,
+            }), "1.1.0");
+            if (read && read.turns.length === 1 && read.turns[0].client_turn_id === attempt.clientTurnId &&
+                read.turns[0].state === "completed" && read.turns[0].outcome === "completed" &&
+                read.history.messages[1].content === d.answer &&
+                JSON.stringify(read.history.messages[1].presentation) === JSON.stringify(d.presentation))
+              accepted = read.history.messages[1];
+          } catch (error) {
+            if (error.authenticationUnavailable) { lockNamedBeta(); return; }
+          }
+        }
+        if (!currentGeneration(attempt.generation) || state.chatController !== controller || controller.signal.aborted) return;
+        render(b, d, attempt.recordId, attempt.generation, false, accepted);
         state.retryAttempt = null;
         if (input.value === attempt.text) input.value = "";
       }

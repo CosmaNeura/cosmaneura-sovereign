@@ -502,6 +502,16 @@ class Sovereign:
             mount_context_token=mount_context_token, trace_id=trace_id, request=request,
         )
 
+    async def read_conversation_display(self, *, mount_context_token: Optional[str], trace_id: str, request):
+        """Proxy Core-accepted display under a fresh mount; no inference calls."""
+        if not self.s.platform_agent_api_enabled or self.conversation_read is None:
+            raise ConversationReadError(403)
+        if mount_context_token is None:
+            raise ConversationReadError(401)
+        return await self.conversation_read.read_display(
+            mount_context_token=mount_context_token, trace_id=trace_id, request=request,
+        )
+
     async def read_session_prep(
         self,
         *,

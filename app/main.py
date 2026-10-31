@@ -34,6 +34,9 @@ from app.security.rate_limit import TokenBucketRateLimiter
 from app.clients.conversation_read import (
     ConversationReadError, ConversationReadRequest, ConversationReadResponse,
 )
+from app.clients.conversation_citation_display_contract import (
+    CitationReadRequest, CitationReadResponse, RetainedDisplayRequest, RetainedDisplayResponse,
+)
 from app.sovereign.orchestrator import INTENT_CAPABILITIES, Sovereign
 
 _settings = get_settings()
@@ -52,6 +55,7 @@ _EMBED_VERSION = "1.0"
 _EMBED_VERSION_HEADER = "X-Cosmaneura-Embed-Version"
 _PROTECTED_EMBED_PATHS = frozenset({
     "/welcome", "/chat", "/digest", "/session-prep", "/session-prep/structured-facts", "/embed/history",
+    "/embed/history-with-citations", "/embed/history-retained",
 })
 _CORS_ALLOW_METHODS = ("GET", "POST")
 _CORS_ALLOW_HEADERS = (
@@ -734,6 +738,38 @@ async def conversation_history(
     return result
 
 
+async def _citation_display(request, http_request: Request, http_response: Response):
+    _require_embed_version(http_request)
+    token = _raw_bearer(_one_raw_header(http_request, "Authorization"))
+    trace_id = uuid.uuid4().hex
+    try:
+        result = await _sovereign.read_conversation_display(
+            mount_context_token=token, trace_id=trace_id, request=request,
+        )
+    except ConversationReadError as error:
+        code = ("CONTEXT_REQUIRED" if token is None else "CONTEXT_INVALID") if error.status_code == 401 else (
+            "CAPABILITY_DENIED" if error.status_code == 403 else
+            "VALIDATION_FAILED" if error.status_code in {404, 409} else "SERVICE_UNAVAILABLE"
+        )
+        raise SovereignHTTPError(status_code=error.status_code, code=code) from None
+    http_response.headers["X-Trace-ID"] = trace_id
+    return result
+
+
+@app.post("/embed/history-with-citations", response_model=CitationReadResponse)
+async def conversation_citations(
+    request: CitationReadRequest, http_request: Request, http_response: Response,
+) -> CitationReadResponse:
+    return await _citation_display(request, http_request, http_response)
+
+
+@app.post("/embed/history-retained", response_model=RetainedDisplayResponse)
+async def conversation_retained_display(
+    request: RetainedDisplayRequest, http_request: Request, http_response: Response,
+) -> RetainedDisplayResponse:
+    return await _citation_display(request, http_request, http_response)
+
+
 @app.post("/session-prep", response_model=SessionPrepResponse)
 async def session_prep(
     request: SessionPrepRequest,
@@ -920,6 +956,13 @@ _PANEL_JS = (Path(__file__).parent / "panel.js").read_bytes()
 @app.get("/embed/v1/panel.js")
 async def panel_js() -> Response:
     return Response(content=_PANEL_JS, media_type="application/javascript")
+
+
+@app.get("/embed/v1/panel.delivery.js")
+async def panel_delivery_js() -> Response:
+    """Compiled immutable-host delivery; readable route and legacy alias remain."""
+    return Response(content=(Path(__file__).parent / "panel.delivery.js").read_bytes(),
+                    media_type="application/javascript")
 
 
 @app.get("/panel.js")
