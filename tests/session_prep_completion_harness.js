@@ -35,10 +35,10 @@ global.document = Object.assign(new FakeElement("document"), {
   createElement: tag => new FakeElement(tag),
 });
 let uuid = 1;
-global.window = {
+global.window = Object.assign(new FakeElement("window"), {
   innerWidth: 1200, location: { origin: "https://host.example" },
   crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` },
-};
+});
 vm.runInThisContext(fs.readFileSync(process.argv[2], "utf8"));
 
 function visibility(hidden) {

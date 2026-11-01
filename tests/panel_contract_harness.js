@@ -157,13 +157,13 @@ async function main() {
     createElementNS: (_namespace, tag) => new FakeElement(tag),
   });
   let uuidCounter = 1;
-  global.window = {
+  global.window = Object.assign(new FakeElement("window"), {
     innerWidth: 1200,
     location: { origin: "https://host.example" },
     crypto: {
       randomUUID: () => `00000000-0000-4000-8000-${String(uuidCounter++).padStart(12, "0")}`,
     },
-  };
+  });
   let browserPersistenceTouches = 0;
   ["localStorage", "sessionStorage", "indexedDB", "caches"].forEach(api => {
     const descriptor = {

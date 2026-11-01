@@ -29,8 +29,8 @@ global.document = Object.assign(new FakeElement("document"), {
   body: new FakeElement("body"), head: new FakeElement("head"),
   createElement: tag => new FakeElement(tag),
 });
-global.window = { innerWidth: 1200, location: { origin: "https://host.example" },
-  crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` } };
+global.window = Object.assign(new FakeElement("window"), { innerWidth: 1200, location: { origin: "https://host.example" },
+  crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` } });
 vm.runInThisContext(fs.readFileSync(process.argv[2], "utf8"));
 
 const QUESTION = "What fictional follow-up date was recorded?";
