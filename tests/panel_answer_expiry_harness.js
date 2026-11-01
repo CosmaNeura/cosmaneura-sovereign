@@ -304,6 +304,29 @@ async function main() {
       event + " failed to restore newly verified content or changed draft");
     await f.end();
   }
+  for (const event of ["focus", "pageshow", "visibility"]) {
+    const f = await fixture(env); f.displayMode = "hold-fetch";
+    const updating = f.panel.setRecord(f.record); await env.flush();
+    const release = f.releaseFetch, late = f.envelope();
+    f.input.value = "Draft survives interrupted same-record bootstrap";
+    if (event === "visibility") await env.visibility(true); else await env.windowEvent(event);
+    await updating;
+    assert(!f.has("Fictional-dose-marker") && !f.has("Legacy-unverified-answer-marker") &&
+      f.panel.root.querySelector(".cnp-gate").hidden &&
+      f.input.value === "Draft survives interrupted same-record bootstrap",
+      event + " stranded current-record bootstrap or showed unverified history");
+    release(response(200, late)); await env.flush();
+    assert(!f.has("Fictional-dose-marker"), "late interrupted bootstrap rendered old answer");
+    f.displayMode = "success";
+    if (event === "visibility") await env.visibility(false);
+    else { f.panel.close(); await f.panel.open(); }
+    await env.flush();
+    assert(f.has("Fictional-dose-marker") && f.save() &&
+      !f.panel.root.querySelector(".cnp-send").disabled &&
+      f.input.value === "Draft survives interrupted same-record bootstrap",
+      event + " did not restore an operable verified record on resume");
+    await f.end();
+  }
   {
     const f = await fixture(env), before = env.blobs.length, reads = f.reads().length;
     f.displayMode = "hold-fetch"; env.setWall(Date.parse("1900-01-01T00:00:00Z"));

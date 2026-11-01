@@ -1075,7 +1075,9 @@
             timedRead = await timedConversation(recordId, generation, "recent", null, recordController.signal);
             conversation = timedRead.value; loaded = conversation.history;
           } catch (error) {
-            if (!currentGeneration(generation) || error.name === "AbortError") return null;
+            if (!currentGeneration(generation) || recordController.signal.aborted) return null;
+            // A same-record wake/hide can cancel this optional display read.
+            // Finish bootstrap with hidden answers so resume can verify them.
             // Initial host history carries no deadline. Keep its questions, but
             // render no cached provider answer when the timed receiver is unavailable.
           }
