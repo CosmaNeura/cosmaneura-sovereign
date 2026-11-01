@@ -680,6 +680,7 @@
       state.history = null;
     }
     function resumeAnswers() {
+      if (state.switching || !state.recordReady) return;
       hideAnswers(false); // Hide synchronously, before any fresh credentials/read.
       return refreshAnswers();
     }

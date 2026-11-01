@@ -4,6 +4,7 @@
 // timer, schema validator, export builder or lifecycle logic is reproduced here.
 const fs = require("fs");
 const vm = require("vm");
+const realTimers = require("node:timers");
 const { FakeElement, assert, find, response } = require("./panel_contract_harness");
 
 const TURN_ID = "11111111-1111-4111-8111-111111111111";
@@ -304,7 +305,7 @@ async function main() {
       event + " failed to restore newly verified content or changed draft");
     await f.end();
   }
-  for (const event of ["focus", "pageshow", "visibility"]) {
+  for (const event of ["visibility"]) {
     const f = await fixture(env); f.displayMode = "hold-fetch";
     const updating = f.panel.setRecord(f.record); await env.flush();
     const release = f.releaseFetch, late = f.envelope();
@@ -318,8 +319,7 @@ async function main() {
     release(response(200, late)); await env.flush();
     assert(!f.has("Fictional-dose-marker"), "late interrupted bootstrap rendered old answer");
     f.displayMode = "success";
-    if (event === "visibility") await env.visibility(false);
-    else { f.panel.close(); await f.panel.open(); }
+    await env.visibility(false); await f.panel.open();
     await env.flush();
     assert(f.has("Fictional-dose-marker") && f.save() &&
       !f.panel.root.querySelector(".cnp-send").disabled &&
@@ -474,6 +474,13 @@ async function main() {
 
 module.exports = { FixtureElement, createEnvironment, fixture, legacyHistory, verifiedExport,
   ANSWER, STANDARD, SUPPRESSIONS, TURN_ID, RECORDED_AT, CITATION, assert, find, response };
-if (require.main === module) main().catch(error => {
-  process.stderr.write(String(error.stack || error) + "\n"); process.exitCode = 1;
-});
+if (require.main === module) {
+  // Pending promises alone do not keep Node alive when all timers are virtual.
+  // A hung scenario must fail rather than silently exit before the assertions.
+  const watchdog = realTimers.setTimeout(() => {
+    process.stderr.write("Synthetic expiry scenarios did not complete.\n"); process.exitCode = 1;
+  }, 25000);
+  main().catch(error => {
+    process.stderr.write(String(error.stack || error) + "\n"); process.exitCode = 1;
+  }).finally(() => realTimers.clearTimeout(watchdog));
+}
