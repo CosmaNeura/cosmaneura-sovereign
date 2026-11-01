@@ -15,10 +15,10 @@ async function main() {
     createElement: tag => new FakeElement(tag),
     createElementNS: (_namespace, tag) => new FakeElement(tag),
   });
-  global.window = {
+  global.window = Object.assign(new FakeElement("window"), {
     innerWidth: 1200, location: { origin: "https://host.example" },
     crypto: { randomUUID: () => result.client_turn_id },
-  };
+  });
   let requests = 0;
   global.fetch = async (url, options) => {
     if (url.endsWith("/welcome")) return response(200, {
