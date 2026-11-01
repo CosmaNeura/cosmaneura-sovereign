@@ -26,6 +26,14 @@ any fresh callback can return. Reopen and visibility resume require a new
 read. At the deadline, answer text and actions are replaced by a status;
 the provider's input draft is preserved.
 
+Mac sleep can pause the monotonic clock. Paired wall/monotonic samples detect
+rollback, invalid clocks or elapsed-time divergence over 500 ms across reads
+and displayed answers. Wall time never determines or extends authority. A
+single foreground local heartbeat every second hides and revalidates once
+after a discontinuity; failed reads stop that heartbeat. Focus and pageshow
+also hide before revalidation. Updates are bounded by the next JavaScript
+scheduling turn/heartbeat; suspended browser execution cannot update the DOM.
+
 Every provider export performs a fresh exact-turn read under the same current
 encounter/context. Turn reference, canonical answer, recorded date, expiry,
 presentation and reviewed source map must still match. Any failure saves no

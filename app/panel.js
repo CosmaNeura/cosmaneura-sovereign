@@ -526,6 +526,17 @@
     if (!Number.isFinite(value) || value < 0) throw new Error("Display clock is unavailable");
     return value;
   }
+  function displayClock() {
+    var wall = Date.now();
+    if (!Number.isFinite(wall)) throw new Error("Display clock is unavailable");
+    return { mono: monotonicClock(), wall: wall };
+  }
+  function continuousDisplayClock(before, after) {
+    // Wall time detects Mac sleep/clock jumps only. It never grants time or
+    // computes expiry; fresh Core metadata is required after a discontinuity.
+    return after.mono >= before.mono && after.wall >= before.wall &&
+      Math.abs((after.wall - before.wall) - (after.mono - before.mono)) <= 500;
+  }
   function acceptedCitationLinks(b, answer, display, href) {
     if (!display || !Array.isArray(display.reviewed_citations)) return null;
     var cards = b.querySelectorAll(".cnp-evidence-card"), citations = display.reviewed_citations;
@@ -568,7 +579,7 @@
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
       recordController: null, chatController: null, prepController: null,
       retryAttempt: null,
-      answers: [], answerEpoch: 0, answerReads: [],
+      answers: [], answerEpoch: 0, answerReads: [], answerWatchTimer: null,
     };
     var ownedTips = [];
     var listeners = [];
@@ -661,11 +672,38 @@
           : "This answer is hidden until its current availability is verified.") + "</p>";
     }
     function hideAnswers(discard) {
+      clearTimeout(state.answerWatchTimer); state.answerWatchTimer = null;
       state.answerEpoch += 1;
       state.answerReads.forEach(abort); state.answerReads = [];
       state.answers.forEach(function (entry) { hideAnswer(entry, false); });
       if (discard) state.answers = [];
       state.history = null;
+    }
+    function resumeAnswers() {
+      hideAnswers(false); // Hide synchronously, before any fresh credentials/read.
+      return refreshAnswers();
+    }
+    function watchAnswers() {
+      state.answerWatchTimer = null;
+      if (state.destroyed || document.hidden || !state.open) return;
+      var clock;
+      try { clock = displayClock(); } catch (_error) { hideAnswers(false); return; }
+      if (state.answers.some(function (entry) {
+        return entry.valid && !continuousDisplayClock(entry.verifiedClock, clock);
+      })) {
+        // One read per invalidation, never periodic network polling. A failed
+        // read leaves no valid answer and therefore arms no further heartbeat.
+        resumeAnswers(); return;
+      }
+      state.answers.forEach(function (entry) {
+        if (entry.valid && clock.mono >= entry.deadlineMono) hideAnswer(entry, true);
+      });
+      armAnswerWatch();
+    }
+    function armAnswerWatch() {
+      if (state.answerWatchTimer === null && !state.destroyed && state.open && !document.hidden &&
+          state.answers.some(function (entry) { return entry.valid; }))
+        state.answerWatchTimer = setTimeout(watchAnswers, 1000);
     }
     function answerEntry(b, recordId, generation, clientTurnId, turnRef) {
       var entry = state.answers.find(function (item) { return item.b === b; });
@@ -679,9 +717,10 @@
     function answerCurrent(entry) {
       if (!entry || !entry.valid || !currentGeneration(entry.generation) ||
           state.clientId !== entry.recordId || document.hidden || !state.open) return false;
-      var now;
-      try { now = monotonicClock(); } catch (_error) { hideAnswer(entry, true); return false; }
-      if (now < entry.verifiedMono || now >= entry.deadlineMono) { hideAnswer(entry, true); return false; }
+      var clock;
+      try { clock = displayClock(); } catch (_error) { hideAnswers(false); return false; }
+      if (!continuousDisplayClock(entry.verifiedClock, clock)) { resumeAnswers(); return false; }
+      if (clock.mono >= entry.deadlineMono) { hideAnswer(entry, true); return false; }
       return true;
     }
     async function timedConversation(recordId, generation, mode, clientTurnId, outerSignal, preserveDraft) {
@@ -692,14 +731,16 @@
         outerSignal.addEventListener("abort", cancel, { once: true });
         if (outerSignal.aborted) cancel();
       }
-      var deadline = boundedChatWait(controller, 15000), started;
+      var deadline = boundedChatWait(controller, 15000), started, startClock;
       function check() {
         if (controller.signal.aborted || !currentGeneration(generation) ||
             state.clientId !== recordId || epoch !== state.answerEpoch || document.hidden)
           throw new DOMException("stale", "AbortError");
+        if (startClock && !continuousDisplayClock(startClock, displayClock()))
+          throw new Error("Display clock changed");
       }
       try {
-        started = monotonicClock();
+        startClock = displayClock(); started = startClock.mono;
         check();
         var headers = await deadline.wait(freshBearerHeaders()); check();
         var context = governedContext(await deadline.wait(opts.getContext()), recordId); check();
@@ -721,9 +762,10 @@
         if (!current || JSON.stringify(context) !== JSON.stringify(current)) {
           loadThreadFor(null); throw new DOMException("record mismatch", "AbortError");
         }
-        var verified = monotonicClock();
-        if (verified < started) throw new Error("Display clock changed");
-        return { value: value, startedMono: started, verifiedMono: verified, context: context };
+        var verified = displayClock();
+        if (!continuousDisplayClock(startClock, verified)) throw new Error("Display clock changed");
+        return { value: value, startedMono: started, verifiedMono: verified.mono,
+          verifiedClock: verified, context: context };
       } catch (error) {
         if (error.authenticationUnavailable) lockNamedBeta(preserveDraft);
         throw error;
@@ -1153,22 +1195,26 @@
         entry = answerEntry(b, recordId, generation, acceptedDisplay && acceptedDisplay.client_turn_id,
           acceptedDisplay && acceptedDisplay.turn_ref);
         var observed = timedRead && utcClock(timedRead.value.observed_at);
-        var expires = acceptedDisplay && utcClock(acceptedDisplay.expires_at), now;
-        try { now = monotonicClock(); } catch (_error) { hideAnswer(entry, false); return; }
+        var expires = acceptedDisplay && utcClock(acceptedDisplay.expires_at), clock;
+        try { clock = displayClock(); } catch (_error) { hideAnswer(entry, false); return; }
+        var now = clock.mono;
         var deadline = timedRead && timedRead.startedMono + expires - observed;
         if (!timedRead || observed === null || expires === null || !acceptedDisplay ||
-            timedRead.verifiedMono < timedRead.startedMono || now < timedRead.verifiedMono ||
+            timedRead.verifiedMono < timedRead.startedMono ||
+            !continuousDisplayClock(timedRead.verifiedClock, clock) ||
             !Number.isFinite(deadline) || deadline <= now || document.hidden || !state.open) {
           hideAnswer(entry, Boolean(timedRead && Number.isFinite(deadline) && deadline <= now)); return;
         }
         clearTimeout(entry.timer);
         entry.clientTurnId = acceptedDisplay.client_turn_id; entry.turnRef = acceptedDisplay.turn_ref;
         entry.context = timedRead.context; entry.verifiedMono = timedRead.verifiedMono;
+        entry.verifiedClock = timedRead.verifiedClock;
         entry.deadlineMono = deadline; entry.valid = true; entry.revision = (entry.revision || 0) + 1;
         var revision = entry.revision;
         entry.timer = setTimeout(function () {
           if (entry.revision === revision) hideAnswer(entry, true);
         }, Math.max(0, deadline - now));
+        armAnswerWatch();
       }
       var suppressed = new Set(presentation.suppress);
       var html = "";
@@ -2296,7 +2342,12 @@
     listen(document, "visibilitychange", function () {
       if (document.hidden) {
         clearSessionPrep(); if (state.persona === "provider") hideAnswers(false); syncControls();
-      } else if (state.open && state.persona === "provider") return refreshAnswers();
+      } else if (state.open && state.persona === "provider") return resumeAnswers();
+    });
+    ["focus", "pageshow"].forEach(function (event) {
+      listen(window, event, function () {
+        if (state.open && state.persona === "provider") return resumeAnswers();
+      });
     });
     send.onclick = ask;
     listen(fmt, "change", syncFormatHelp);

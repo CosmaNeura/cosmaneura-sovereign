@@ -47,7 +47,7 @@ class FixtureElement extends FakeElement {
 }
 
 function createEnvironment(panelPath) {
-  let mono = 0, wall = Date.parse("2099-12-31T23:59:59Z"), nextTimer = 0, uuid = 1;
+  let mono = 0, elapsed = 0, wall = Date.parse("2099-12-31T23:59:59Z"), nextTimer = 0, uuid = 1;
   const timers = new Map(), blobs = [], downloads = [];
   const flush = () => new Promise(resolve => setImmediate(resolve));
   global.setTimeout = (callback, delay) => {
@@ -66,14 +66,22 @@ function createEnvironment(panelPath) {
     },
     createElementNS: (_namespace, tag) => new FixtureElement(tag),
   });
-  global.window = { innerWidth: 1200, location: { origin: "https://host.example" },
+  global.window = Object.assign(new FixtureElement("window"), { innerWidth: 1200, location: { origin: "https://host.example" },
     performance: global.performance,
-    crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` } };
+    crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` } });
   URL.createObjectURL = blob => { blobs.push(blob); return `blob:synthetic-timed-${blobs.length}`; };
   URL.revokeObjectURL = () => {};
   vm.runInThisContext(fs.readFileSync(panelPath, "utf8"));
-  const env = { blobs, downloads, timers, flush, now: () => mono,
+  const env = { blobs, downloads, timers, flush, now: () => mono, elapsed: () => elapsed,
+    // Mac sleep advances server/wall time while the monotonic clock and its
+    // timers pause. No visibility event or production fence is simulated here.
+    sleep: ms => { elapsed += ms; wall += ms; },
     setWall: value => { wall = value; },
+    windowEvent: async event => {
+      for (const [name, listener] of [...window._listeners])
+        if (name === event) listener({ persisted: event === "pageshow" });
+      await flush();
+    },
     visibility: async hidden => {
       document.hidden = hidden;
       for (const [event, listener] of [...document._listeners])
@@ -87,9 +95,12 @@ function createEnvironment(panelPath) {
         const next = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
         if (!next || next[1].at > target) break;
         assert(++callbacks < 1000, "virtual timer did not settle");
-        mono = next[1].at; timers.delete(next[0]); next[1].callback(); await flush();
+        const step = next[1].at - mono;
+        mono = next[1].at; elapsed += step; wall += step;
+        timers.delete(next[0]); next[1].callback(); await flush();
       }
-      mono = target; await flush();
+      const step = target - mono;
+      mono = target; elapsed += step; wall += step; await flush();
     },
   };
   return env;
@@ -104,13 +115,13 @@ function legacyHistory(id = TURN_ID, status = "completed", presentation = STANDA
 }
 
 async function fixture(env, options = {}) {
-  const f = { start: env.now(), record: "record_synthetic_timed", digest: "digest_synthetic_timed",
+  const f = { start: env.elapsed(), record: "record_synthetic_timed", digest: "digest_synthetic_timed",
     turnId: TURN_ID, answer: ANSWER, presentation: STANDARD, state: "completed", lifetime: 60000,
     displayMode: "success", chatMode: "success", chatIntent: "visit_prep", contextMode: "ready",
     authMode: "ready", welcomeDenied: false, requests: [], contextCalls: 0, authCalls: 0,
     hostHistoryLoads: 0, hasTurn: true, initial: legacyHistory(TURN_ID, "completed", STANDARD, "Legacy-unverified-answer-marker"),
     ...options };
-  f.observed = () => new Date(SERVER_AT + env.now() - f.start).toISOString();
+  f.observed = () => new Date(SERVER_AT + env.elapsed() - f.start).toISOString();
   f.expires = () => new Date(SERVER_AT + f.lifetime).toISOString();
   f.envelope = () => {
     const value = legacyHistory(f.turnId, f.state, f.presentation, f.answer);
@@ -229,14 +240,79 @@ async function main() {
       "provider initial history did not use a fresh1.3 recent display read");
     assert(!f.has("Legacy-unverified-answer-marker"), "host1.0 history displayed without authoritative expiry");
     f.input.value = "Preserve this newer fictional draft";
-    env.setWall(Date.parse("1900-01-01T00:00:00Z"));
     await env.advance(999);
-    assert(f.has("Fictional-dose-marker") && f.save(), "wall-clock skew shortened authoritative remaining lifetime");
+    assert(f.has("Fictional-dose-marker") && f.save(), "stable unrelated wall-clock offset shortened authoritative remaining lifetime");
     const oldSave = f.save(), before = env.blobs.length;
     await env.advance(1);
     assert(!f.has("Fictional-dose-marker") && !f.save() && f.input.value === "Preserve this newer fictional draft",
       "answer/export remained at its expiry boundary or draft was changed");
     await oldSave.click(); assert(env.blobs.length === before, "retained expired action exported cached bytes");
+    await f.end();
+  }
+  {
+    const f = await fixture(env), before = env.blobs.length, reads = f.reads().length;
+    const oldSave = f.save(); f.input.value = "Draft survives Mac sleep";
+    env.sleep(120000); // No mono/timer progress and no visibility event.
+    await env.advance(1000); // First foreground local heartbeat after wake.
+    assert(!f.has("Fictional-dose-marker") && !f.save() && f.reads().length === reads + 1,
+      "paused Mac clock left an expired visible answer or omitted its fresh revalidation");
+    await oldSave.click(); await env.advance(5000);
+    assert(env.blobs.length === before && f.reads().length === reads + 1 &&
+      f.input.value === "Draft survives Mac sleep", "wake exported stale bytes, changed draft or polled the server");
+    await f.end();
+  }
+  {
+    const f = await fixture(env), before = env.blobs.length, reads = f.reads().length;
+    const oldSave = f.save(); f.input.value = "Draft survives interrupted wake check";
+    f.displayMode = "hold-fetch"; env.sleep(2000); await env.advance(1000);
+    assert(!f.has("Fictional-dose-marker") && !f.save() && f.reads().length === reads + 1,
+      "wake did not hide cached bytes before awaiting its fresh read");
+    await oldSave.click(); const late = f.envelope(), release = f.releaseFetch;
+    f.panel.close(); release(response(200, late)); await env.flush(); await env.flush();
+    assert(!f.has("Fictional-dose-marker") && env.blobs.length === before &&
+      f.input.value === "Draft survives interrupted wake check", "late wake read resurrected closed text/export or erased draft");
+    await f.end();
+  }
+  for (const phase of ["hold-fetch", "hold-body"]) {
+    const f = await fixture(env), before = env.blobs.length;
+    f.displayMode = phase; const captured = f.envelope();
+    f.input.value = "Draft survives sleeping export";
+    const saving = f.save().click(); await env.flush(); env.sleep(120000);
+    if (phase === "hold-fetch") f.releaseFetch(response(200, captured)); else f.releaseBody();
+    await saving;
+    assert(env.blobs.length === before && !f.has("Fictional-dose-marker") &&
+      f.input.value === "Draft survives sleeping export", "paused clock let pre-sleep response/body export cached bytes");
+    await f.end();
+  }
+  {
+    const f = await fixture(env);
+    f.panel.close(); f.displayMode = "hold-body"; f.panel.open(); await env.flush();
+    env.sleep(120000); f.releaseBody(); await env.flush(); await env.flush();
+    assert(!f.has("Fictional-dose-marker") && !f.save(),
+      "sleep during hidden fresh history read displayed pre-sleep metadata without a heartbeat");
+    await f.end();
+  }
+  for (const event of ["focus", "pageshow"]) {
+    const f = await fixture(env), before = env.blobs.length, reads = f.reads().length;
+    const oldSave = f.save(); f.input.value = "Draft survives " + event;
+    f.displayMode = "hold-fetch"; env.sleep(1000); await env.windowEvent(event);
+    assert(!f.has("Fictional-dose-marker") && !f.save() && f.reads().length === reads + 1,
+      event + " reused cached bytes before its fresh read");
+    await oldSave.click(); assert(env.blobs.length === before, event + " retained cached export action");
+    f.releaseFetch(response(200, f.envelope())); await env.flush(); await env.flush();
+    assert(f.has("Fictional-dose-marker") && f.save() && f.input.value === "Draft survives " + event,
+      event + " failed to restore newly verified content or changed draft");
+    await f.end();
+  }
+  {
+    const f = await fixture(env), before = env.blobs.length, reads = f.reads().length;
+    f.displayMode = "hold-fetch"; env.setWall(Date.parse("1900-01-01T00:00:00Z"));
+    await f.save().click(); await env.flush();
+    assert(!f.has("Fictional-dose-marker") && !f.save() && env.blobs.length === before &&
+      f.reads().length === reads + 1, "backwards wall-clock discontinuity granted cached display/export time");
+    f.releaseFetch(response(200, f.envelope())); await env.flush(); await env.flush();
+    assert(f.has("Fictional-dose-marker") && f.save(),
+      "stable wall offset blocked freshly authorized server time after discontinuity");
     await f.end();
   }
   for (const mutate of [
@@ -370,7 +446,7 @@ async function main() {
     await env.advance(1234); await verifiedExport(env, f, f.save());
     await f.end();
   }
-  process.stdout.write("Provider answer expiry: server clocks, boundary/latency, fresh export, hide/reopen and late-scope guards passed.\n");
+  process.stdout.write("Provider answer expiry: server clocks, Mac sleep/wake discontinuities, boundary/latency, fresh export, hide/reopen and late-scope guards passed.\n");
 }
 
 module.exports = { FixtureElement, createEnvironment, fixture, legacyHistory, verifiedExport,
