@@ -151,7 +151,8 @@ def test_provider_turn_transport_uses_fresh_bearer_and_explicit_exact_retry():
 def test_post_bootstrap_auth_loss_revokes_provider_panel_state():
     panel = _panel_source()
 
-    assert "function lockNamedBeta()" in panel
+    assert "function lockNamedBeta(preserveDraft)" in panel
+    assert "if (preserveDraft !== true) input.value" in panel
     assert "state.generation += 1" in panel
     assert 'thread.innerHTML = ""; chips.innerHTML = ""' in panel
     assert "setGovernedChrome(null); setNamedBetaAccess(false)" in panel
@@ -309,6 +310,19 @@ def test_saved_history_answer_export_and_current_scope_guards_runtime():
         pytest.skip("Node.js is unavailable")
     subprocess.run(
         [node, str(ROOT / "tests/panel_history_export_harness.js"), str(PANEL_PATH)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_provider_answer_expiry_fresh_export_and_hidden_scope_guards_runtime():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable")
+    subprocess.run(
+        [node, str(ROOT / "tests/panel_answer_expiry_harness.js"), str(PANEL_PATH)],
         check=True,
         capture_output=True,
         text=True,

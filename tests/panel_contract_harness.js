@@ -58,6 +58,7 @@ class FakeElement {
   }
 
   get innerHTML() { return this._innerHTML; }
+  get firstChild() { return this.children[0] || null; }
   get scrollHeight() { return 100; }
   get offsetWidth() { return 400; }
   set scrollTop(_value) {}
@@ -82,6 +83,12 @@ class FakeElement {
   appendChild(child) {
     child.parentNode = this;
     this.children.push(child);
+    return child;
+  }
+  insertBefore(child, before) {
+    child.parentNode = this;
+    const index = this.children.indexOf(before);
+    if (index < 0) this.children.push(child); else this.children.splice(index, 0, child);
     return child;
   }
   addEventListener(event, handler) { this._listeners.push([event, handler]); }
@@ -124,6 +131,20 @@ function response(status, body) {
     headers: { get: name => name.toLowerCase() === "x-cosmaneura-embed-version" ? "1.0" : null },
     json: async () => body,
   };
+}
+
+// Fixed synthetic server clocks. This is fixture construction only; actual
+// expiry acceptance and deadline calculation remain inside the real panel.
+function timedHistory(value) {
+  const copy = JSON.parse(JSON.stringify(value));
+  copy.schema_version = "1.3.0";
+  copy.observed_at = "2026-11-01T12:00:00Z";
+  copy.history.messages.forEach(message => {
+    message.reviewed_citations = message.role === "user" ? null : message.reviewed_citations || [];
+    message.display_state = message.role === "user" ? null : message.display_state || "historical";
+    message.expires_at = message.role === "user" ? null : "2026-11-02T12:00:00Z";
+  });
+  return copy;
 }
 
 async function main() {
@@ -174,6 +195,8 @@ async function main() {
   const sessionPrepRequests = [];
   let historyReadMode = "completed", releaseHistoryRead = null;
   const historyReadRequests = [];
+  let recentHistoryFixture = () => null;
+  const recordedResponses = new Map();
   let historyAnswer = "Exact stored fictional answer";
   function historyEnvelope(id, status) {
     const common = { turn_ref: "turn_fictional_history", client_turn_id: id,
@@ -253,16 +276,25 @@ async function main() {
           resultMode === "unavailable" ? "context_not_available" : null,
       });
     }
-    if (url.endsWith("/embed/history")) {
+    if (url.endsWith("/embed/history-timed")) {
       historyReadRequests.push({ ...options, url });
+      const requestBody = JSON.parse(options.body);
+      if (requestBody.mode === "recent") return response(200, timedHistory(recentHistoryFixture() || {
+        schema_version: "1.0.0", turns: [],
+        history: { thread_ref: `thread_${currentRecord}`, messages: [], next_cursor: null },
+      }));
       const mode = historyReadMode;
       if (mode === "never") return new Promise(() => {});
       if (mode === "late") await new Promise(resolve => { releaseHistoryRead = resolve; });
       if (["403", "404", "409"].includes(mode)) return response(Number(mode), {});
-      const requestBody = JSON.parse(options.body);
       const value = historyEnvelope(requestBody.client_turn_id, mode === "pending" || mode === "stale" ? mode : "completed");
+      const accepted = recordedResponses.get(requestBody.client_turn_id);
+      if (accepted && value.turns[0].state === "completed") {
+        value.history.messages[1].content = accepted.answer;
+        value.history.messages[1].presentation = accepted.presentation;
+      }
       if (mode === "mismatch") value.turns[0].client_turn_id = "99999999-9999-4999-8999-999999999999";
-      return response(200, value);
+      return response(200, timedHistory(value));
     }
     assert(url.endsWith("/chat"), "unexpected URL");
     chatRequests.push({
@@ -311,7 +343,7 @@ async function main() {
       });
     }
     const requestBody = JSON.parse(options.body);
-    return response(200, {
+    const result = {
       answer: "Governed answer",
       intent: "small_talk",
       client_turn_id: requestBody.client_turn_id,
@@ -333,7 +365,9 @@ async function main() {
           fallback_text: "Please contact your support person.",
         },
       },
-    });
+    };
+    recordedResponses.set(requestBody.client_turn_id, result);
+    return response(200, result);
   };
 
   const source = fs.readFileSync(process.argv[2], "utf8");
@@ -439,6 +473,7 @@ async function main() {
   const input = controller.root.querySelector(".cnp-in");
   assert(send.disabled === true, "send enabled before record handshake");
   await controller.setRecord("record_a");
+  await controller.open();
   await Promise.resolve();
   assert(controller.root.querySelector(".cnp-gate").hidden === true,
          "provider preflight did not clear named-beta gate");
@@ -738,6 +773,7 @@ async function main() {
   currentRecord = "record_history";
   const oldTurnId = "11111111-1111-4111-8111-111111111111";
   let hydrationState = "completed";
+  recentHistoryFixture = () => historyEnvelope(oldTurnId, hydrationState);
   const recovery = window.CosmaNeuraPanel.mount({
     sovereignUrl: "https://sovereign.example", embedVersion: "1.0",
     getAuthToken: async () => `opaque-history-token-${++tokenSequence}-abcdefghijkl`,
@@ -745,7 +781,7 @@ async function main() {
     loadHistory: async () => historyEnvelope(oldTurnId, hydrationState),
   });
   await recovery.setRecord(currentRecord);
-  recovery.open();
+  await recovery.open();
   assert(find(recovery.root, node => node.innerHTML.includes("Exact stored fictional answer")),
          "canonical recent history was not hydrated");
   assert(find(recovery.root, node => node.textContent.includes("up to six turns")),
@@ -764,8 +800,8 @@ async function main() {
   assert(chatRequests.length === chatCount, "response check reran chat");
   assert(recoveryInput.value === "Keep my newer draft", "response check overwrote the draft");
   const readRequest = historyReadRequests.at(-1);
-  assert(readRequest.url === "https://sovereign.example/embed/history" &&
-         readRequest.body === JSON.stringify({ schema_version: "1.0.0", mode: "turn", client_turn_id: uncertainId }),
+  assert(readRequest.url === "https://sovereign.example/embed/history-timed" &&
+         readRequest.body === JSON.stringify({ schema_version: "1.3.0", mode: "turn", client_turn_id: uncertainId }),
          "response check sent more than the closed turn selector");
   assert(!readRequest.headers["x-cosmaneura-client-turn-id"] &&
          readRequest.headers.authorization !== chatRequests.at(-1).authorization,
@@ -833,6 +869,7 @@ async function main() {
   // exact stored text while retaining the independent aggregate UTF-8 limit.
   async function checkHistoryBoundary(value, valid, envelope) {
     historyAnswer = value;
+    recentHistoryFixture = () => envelope || historyEnvelope(oldTurnId, "completed");
     const bounded = window.CosmaNeuraPanel.mount({
       sovereignUrl: "https://sovereign.example", embedVersion: "1.0",
       getAuthToken: async () => "opaque-unicode-token-abcdefghijkl",
@@ -841,6 +878,7 @@ async function main() {
     });
     const loaded = await bounded.setRecord(currentRecord);
     assert((loaded !== null) === valid, "history code-point/UTF-8 bound was inconsistent");
+    await bounded.open();
     assert(Boolean(find(bounded.root, node => node.innerHTML.includes(value))) === valid,
            "history boundary altered or exposed rejected raw text");
     bounded.destroy();
@@ -860,10 +898,9 @@ async function main() {
   await checkHistoryBoundary(historyAnswer, false, aggregate);
 }
 
-module.exports = { FakeElement, assert, find, response };
+module.exports = { FakeElement, assert, find, response, timedHistory };
 if (require.main === module) {
   main().catch(error => {
-    process.stderr.write(String(error.stack || error) + "\n");
-    process.exitCode = 1;
+    process.stderr.write(String(error.stack || error) + "\n", () => process.exit(1));
   });
 }

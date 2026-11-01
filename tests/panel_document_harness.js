@@ -3,7 +3,7 @@
 // Exercise the unchanged real panel with the response from the governed HTTP test.
 const fs = require("fs");
 const vm = require("vm");
-const { FakeElement, assert, find, response } = require("./panel_contract_harness");
+const { FakeElement, assert, find, response, timedHistory } = require("./panel_contract_harness");
 
 async function main() {
   const result = JSON.parse(fs.readFileSync(0, "utf8"));
@@ -24,6 +24,18 @@ async function main() {
     if (url.endsWith("/welcome")) return response(200, {
       persona: "provider", greeting: "Hello", paths: [], disclaimer: "Fictional disclaimer",
     });
+    if (url.endsWith("/embed/history-timed")) {
+      const common = { turn_ref: "turn_fictional_document", client_turn_id: result.client_turn_id,
+        recorded_at: "2026-10-20T12:00:00Z" };
+      return response(200, timedHistory({ schema_version: "1.0.0",
+        history: { thread_ref: "thread_fictional_document", next_cursor: null,
+          messages: JSON.parse(options.body).mode === "turn" ? [
+            { ...common, role: "user", content: "A fictional document request.", presentation: null },
+            { ...common, role: "assistant", content: result.answer, presentation: result.presentation },
+          ] : [] },
+        turns: JSON.parse(options.body).mode === "turn" ? [{ ...common, state: "completed", outcome: "completed" }] : [],
+      }));
+    }
     assert(url.endsWith("/chat"), "unexpected request");
     requests += 1;
     assert(JSON.parse(options.body).metadata.output_format === format, "selected format was lost");
@@ -37,6 +49,7 @@ async function main() {
     onHumanContact: async () => {},
   });
   await panel.setRecord("record_fictional");
+  await panel.open();
   panel.root.querySelector(".cnp-fmt").value = format;
   panel.root.querySelector(".cnp-in").value = "Explain that more briefly.";
   await panel.root.querySelector(".cnp-send").click();
@@ -46,7 +59,12 @@ async function main() {
   if (download) {
     await download.click();
     assert(downloaded && downloaded.type === "text/markdown", "download did not create markdown");
-    assert(await downloaded.text() === result.answer, "download differs from the canonical final answer");
+    const exported = await downloaded.text(), start = exported.indexOf(result.answer);
+    assert(start >= 0 && exported.slice(start, start + result.answer.length) === result.answer,
+      "download differs from the canonical final answer");
+    assert(exported.includes("Answer recorded: 2026-10-20T12:00:00Z") &&
+      exported.includes("Export verified: 2026-11-01T12:00:00Z") &&
+      exported.includes("Available until: 2026-11-02T12:00:00Z"), "provider download lost authoritative export clocks");
     assert(requests === 1, "download issued another chat request");
   }
   panel.destroy();

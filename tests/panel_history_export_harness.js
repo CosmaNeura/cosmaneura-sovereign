@@ -1,9 +1,10 @@
 "use strict";
 
-// Exercise saved-answer export through the real public panel mount and history reader.
-const fs = require("fs");
-const vm = require("vm");
-const { FakeElement, assert, find, response } = require("./panel_contract_harness");
+// The admitted original fixture is preserved in SOURCE9 local test evidence.
+// These same provider case purposes now require a fresh closed1.3 display read
+// and authoritative export clocks, rather than downloading cached answer bytes.
+const { createEnvironment, fixture, verifiedExport, STANDARD, SUPPRESSIONS,
+  CITATION, assert, find } = require("./panel_answer_expiry_harness");
 
 const ANSWER = "# Fictional saved answer\r\n\r\nExact café 🩺 text & <draft>.\n" +
   "Sources: words in the answer are not saved citation metadata.\n";
@@ -11,102 +12,23 @@ const FACTUAL_ANSWER = "Selected reviewed-note excerpts for your question:\n\n" 
   "[1] 2026-10-08 — Medications\n\n" +
   "> Fictional reviewed dose: 25 mg daily supersedes the earlier erroneous 50 mg instruction.\n\n" +
   "Source: 1 selected reviewed prior note through 2026-10-08.\n";
-const TURN_ID = "11111111-1111-4111-8111-111111111111";
-const STANDARD = { mode: "standard", suppress: [], human_contact: null };
-const SUPPRESSIONS = ["disclaimer", "intent_badge", "doctrinal_badge", "citations",
-  "structured_cards", "feature_actions", "guided_paths"];
-
-function history(status = "completed", presentation = STANDARD, id = TURN_ID) {
-  const common = { turn_ref: "turn_fictional_export", client_turn_id: id,
-    recorded_at: "2026-10-23T12:00:00Z" };
-  const messages = [{ ...common, role: "user", content: "Draft a hypothetical ethics consult document.",
-    presentation: null }];
-  if (status === "completed") messages.push({ ...common, role: "assistant", content: ANSWER, presentation });
-  return { schema_version: "1.0.0",
-    history: { thread_ref: "thread_fictional_export", messages, next_cursor: null },
-    turns: [{ ...common, state: status, outcome: status === "completed" ? "completed" : null }] };
-}
 
 async function main() {
-  const downloads = [], blobs = [], requests = [];
-  global.document = Object.assign(new FakeElement("document"), {
-    body: new FakeElement("body"), head: new FakeElement("head"),
-    createElement: tag => {
-      const element = new FakeElement(tag);
-      if (tag === "a") element.onclick = () => downloads.push({ name: element.download, href: element.href });
-      return element;
-    },
-    createElementNS: (_namespace, tag) => new FakeElement(tag),
-  });
-  let uuid = 1, welcomeDenied = false, chatMode = "success";
-  let chatPresentation = STANDARD, chatAnswer = ANSWER, chatIntent = "ethics_consult";
-  global.window = { innerWidth: 1200, location: { origin: "https://host.example" },
-    crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` } };
-  URL.createObjectURL = blob => { blobs.push(blob); return `blob:fictional-export-${blobs.length}`; };
-  global.fetch = async (url, options) => {
-    requests.push({ url, options });
-    if (url.endsWith("/welcome")) return response(welcomeDenied ? 403 : 200, {
-      persona: "provider", greeting: "Hello", paths: [], disclaimer: "Fictional disclaimer",
-    });
-    if (url.endsWith("/embed/history")) {
-      const body = JSON.parse(options.body);
-      return response(200, history("completed", STANDARD, body.client_turn_id));
-    }
-    assert(url.endsWith("/chat"), "unexpected request");
-    if (chatMode === "revoked") return response(403, {});
-    if (chatMode === "lost-final") return response(503, {
-      type: "https://contracts.cosmaneura.com/problems/service_unavailable",
-      title: "Service unavailable", status: 503, code: "SERVICE_UNAVAILABLE", detail: "Unverified response",
-      trace_id: "trace_fictional_export", retryable: false,
-    });
-    const body = JSON.parse(options.body);
-    return response(200, { answer: chatAnswer, intent: chatIntent, client_turn_id: body.client_turn_id,
-      presentation: chatPresentation, citations: [], doctrinal_review: null,
-      structured: { output_format: body.metadata.output_format }, safety_notice: null });
-  };
-  vm.runInThisContext(fs.readFileSync(process.argv[2], "utf8"));
-
-  async function mount(envelope = history()) {
-    const state = { record: "record_fictional_export", envelope };
-    state.panel = window.CosmaNeuraPanel.mount({
-      sovereignUrl: "https://sovereign.example", embedVersion: "1.0",
-      getAuthToken: async () => "opaque-fictional-export-token-abcdefghijkl",
-      getContext: async () => ({ clientId: state.record }), onHumanContact: async () => {},
-      loadHistory: async () => state.envelope,
-    });
-    await state.panel.setRecord(state.record);
-    return state;
-  }
-  const saveButton = panel => find(panel.root, node => node.textContent === "Save answer .md");
-  const originalDownload = panel => find(panel.root, node => node.textContent === "Download .md");
-  async function checkExactDownload(button, expectedName, expectedAnswer = ANSWER) {
-    const beforeRequests = requests.length, beforeBlobs = blobs.length;
-    await button.click();
-    assert(blobs.length === beforeBlobs + 1, "export did not create exactly one Blob");
-    const blob = blobs.at(-1);
-    assert(blob.type === "text/markdown", "export media type changed");
-    assert(Buffer.from(await blob.arrayBuffer()).equals(Buffer.from(expectedAnswer, "utf8")),
-      "export changed exact canonical UTF-8 answer bytes");
-    assert(downloads.at(-1).name === expectedName, "export filename implies missing original metadata");
-    assert(requests.length === beforeRequests, "export issued a network or model request");
-  }
-
+  const env = createEnvironment(process.argv[2]);
+  const mount = options => fixture(env, { answer: ANSWER, citations: [], ...options });
   const restored = await mount();
-  assert(saveButton(restored.panel) && !originalDownload(restored.panel),
-    "restored answer was not distinguished from an original Document response");
+  assert(restored.save() && !restored.download(), "restored answer was not distinguished from an original Document response");
   assert(!find(restored.panel.root, node => ["cnp-cite", "cnp-trust", "cnp-badge"].includes(node.className)),
     "history invented citation, verdict or intent metadata");
-  await checkExactDownload(saveButton(restored.panel), "cosmaneura-saved-answer.md");
-  assert(requests.every(request => request.url.endsWith("/welcome")), "hydration ran chat/model requests");
+  await verifiedExport(env, restored, restored.save());
+  assert(restored.chats().length === 0 && restored.reads().length >= 2, "hydration/export ran chat/model requests or omitted fresh reads");
   assert(restored.panel.root.innerHTML.includes("a visit summary or an ethics consult") &&
     !restored.panel.root.innerHTML.includes("a draft from this record"), "Document helper misstates supported drafts");
-  const format = restored.panel.root.querySelector(".cnp-fmt");
-  format.value = "document";
+  const format = restored.panel.root.querySelector(".cnp-fmt"); format.value = "document";
   format._listeners.find(([event]) => event === "change")[1]();
   assert(!restored.panel.root.querySelector(".cnp-format-help").hidden &&
-    restored.panel.root.querySelector(".cnp-in").placeholder === "Request a supported document draft…",
-    "Document help or placeholder still imposes a chart-only request");
-  restored.panel.destroy();
+    restored.input.placeholder === "Request a supported document draft…", "Document help or placeholder still imposes a chart-only request");
+  await restored.end();
 
   for (const presentation of [
     { ...STANDARD, suppress: ["feature_actions"] },
@@ -114,108 +36,71 @@ async function main() {
     { mode: "sensitive_disclosure", suppress: SUPPRESSIONS, human_contact: {
       label: "Contact care team", action_id: "care-team-contact", fallback_text: "Contact your care team." } },
   ]) {
-    const denied = await mount(history("completed", presentation));
-    assert(!saveButton(denied.panel) && !originalDownload(denied.panel), "governed suppression exposed export");
-    denied.panel.destroy();
+    const denied = await mount({ presentation });
+    assert(!denied.save() && !denied.download(), "governed suppression exposed export"); await denied.end();
   }
-  for (const status of ["pending", "stale"]) {
-    const incomplete = await mount(history(status));
-    assert(!saveButton(incomplete.panel) && !originalDownload(incomplete.panel), "pending/stale history exposed export");
-    incomplete.panel.destroy();
+  for (const state of ["pending", "stale"]) {
+    const incomplete = await mount({ state });
+    assert(!incomplete.save() && !incomplete.download(), "pending/stale history exposed export"); await incomplete.end();
   }
 
-  const switching = await mount();
-  const oldSave = saveButton(switching.panel), beforeSwitch = blobs.length;
-  switching.record = "record_fictional_other"; switching.envelope = null;
+  const switching = await mount(), oldSave = switching.save(), beforeSwitch = env.blobs.length;
+  switching.record = "record_synthetic_other"; switching.initial = null; switching.hasTurn = false;
   const switched = switching.panel.setRecord(switching.record);
-  await oldSave.click();
-  await switched;
-  await oldSave.click();
-  assert(blobs.length === beforeSwitch && !saveButton(switching.panel), "retained prior-record action exported history");
-  switching.panel.destroy();
+  await oldSave.click(); await switched; await oldSave.click();
+  assert(env.blobs.length === beforeSwitch && !switching.save(), "retained prior-record action exported history"); await switching.end();
 
-  const revoked = await mount();
-  const revokedSave = saveButton(revoked.panel), beforeRevoke = blobs.length;
-  chatMode = "revoked";
-  revoked.panel.root.querySelector(".cnp-in").value = "A fictional follow-up";
-  await revoked.panel.root.querySelector(".cnp-send").click();
-  await revokedSave.click();
-  assert(blobs.length === beforeRevoke && !saveButton(revoked.panel) &&
-    !revoked.panel.root.querySelector(".cnp-gate").hidden, "revocation left saved-answer export active");
-  revoked.panel.destroy();
+  const revoked = await mount(), revokedSave = revoked.save(), beforeRevoke = env.blobs.length;
+  revoked.chatMode = "denied"; await revoked.ask("A fictional follow-up"); await revokedSave.click();
+  assert(env.blobs.length === beforeRevoke && !revoked.save() && !revoked.panel.root.querySelector(".cnp-gate").hidden,
+    "revocation left saved-answer export active"); await revoked.end();
 
-  const bootstrapDenied = await mount();
-  const deniedSave = saveButton(bootstrapDenied.panel), beforeDenied = blobs.length;
-  welcomeDenied = true;
-  await bootstrapDenied.panel.setRecord(bootstrapDenied.record);
-  await deniedSave.click();
-  assert(blobs.length === beforeDenied && !saveButton(bootstrapDenied.panel), "failed authorization retained export");
-  bootstrapDenied.panel.destroy(); welcomeDenied = false;
+  const bootstrapDenied = await mount(), deniedSave = bootstrapDenied.save(), beforeDenied = env.blobs.length;
+  bootstrapDenied.welcomeDenied = true; await bootstrapDenied.panel.setRecord(bootstrapDenied.record); await deniedSave.click();
+  assert(env.blobs.length === beforeDenied && !bootstrapDenied.save(), "failed authorization retained export"); await bootstrapDenied.end();
 
-  const recovery = await mount(null);
-  chatMode = "lost-final";
-  recovery.panel.root.querySelector(".cnp-in").value = "A fictional document request";
-  await recovery.panel.root.querySelector(".cnp-send").click();
-  const chatCount = requests.filter(request => request.url.endsWith("/chat")).length;
-  recovery.panel.root.querySelector(".cnp-in").value = "Preserve my newer draft";
-  await find(recovery.panel.root, node => node.textContent === "Check response").click();
-  assert(saveButton(recovery.panel) && !originalDownload(recovery.panel), "response recovery lost exact saved-answer export");
-  await checkExactDownload(saveButton(recovery.panel), "cosmaneura-saved-answer.md");
-  assert(requests.filter(request => request.url.endsWith("/chat")).length === chatCount &&
-    recovery.panel.root.querySelector(".cnp-in").value === "Preserve my newer draft", "recovery replayed model or replaced draft");
-  const destroyedSave = saveButton(recovery.panel), beforeDestroy = blobs.length;
-  recovery.panel.destroy(); await destroyedSave.click();
-  assert(blobs.length === beforeDestroy, "destroyed panel retained export action");
+  const recovery = await mount({ initial: null, hasTurn: false, chatMode: "lost-final" });
+  await recovery.ask("A fictional document request");
+  const chatCount = recovery.chats().length; recovery.input.value = "Preserve my newer draft";
+  await recovery.button("Check response").click();
+  assert(recovery.save() && !recovery.download(), "response recovery lost exact saved-answer export");
+  await verifiedExport(env, recovery, recovery.save());
+  assert(recovery.chats().length === chatCount && recovery.input.value === "Preserve my newer draft",
+    "recovery replayed model or replaced draft");
+  const destroyedSave = recovery.save(), beforeDestroy = env.blobs.length;
+  await recovery.end(); await destroyedSave.click(); assert(env.blobs.length === beforeDestroy, "destroyed panel retained export action");
 
-  // A fresh factual Chat answer can be saved immediately, without history hydration.
-  chatMode = "success";
+  // Fresh Chat and Document actions still save the canonical final response;
+  // the timed server read must verify this exact client turn first.
   for (const selected of ["chat", "document"]) {
-    chatAnswer = selected === "chat" ? FACTUAL_ANSWER : ANSWER;
-    chatIntent = selected === "chat" ? "visit_prep" : "ethics_consult";
-    const live = await mount(null);
+    const live = await mount({ initial: null, hasTurn: false,
+      answer: selected === "chat" ? FACTUAL_ANSWER : ANSWER,
+      citations: selected === "chat" ? [CITATION] : [],
+      chatIntent: selected === "chat" ? "visit_prep" : "ethics_consult" });
     live.panel.root.querySelector(".cnp-fmt").value = selected;
-    live.panel.root.querySelector(".cnp-in").value = selected === "chat"
-      ? "What did the fictional reviewed note document about the dose correction?"
-      : "A fictional supported draft";
-    await live.panel.root.querySelector(".cnp-send").click();
-    assert(Boolean(saveButton(live.panel)) === (selected === "chat") &&
-      Boolean(originalDownload(live.panel)) === (selected === "document"),
+    await live.ask(selected === "chat" ? "What did the fictional reviewed note document about the dose correction?" : "A fictional supported draft");
+    assert(Boolean(live.save()) === (selected === "chat") && Boolean(live.download()) === (selected === "document"),
       "fresh Chat export or existing Document action is missing or duplicated");
     if (selected === "chat") {
-      const freshSave = saveButton(live.panel);
-      await checkExactDownload(freshSave, "cosmaneura-saved-answer.md", FACTUAL_ANSWER);
-      const beforeFreshSwitch = blobs.length;
-      live.record = "record_fictional_other";
-      const switched = live.panel.setRecord(live.record);
-      await freshSave.click();
-      await switched;
-      await freshSave.click();
-      assert(blobs.length === beforeFreshSwitch && !saveButton(live.panel),
-        "retained fresh-answer action exported after the record switched");
-      live.panel.destroy();
-      await freshSave.click();
-      assert(blobs.length === beforeFreshSwitch, "destroyed fresh-answer panel retained export");
+      const freshSave = live.save(); await verifiedExport(env, live, freshSave, FACTUAL_ANSWER);
+      const beforeFreshSwitch = env.blobs.length; live.record = "record_synthetic_other"; live.hasTurn = false;
+      const changed = live.panel.setRecord(live.record); await freshSave.click(); await changed; await freshSave.click();
+      assert(env.blobs.length === beforeFreshSwitch && !live.save(), "retained fresh-answer action exported after the record switched");
+      await live.end(); await freshSave.click(); assert(env.blobs.length === beforeFreshSwitch, "destroyed fresh-answer panel retained export");
     } else {
-      await checkExactDownload(originalDownload(live.panel), "cosmaneura-ethics_consult.md");
-      live.panel.destroy();
+      await verifiedExport(env, live, live.download(), ANSWER, "cosmaneura-ethics_consult-"); await live.end();
     }
   }
-  // The new live Chat action obeys the same governed-presentation restrictions as history.
   for (const presentation of [
     { ...STANDARD, suppress: ["feature_actions"] },
     { mode: "emergency", suppress: [], human_contact: null },
     { mode: "sensitive_disclosure", suppress: SUPPRESSIONS, human_contact: {
       label: "Contact care team", action_id: "care-team-contact", fallback_text: "Contact your care team." } },
   ]) {
-    chatPresentation = presentation;
-    chatAnswer = FACTUAL_ANSWER; chatIntent = "visit_prep";
-    const live = await mount(null);
-    live.panel.root.querySelector(".cnp-in").value = "A fictional reviewed-note question";
-    await live.panel.root.querySelector(".cnp-send").click();
-    assert(!saveButton(live.panel) && !originalDownload(live.panel),
-      "governed fresh Chat presentation exposed export");
-    live.panel.destroy();
+    const live = await mount({ initial: null, hasTurn: false, presentation, answer: FACTUAL_ANSWER });
+    await live.ask("A fictional reviewed-note question");
+    assert(!live.save() && !live.download(), "governed fresh Chat presentation exposed export"); await live.end();
   }
-  process.stdout.write("Saved-answer export: fresh Chat, exact bytes, Document, recovery, suppression and record/access guards passed.\n");
+  process.stdout.write("Provider saved-answer export: fresh clocks, exact bytes, Document, recovery, suppression and record/access guards passed.\n");
 }
 main().catch(error => { process.stderr.write(String(error.stack || error) + "\n"); process.exitCode = 1; });

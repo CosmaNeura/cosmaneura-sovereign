@@ -4,7 +4,7 @@
 // unchanged public panel mount API, including the real md()/esc() functions.
 const fs = require("fs");
 const vm = require("vm");
-const { FakeElement, assert, response } = require("./panel_contract_harness");
+const { FakeElement, assert, response, timedHistory } = require("./panel_contract_harness");
 
 async function main() {
   const input = JSON.parse(fs.readFileSync(0, "utf8"));
@@ -29,6 +29,11 @@ async function main() {
       requests += 1;
       return response(200, { ...input.preparation, client_turn_id: JSON.parse(options.body).client_turn_id });
     }
+    if (url.endsWith("/embed/history-timed")) return response(200, timedHistory(
+      JSON.parse(options.body).mode === "turn" || input.hydrated ? history : {
+        schema_version: "1.0.0", turns: [],
+        history: { thread_ref: "thread_fictional_evidence", messages: [], next_cursor: null },
+      }));
     assert(url.endsWith("/chat"), "unexpected request");
     requests += 1;
     assert(JSON.parse(options.body).metadata.output_format === "chat", "format changed");
@@ -52,6 +57,7 @@ async function main() {
     onHumanContact: async () => {},
   });
   await panel.setRecord("record_fictional");
+  await panel.open();
   if (!input.hydrated) {
     if (input.preparation) await panel.openSessionPrep();
     else {

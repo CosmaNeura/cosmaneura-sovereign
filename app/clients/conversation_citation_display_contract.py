@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import Field, StrictInt, field_validator, model_validator
@@ -119,4 +119,54 @@ class RetainedDisplayResponse(ConversationReadResponse):
     @model_validator(mode="after")
     def _completed(self):
         _completed_maps(self)
+        return self
+
+
+class TimedRetainedDisplayRequest(ConversationReadRequest):
+    schema_version: Literal["1.3.0"]
+
+
+def _utc_time(value: datetime) -> datetime:
+    _aware(value)
+    if value.utcoffset() != timedelta(0):
+        raise ValueError("display timing requires UTC")
+    return value
+
+
+class TimedRetainedDisplayMessage(RetainedDisplayMessage):
+    expires_at: datetime | None
+
+    _expiry_wire = field_validator("expires_at", mode="before")(
+        lambda value: None if value is None else _timestamp_wire(value)
+    )
+
+    @model_validator(mode="after")
+    def _expiry_role(self):
+        if (self.role == "user") != (self.expires_at is None):
+            raise ValueError("invalid display expiry role")
+        if self.expires_at is not None:
+            _utc_time(self.expires_at)
+        return self
+
+
+class TimedRetainedDisplayHistory(HydratedHistory):
+    messages: list[TimedRetainedDisplayMessage] = Field(max_length=12)
+
+
+class TimedRetainedDisplayResponse(RetainedDisplayResponse):
+    schema_version: Literal["1.3.0"]
+    observed_at: datetime
+    history: TimedRetainedDisplayHistory
+
+    _observed_wire = field_validator("observed_at", mode="before")(_timestamp_wire)
+    _observed_utc = field_validator("observed_at")(_utc_time)
+
+    @model_validator(mode="after")
+    def _live_display(self):
+        if any(
+            message.recorded_at > self.observed_at
+            or message.expires_at is not None and message.expires_at <= self.observed_at
+            for message in self.history.messages
+        ):
+            raise ValueError("display timing is not current")
         return self
