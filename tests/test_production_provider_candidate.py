@@ -17,11 +17,17 @@ import pytest
 import yaml
 
 from tools import production_provider_candidate as candidate
+from tests.test_production_saved_image_identity import fixture as saved_fixture
+from tests.test_production_saved_image_identity import save as save_fixture
 
 
 SHA = "a" * 40
 TREE = "b" * 40
-CONFIG_DIGEST = "sha256:" + "c" * 64
+RUNTIME = {
+    "Labels": {"org.opencontainers.image.revision": SHA},
+    "Env": [key + "=" + value for key, value in candidate.DARK_ENV.items()],
+}
+CONFIG_DIGEST = saved_fixture(RUNTIME, engine="classic")[0]["Id"]
 IMAGE_DIGEST = "sha256:" + "d" * 64
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,15 +67,7 @@ def record():
 
 
 def image_config():
-    return {
-        "Id": CONFIG_DIGEST,
-        "Os": "linux",
-        "Architecture": "amd64",
-        "Config": {
-            "Labels": {"org.opencontainers.image.revision": SHA},
-            "Env": [key + "=" + value for key, value in candidate.DARK_ENV.items()],
-        },
-    }
+    return saved_fixture(RUNTIME, engine="classic")[0]
 
 
 def zipped(value=None, *, filename="candidate.json", mode=stat.S_IFREG):
@@ -693,18 +691,15 @@ def test_stopped_image_source_proof_checks_bytes_and_always_cleans_owned_contain
     assert not any("start" in call or "exec" in call for call in calls)
 
 
-def publisher(monkeypatch, *, stale=False, bad_profile=False):
+def publisher(
+    monkeypatch, *, stale=False, bad_profile=False, engine="classic", bad_export=False
+):
     calls = []
-    raw = candidate.canonical(
-        {
-            "schemaVersion": 2,
-            "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "config": {"digest": CONFIG_DIGEST},
-            "layers": [{"digest": IMAGE_DIGEST}],
-        }
-    )
+    config, exported, raw = saved_fixture(RUNTIME, engine=engine)
     image_digest = candidate.digest(raw)
-    config = image_config()
+    if bad_export:
+        selected = json.loads(exported["manifest.json"])[0]
+        exported[selected["Config"]] = b"{}"
     if bad_profile:
         config["Config"]["Env"][0] = "MOUNT_PROFILE=public"
 
@@ -717,6 +712,10 @@ def publisher(monkeypatch, *, stale=False, bad_profile=False):
         calls.append(args)
         if args[:3] == ["docker", "image", "inspect"]:
             return candidate.canonical([config])
+        if args[:3] == ["docker", "image", "save"]:
+            assert args[-1] == config["Id"]
+            save_fixture(Path(args[args.index("--output") + 1]), exported)
+            return b""
         if args[:4] == ["docker", "buildx", "imagetools", "inspect"]:
             return (
                 raw
@@ -746,10 +745,11 @@ def publisher(monkeypatch, *, stale=False, bad_profile=False):
     return calls, image_digest
 
 
+@pytest.mark.parametrize("engine", ["classic", "containerd"])
 def test_publish_binds_source_bytes_and_config_id_then_locks_and_reads_both_references(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, engine
 ):
-    calls, image_digest = publisher(monkeypatch)
+    calls, image_digest = publisher(monkeypatch, engine=engine)
     output = tmp_path / "candidate.json"
     candidate.publish(output)
     result = json.loads(output.read_bytes())
@@ -758,9 +758,14 @@ def test_publish_binds_source_bytes_and_config_id_then_locks_and_reads_both_refe
         result["deployment_authorized"] is False
         and result["dark_configuration"] == candidate.DARK_ENV
     )
-    assert ["proof", CONFIG_DIGEST] in calls
+    opaque_id = CONFIG_DIGEST if engine == "classic" else image_digest
+    assert result["image_config_digest"] == CONFIG_DIGEST
+    assert ["proof", opaque_id] in calls
     tag = next(call for call in calls if call[:2] == ["docker", "tag"])
-    assert tag[2] == CONFIG_DIGEST
+    assert tag[2] == opaque_id
+    assert next(
+        i for i, args in enumerate(calls) if args[:3] == ["docker", "image", "save"]
+    ) < next(i for i, args in enumerate(calls) if args[0] == "proof")
     imported = next(call for call in calls if call[:3] == ["az", "acr", "import"])
     assert (
         "--force" not in imported
@@ -780,13 +785,23 @@ def test_publish_binds_source_bytes_and_config_id_then_locks_and_reads_both_refe
 
 
 @pytest.mark.parametrize(
-    "reason", ["disabled", "public", "stale_before_push", "proof_mismatch"]
+    "reason",
+    [
+        "disabled",
+        "public",
+        "stale_before_push",
+        "proof_mismatch",
+        "saved_config_mismatch",
+    ],
 )
 def test_no_image_publication_or_descriptor_on_failed_precondition(
     monkeypatch, tmp_path, reason
 ):
     calls, _digest = publisher(
-        monkeypatch, stale=reason == "stale_before_push", bad_profile=reason == "public"
+        monkeypatch,
+        stale=reason == "stale_before_push",
+        bad_profile=reason == "public",
+        bad_export=reason == "saved_config_mismatch",
     )
     if reason == "disabled":
         monkeypatch.delenv("PROVIDER_ARTIFACT_PREPARATION_ENABLED")

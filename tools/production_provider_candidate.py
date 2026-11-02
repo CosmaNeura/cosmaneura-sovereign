@@ -24,6 +24,11 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from tools.production_saved_image_identity import (
+    ImageIdentityRefused,
+    published_manifest_identity,
+    saved_image_identity,
+)
 from tools.prepare_provider_production_artifact import (
     MANIFEST_MEDIA_TYPES,
     PreparationError,
@@ -59,6 +64,7 @@ JOBS = {
 CONTRACT_FILES = (
     WORKFLOW,
     "tools/production_provider_candidate.py",
+    "tools/production_saved_image_identity.py",
     "tools/prepare_provider_production_artifact.py",
     "infra/scripts/finalize-nixpacks-context.py",
     "nixpacks.toml",
@@ -656,6 +662,20 @@ def build() -> None:
         require(source_context() == context)
 
 
+def exported_identity(config: dict[str, Any]) -> dict[str, Any]:
+    """Verify actual saved config/layers; Docker Id remains an opaque reference."""
+    with tempfile.TemporaryDirectory() as directory:
+        archive = Path(directory) / "image.tar"
+        command(
+            ["docker", "image", "save", "--output", str(archive), config["Id"]],
+            timeout=900,
+        )
+        try:
+            return saved_image_identity(archive, config)
+        except ImageIdentityRefused:
+            raise CandidateRefused("production_provider_candidate_refused") from None
+
+
 def write_new(output: Path, record: dict[str, Any]) -> None:
     descriptor = os.open(
         output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
@@ -671,6 +691,7 @@ def publish(output: Path) -> None:
     inspected = decode(command(["docker", "image", "inspect", local]))
     require(type(inspected) is list and len(inspected) == 1)
     config = image_source(context, inspected[0])
+    saved_identity = exported_identity(config)
     source_files_in_image(config["Id"])
     require(source_context() == context)
     tag = f"candidate-{context['source_sha']}-{context['run_id']}-{context['run_attempt']}"
@@ -705,7 +726,11 @@ def publish(output: Path) -> None:
             IMAGE + "@" + image_digest,
         ]
     )
-    manifest_identity(raw, image_digest, config["Id"])
+    manifest_identity(raw, image_digest, saved_identity["config_digest"])
+    try:
+        published_manifest_identity(raw, image_digest, saved_identity)
+    except ImageIdentityRefused:
+        raise CandidateRefused("production_provider_candidate_refused") from None
     record = validate_record(
         {
             "schema_version": 1,
@@ -714,7 +739,7 @@ def publish(output: Path) -> None:
             "workflow_ref": WORKFLOW_REF,
             **context,
             "image": IMAGE + "@" + image_digest,
-            "image_config_digest": config["Id"],
+            "image_config_digest": saved_identity["config_digest"],
             "dark_configuration": dict(DARK_ENV),
             "deployment_authorized": False,
         },
