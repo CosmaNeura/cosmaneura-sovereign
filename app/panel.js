@@ -493,6 +493,50 @@
     // and offset; chart-only fdate() must not collapse same-day review versions.
     return value.replace("T", " ").replace(/Z$/, " UTC");
   }
+  function utcClock(value) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$/.test(value)) return null;
+    var parsed = Date.parse(value);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 19) === value.slice(0, 19)
+      ? parsed : null;
+  }
+  function governedTimedConversation(value) {
+    if (!closedObject(value, ["schema_version", "observed_at", "history", "turns"]) ||
+        value.schema_version !== "1.3.0" || utcClock(value.observed_at) === null ||
+        !value.history || !Array.isArray(value.history.messages) || value.history.messages.length > 12 ||
+        !Array.isArray(value.turns) || value.turns.length > 6) return null;
+    var copy = { schema_version: "1.2.0", turns: value.turns, history: {
+      thread_ref: value.history.thread_ref, next_cursor: value.history.next_cursor, messages: [],
+    } };
+    if (!closedObject(value.history, ["thread_ref", "messages", "next_cursor"])) return null;
+    for (var i = 0; i < value.history.messages.length; i++) {
+      var message = value.history.messages[i];
+      if (!closedObject(message, ["turn_ref", "client_turn_id", "role", "content", "recorded_at",
+          "presentation", "reviewed_citations", "display_state", "expires_at"]) ||
+          Date.parse(message.recorded_at) > utcClock(value.observed_at)) return null;
+      if (message.role === "user" ? message.expires_at !== null
+          : utcClock(message.expires_at) === null || utcClock(message.expires_at) <= utcClock(value.observed_at)) return null;
+      var legacy = Object.assign({}, message); delete legacy.expires_at;
+      copy.history.messages.push(legacy);
+    }
+    return governedCitationConversation(copy, "1.2.0") ? value : null;
+  }
+  function monotonicClock() {
+    var value = typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now() : NaN;
+    if (!Number.isFinite(value) || value < 0) throw new Error("Display clock is unavailable");
+    return value;
+  }
+  function displayClock() {
+    var wall = Date.now();
+    if (!Number.isFinite(wall)) throw new Error("Display clock is unavailable");
+    return { mono: monotonicClock(), wall: wall };
+  }
+  function continuousDisplayClock(before, after) {
+    // Wall time detects Mac sleep/clock jumps only. It never grants time or
+    // computes expiry; fresh Core metadata is required after a discontinuity.
+    return after.mono >= before.mono && after.wall >= before.wall &&
+      Math.abs((after.wall - before.wall) - (after.mono - before.mono)) <= 500;
+  }
   function acceptedCitationLinks(b, answer, display, href) {
     if (!display || !Array.isArray(display.reviewed_citations)) return null;
     var cards = b.querySelectorAll(".cnp-evidence-card"), citations = display.reviewed_citations;
@@ -535,6 +579,7 @@
       welcomePromise: null, welcomeController: null, welcomeRenderGeneration: null,
       recordController: null, chatController: null, prepController: null,
       retryAttempt: null,
+      answers: [], answerEpoch: 0, answerReads: [], answerWatchTimer: null,
     };
     var ownedTips = [];
     var listeners = [];
@@ -620,6 +665,135 @@
     function abort(controller) {
       if (controller) controller.abort();
     }
+    function hideAnswer(entry, expired) {
+      clearTimeout(entry.timer); entry.timer = null; entry.valid = false;
+      if (currentGeneration(entry.generation)) entry.b.innerHTML = "<p role=\"status\">" +
+        (expired ? "This answer is no longer available. Ask a new question for current information."
+          : "This answer is hidden until its current availability is verified.") + "</p>";
+    }
+    function hideAnswers(discard) {
+      clearTimeout(state.answerWatchTimer); state.answerWatchTimer = null;
+      state.answerEpoch += 1;
+      state.answerReads.forEach(abort); state.answerReads = [];
+      state.answers.forEach(function (entry) { hideAnswer(entry, false); });
+      if (discard) state.answers = [];
+      state.history = null;
+    }
+    function resumeAnswers() {
+      if (state.switching || !state.recordReady) return;
+      hideAnswers(false); // Hide synchronously, before any fresh credentials/read.
+      return refreshAnswers();
+    }
+    function watchAnswers() {
+      state.answerWatchTimer = null;
+      if (state.destroyed || document.hidden || !state.open) return;
+      var clock;
+      try { clock = displayClock(); } catch (_error) { hideAnswers(false); return; }
+      if (state.answers.some(function (entry) {
+        return entry.valid && !continuousDisplayClock(entry.verifiedClock, clock);
+      })) {
+        // One read per invalidation, never periodic network polling. A failed
+        // read leaves no valid answer and therefore arms no further heartbeat.
+        resumeAnswers(); return;
+      }
+      state.answers.forEach(function (entry) {
+        if (entry.valid && clock.mono >= entry.deadlineMono) hideAnswer(entry, true);
+      });
+      armAnswerWatch();
+    }
+    function armAnswerWatch() {
+      if (state.answerWatchTimer === null && !state.destroyed && state.open && !document.hidden &&
+          state.answers.some(function (entry) { return entry.valid; }))
+        state.answerWatchTimer = setTimeout(watchAnswers, 1000);
+    }
+    function answerEntry(b, recordId, generation, clientTurnId, turnRef) {
+      var entry = state.answers.find(function (item) { return item.b === b; });
+      if (!entry) {
+        entry = { b: b, recordId: recordId, generation: generation, clientTurnId: clientTurnId,
+          turnRef: turnRef || null, valid: false, timer: null };
+        state.answers.push(entry);
+      }
+      return entry;
+    }
+    function answerCurrent(entry) {
+      if (!entry || !entry.valid || !currentGeneration(entry.generation) ||
+          state.clientId !== entry.recordId || document.hidden || !state.open) return false;
+      var clock;
+      try { clock = displayClock(); } catch (_error) { hideAnswers(false); return false; }
+      if (!continuousDisplayClock(entry.verifiedClock, clock)) { resumeAnswers(); return false; }
+      if (clock.mono >= entry.deadlineMono) { hideAnswer(entry, true); return false; }
+      return true;
+    }
+    async function timedConversation(recordId, generation, mode, clientTurnId, outerSignal, preserveDraft) {
+      var controller = new AbortController(), epoch = state.answerEpoch;
+      state.answerReads.push(controller);
+      function cancel() { controller.abort(); }
+      if (outerSignal) {
+        outerSignal.addEventListener("abort", cancel, { once: true });
+        if (outerSignal.aborted) cancel();
+      }
+      var deadline = boundedChatWait(controller, 15000), started, startClock;
+      function check() {
+        if (controller.signal.aborted || !currentGeneration(generation) ||
+            state.clientId !== recordId || epoch !== state.answerEpoch || document.hidden)
+          throw new DOMException("stale", "AbortError");
+        if (startClock && !continuousDisplayClock(startClock, displayClock()))
+          throw new Error("Display clock changed");
+      }
+      try {
+        startClock = displayClock(); started = startClock.mono;
+        check();
+        var headers = await deadline.wait(freshBearerHeaders()); check();
+        var context = governedContext(await deadline.wait(opts.getContext()), recordId); check();
+        if (!context) { loadThreadFor(null); throw new DOMException("record mismatch", "AbortError"); }
+        var response = await deadline.wait(fetch(url + "/embed/history-timed", {
+          method: "POST", headers: Object.assign({}, headers, { "content-type": "application/json" }),
+          signal: controller.signal,
+          body: JSON.stringify({ schema_version: "1.3.0", mode: mode, client_turn_id: clientTurnId }),
+        })); check();
+        if (response.status === 401 || response.status === 403) {
+          lockNamedBeta(preserveDraft); throw new DOMException("access lost", "AbortError");
+        }
+        if (!response.ok || response.headers.get("x-cosmaneura-embed-version") !== embedVersion)
+          throw new Error("Timed display is unavailable");
+        var value = governedTimedConversation(await deadline.wait(response.json())); check();
+        if (!value || mode === "turn" && (value.turns.length !== 1 ||
+            value.turns[0].client_turn_id !== clientTurnId)) throw new Error("Timed display is invalid");
+        var current = governedContext(await deadline.wait(opts.getContext()), recordId); check();
+        if (!current || JSON.stringify(context) !== JSON.stringify(current)) {
+          loadThreadFor(null); throw new DOMException("record mismatch", "AbortError");
+        }
+        var verified = displayClock();
+        if (!continuousDisplayClock(startClock, verified)) throw new Error("Display clock changed");
+        return { value: value, startedMono: started, verifiedMono: verified.mono,
+          verifiedClock: verified, context: context };
+      } catch (error) {
+        if (error.authenticationUnavailable) lockNamedBeta(preserveDraft);
+        throw error;
+      } finally {
+        deadline.close();
+        if (outerSignal) outerSignal.removeEventListener("abort", cancel);
+        state.answerReads = state.answerReads.filter(function (item) { return item !== controller; });
+      }
+    }
+    async function refreshAnswers() {
+      if (!state.recordReady || !state.accessGranted || !state.answers.length || document.hidden || !state.open) return;
+      var recordId = state.clientId, generation = state.generation, epoch = state.answerEpoch;
+      try {
+        var read = await timedConversation(recordId, generation, "recent", null);
+        if (!currentGeneration(generation) || epoch !== state.answerEpoch) return;
+        state.answers.slice().forEach(function (entry) {
+          var message = read.value.history.messages.find(function (item) {
+            return item.role === "assistant" && item.client_turn_id === entry.clientTurnId &&
+              (!entry.turnRef || item.turn_ref === entry.turnRef);
+          });
+          if (message) render(entry.b, { answer: message.content, presentation: message.presentation,
+            citations: [], doctrinal_review: null, structured: {}, safety_notice: null },
+          recordId, generation, true, message, read);
+          else hideAnswer(entry, true);
+        });
+      } catch (_error) { /* Hidden answers stay hidden; never use cached text when a fresh read fails. */ }
+    }
     function clearOwnedTips() {
       ownedTips.forEach(function (tip) { tip.remove(); });
       ownedTips.length = 0;
@@ -681,9 +855,10 @@
         Promise.resolve(opts.onAccessChange(state.accessGranted)).catch(function () {});
     }
     setNamedBetaAccess(false);
-    function lockNamedBeta() {
+    function lockNamedBeta(preserveDraft) {
       if (state.destroyed) return;
       state.generation += 1;
+      hideAnswers(true);
       abort(state.chatController); abort(state.recordController);
       abort(state.welcomeController);
       state.chatController = null; state.recordController = null;
@@ -698,7 +873,8 @@
       state.busy = false; state.switching = false;
       clearSessionPrep();
       clearEventHandlers("record"); clearOwnedTips();
-      input.value = ""; input.style.height = "auto";
+      if (preserveDraft !== true) input.value = "";
+      input.style.height = "auto";
       thread.innerHTML = ""; chips.innerHTML = "";
       sub.textContent = "Named beta · access required";
       setGovernedChrome(null); setNamedBetaAccess(false);
@@ -838,6 +1014,7 @@
         (recordId.length < 1 || recordId.length > 128);
       if (invalidRecordId) recordId = null;
       var generation = ++state.generation; // Synchronously remove every prior-scope Session Prep byte before any authentication, host-context, welcome, or history request begins.
+      hideAnswers(true);
       clearSessionPrep();
       abort(state.chatController); abort(state.recordController);
       abort(state.welcomeController);
@@ -892,18 +1069,37 @@
         var loaded = history === null ? null : conversation ? conversation.history : governedHistory(history);
         if (history !== null && !loaded)
           throw new Error("governed history is invalid");
+        applyWelcomeUX(welcome);
+        var timedRead = null;
+        if (state.persona === "provider") {
+          try {
+            timedRead = await timedConversation(recordId, generation, "recent", null, recordController.signal);
+            conversation = timedRead.value; loaded = conversation.history;
+          } catch (error) {
+            if (!currentGeneration(generation) || recordController.signal.aborted) return null;
+            // A same-record wake/hide can cancel this optional display read.
+            // Finish bootstrap with hidden answers so resume can verify them.
+            // Initial host history carries no deadline. Keep its questions, but
+            // render no cached provider answer when the timed receiver is unavailable.
+          }
+        }
+        if (!currentGeneration(generation)) return null;
         state.history = loaded;
         function restoreMessage(m, target) {
           var b = bubble(m.role === "user" ? "u" : "a", target);
           if (m.role === "user") b.textContent = m.content || "";
-          else render(b, {
+          else {
+            if (state.persona === "provider") answerEntry(b, recordId, generation, m.client_turn_id, m.turn_ref);
+            render(b, {
             answer: m.content,
             presentation: m.presentation,
             citations: [],
             doctrinal_review: null,
             structured: {},
             safety_notice: null,
-          }, recordId, generation, true, conversation && conversation.schema_version === "1.2.0" ? m : null);
+            }, recordId, generation, true, conversation &&
+              ["1.2.0", "1.3.0"].indexOf(conversation.schema_version) >= 0 ? m : null, timedRead);
+          }
         }
         if (conversation) {
           var notice = document.createElement("div");
@@ -994,9 +1190,35 @@
         }
       }
     }
-    function render(b, d, recordId, generation, hydrated, acceptedDisplay) {
+    function render(b, d, recordId, generation, hydrated, acceptedDisplay, timedRead) {
       var presentation = governedPresentation(d.presentation);
       if (!presentation) throw new Error("assistant presentation is invalid");
+      var entry = null;
+      if (state.persona === "provider" && (hydrated || presentation.mode === "standard" || acceptedDisplay)) {
+        entry = answerEntry(b, recordId, generation, acceptedDisplay && acceptedDisplay.client_turn_id,
+          acceptedDisplay && acceptedDisplay.turn_ref);
+        var observed = timedRead && utcClock(timedRead.value.observed_at);
+        var expires = acceptedDisplay && utcClock(acceptedDisplay.expires_at), clock;
+        try { clock = displayClock(); } catch (_error) { hideAnswer(entry, false); return; }
+        var now = clock.mono;
+        var deadline = timedRead && timedRead.startedMono + expires - observed;
+        if (!timedRead || observed === null || expires === null || !acceptedDisplay ||
+            timedRead.verifiedMono < timedRead.startedMono ||
+            !continuousDisplayClock(timedRead.verifiedClock, clock) ||
+            !Number.isFinite(deadline) || deadline <= now || document.hidden || !state.open) {
+          hideAnswer(entry, Boolean(timedRead && Number.isFinite(deadline) && deadline <= now)); return;
+        }
+        clearTimeout(entry.timer);
+        entry.clientTurnId = acceptedDisplay.client_turn_id; entry.turnRef = acceptedDisplay.turn_ref;
+        entry.context = timedRead.context; entry.verifiedMono = timedRead.verifiedMono;
+        entry.verifiedClock = timedRead.verifiedClock;
+        entry.deadlineMono = deadline; entry.valid = true; entry.revision = (entry.revision || 0) + 1;
+        var revision = entry.revision;
+        entry.timer = setTimeout(function () {
+          if (entry.revision === revision) hideAnswer(entry, true);
+        }, Math.max(0, deadline - now));
+        armAnswerWatch();
+      }
       var suppressed = new Set(presentation.suppress);
       var html = "";
       setGovernedChrome(presentation);
@@ -1093,30 +1315,65 @@
         var x = document.createElement("button"); x.className = "cnp-act";
         x.textContent = label;
         x.onclick = function () {
-          if (!currentGeneration(generation) || !state.recordReady ||
-              state.clientId !== recordId) return;
+          if (x.disabled || !currentGeneration(generation) || !state.recordReady ||
+              state.clientId !== recordId || entry && !answerCurrent(entry)) return;
           return fn(x);
         };
         bar.appendChild(x);
       }
-      function saveAnswer(filename) {
+      async function saveAnswer(filename, button) {
+        var display = acceptedDisplay, verified = null, links = acceptedLinks;
+        if (entry) {
+          if (!answerCurrent(entry)) return;
+          button.disabled = true;
+          try {
+            verified = await timedConversation(recordId, generation, "turn", entry.clientTurnId, null, true);
+            var turn = verified.value.turns[0], fresh = verified.value.history.messages[1];
+            if (!answerCurrent(entry) || !fresh || turn.state !== "completed" ||
+                fresh.turn_ref !== entry.turnRef || fresh.content !== d.answer ||
+                fresh.recorded_at !== acceptedDisplay.recorded_at ||
+                fresh.expires_at !== acceptedDisplay.expires_at ||
+                JSON.stringify(fresh.presentation) !== JSON.stringify(d.presentation) ||
+                JSON.stringify(fresh.reviewed_citations) !== JSON.stringify(acceptedDisplay.reviewed_citations) ||
+                JSON.stringify(verified.context) !== JSON.stringify(entry.context) ||
+                verified.startedMono + utcClock(fresh.expires_at) - utcClock(verified.value.observed_at) <= monotonicClock())
+              throw new Error("Answer export is no longer verified");
+            display = fresh;
+            links = !suppressed.has("citations") ? acceptedCitationLinks(b, d.answer, fresh, opts.citationHref) : null;
+            if (attributionRequired && (!links || !links.length)) throw new Error("Answer attribution is unavailable");
+            filename = filename.replace(/\.md$/, "") + "-" +
+              new Date(verified.value.observed_at).toISOString().replace(/[-:.]/g, "") + ".md";
+          } catch (_error) {
+            if (currentGeneration(generation)) {
+              hideAnswer(entry, false);
+              var failed = document.createElement("p"); failed.setAttribute("role", "status");
+              failed.textContent = "The answer could not be verified. No file was saved. Your draft is preserved.";
+              b.appendChild(failed);
+            }
+            return;
+          } finally { button.disabled = false; }
+          if (!answerCurrent(entry)) return;
+        }
         var a = document.createElement("a");
         var exported = d.answer || "";
-        if (acceptedDisplay && acceptedDisplay.display_state) exported += "\n\n" +
-          (acceptedDisplay.display_state === "superseded" ? "Historical answer — sources superseded." : "Historical answer.");
-        if (acceptedLinks && acceptedLinks.length) exported += "\n\nReviewed-source attribution:\n" +
-          acceptedLinks.map(function (item) { return "[" + item.citation.ordinal + "] Visit " + item.citation.source_at +
+        if (verified) exported = "Answer recorded: " + display.recorded_at + "\nExport verified: " +
+          verified.value.observed_at + "\nAvailable until: " + display.expires_at + "\n\n---\n\n" + exported;
+        if (display && display.display_state) exported += "\n\n" +
+          (display.display_state === "superseded" ? "Historical answer — sources superseded." : "Historical answer.");
+        if (links && links.length) exported += "\n\nReviewed-source attribution:\n" +
+          links.map(function (item) { return "[" + item.citation.ordinal + "] Visit " + item.citation.source_at +
             "; reviewed " + item.citation.reviewed_at + "; section " + JSON.stringify(item.citation.section) + "\n" + item.url; }).join("\n\n");
         a.href = URL.createObjectURL(new Blob([exported], { type: "text/markdown" }));
         a.download = filename; a.click();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 0);
       }
       if (!attributionRequired && !hydrated && !suppressed.has("feature_actions") && ofmt === "document")
-        act("Download .md", function () { saveAnswer("cosmaneura-" + (d.intent || "output") + ".md"); });
+        act("Download .md", function (button) { return saveAnswer("cosmaneura-" + (d.intent || "output") + ".md", button); });
       // Chat and history save canonical answer text; Document retains its original download action.
       if (presentation.mode === "standard" && !suppressed.has("feature_actions") &&
           (hydrated || ofmt !== "document") &&
           (!attributionRequired || acceptedDisplay && acceptedLinks && acceptedLinks.length))
-        act("Save answer .md", function () { saveAnswer("cosmaneura-saved-answer.md"); });
+        act("Save answer .md", function (button) { return saveAnswer("cosmaneura-saved-answer.md", button); });
       if (presentation.human_contact) {
         var contact = presentation.human_contact;
         act(contact.label, function (button) {
@@ -1709,8 +1966,12 @@
         var headers = await headersForAttempt(attempt, controller);
         delete headers["x-cosmaneura-client-turn-id"];
         if (!currentGeneration(attempt.generation) || controller.signal.aborted) return;
-        var value;
-        if (typeof opts.loadCitationHistory === "function") {
+        var value, timedRead = null;
+        if (state.persona === "provider") {
+          timedRead = await timedConversation(attempt.recordId, attempt.generation, "turn",
+            attempt.clientTurnId, controller.signal);
+          value = timedRead.value;
+        } else if (typeof opts.loadCitationHistory === "function") {
           value = governedCitationConversation(await opts.loadCitationHistory(attempt.recordId, {
             signal: controller.signal, version: "1.2.0", mode: "turn", clientTurnId: attempt.clientTurnId,
           }), "1.2.0");
@@ -1744,7 +2005,8 @@
         var message = value.history.messages[1];
         render(b, { answer: message.content, presentation: message.presentation,
           citations: [], doctrinal_review: null, structured: {}, safety_notice: null,
-        }, attempt.recordId, attempt.generation, true, value.schema_version === "1.2.0" ? message : null);
+        }, attempt.recordId, attempt.generation, true,
+          ["1.2.0", "1.3.0"].indexOf(value.schema_version) >= 0 ? message : null, timedRead);
         if (state.retryAttempt === attempt) state.retryAttempt = null; // Reading a stored response never replaces a new draft or resends it.
       }
       try {
@@ -1805,6 +2067,7 @@
     }
     async function runAttempt(attempt, b) {
       if (!currentGeneration(attempt.generation) || state.switching) return;
+      if (state.persona === "provider") answerEntry(b, attempt.recordId, attempt.generation, attempt.clientTurnId);
       state.busy = true; syncControls();
       b.innerHTML = '<div class="cnp-typing"><span></span><span></span><span></span></div>';
       var controller = new AbortController();
@@ -1885,8 +2148,23 @@
           );
           return;
         }
-        var accepted = null;
-        if (typeof opts.loadCitationHistory === "function") {
+        var accepted = null, timedRead = null;
+        if (state.persona === "provider") {
+          try {
+            timedRead = await timedConversation(attempt.recordId, attempt.generation, "turn",
+              attempt.clientTurnId, controller.signal);
+            var stored = timedRead.value.history.messages[1];
+            if (timedRead.value.turns[0].state === "completed" && stored && stored.content === d.answer &&
+                JSON.stringify(stored.presentation) === JSON.stringify(d.presentation)) accepted = stored;
+          } catch (error) {
+            if (error.authenticationUnavailable) { lockNamedBeta(); return; }
+          }
+          if (!currentGeneration(attempt.generation) || state.chatController !== controller || controller.signal.aborted) return;
+          if (!accepted && governedPresentation(d.presentation) && d.presentation.mode !== "emergency") {
+            paintAttemptFailure(b, attempt, "The recorded answer’s availability could not be verified. Your draft is preserved.", false);
+            return;
+          }
+        } else if (typeof opts.loadCitationHistory === "function") {
           try {
             var read = governedCitationConversation(await opts.loadCitationHistory(attempt.recordId, {
               signal: controller.signal, version: "1.1.0", mode: "turn", clientTurnId: attempt.clientTurnId,
@@ -1901,7 +2179,7 @@
           }
         }
         if (!currentGeneration(attempt.generation) || state.chatController !== controller || controller.signal.aborted) return;
-        render(b, d, attempt.recordId, attempt.generation, false, accepted);
+        render(b, d, attempt.recordId, attempt.generation, false, accepted, timedRead);
         state.retryAttempt = null;
         if (input.value === attempt.text) input.value = "";
       }
@@ -1999,8 +2277,10 @@
     function setOpen(open) {
       if (state.destroyed) return;
       if (open && !state.accessGranted) return;
+      var wasOpen = state.open;
       state.open = open;
-      if (!open) { clearSessionPrep(); syncControls(); }
+      if (!open) { clearSessionPrep(); if (state.persona === "provider") hideAnswers(false); syncControls(); }
+      if (open && !wasOpen && state.persona === "provider") hideAnswers(false);
       rail.classList.toggle("cnp-open", open);
       var canShift = opts.shiftContent !== false && window.innerWidth >= 900;
       if (open && canShift) {
@@ -2014,11 +2294,13 @@
         loadWelcome(state.generation);
       }
       if (open && state.recordReady) focusChatInput();
+      if (open && !wasOpen && state.persona === "provider") return refreshAnswers();
     }
     function destroy() {
       if (state.destroyed) return;
       state.destroyed = true;
       state.generation += 1;
+      hideAnswers(true);
       clearSessionPrep();
       abort(state.chatController); abort(state.recordController);
       abort(state.welcomeController);
@@ -2061,7 +2343,14 @@
       syncPrepDisclosure();
     };
     listen(document, "visibilitychange", function () {
-      if (document.hidden) { clearSessionPrep(); syncControls(); }
+      if (document.hidden) {
+        clearSessionPrep(); if (state.persona === "provider") hideAnswers(false); syncControls();
+      } else if (state.open && state.persona === "provider") return resumeAnswers();
+    });
+    ["focus", "pageshow"].forEach(function (event) {
+      listen(window, event, function () {
+        if (state.open && state.persona === "provider") return resumeAnswers();
+      });
     });
     send.onclick = ask;
     listen(fmt, "change", syncFormatHelp);
@@ -2073,7 +2362,7 @@
     });
     syncControls();
     return {
-      open: function () { setOpen(true); },
+      open: function () { return setOpen(true); },
       openSessionPrep: function () {
         if (!state.accessGranted || !state.recordReady || !state.sessionPrepAvailable) return;
         setOpen(true);

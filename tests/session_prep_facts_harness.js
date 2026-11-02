@@ -1,6 +1,6 @@
 "use strict";
 const fs = require("fs"), vm = require("vm"), path = require("path");
-const { FakeElement, assert, find, response } = require("./panel_contract_harness");
+const { FakeElement, assert, find, response, timedHistory } = require("./panel_contract_harness");
 const facts = JSON.parse(fs.readFileSync(path.join(__dirname, "../contracts/fixtures/provider-session-prep-facts-v1.1/facts.json")));
 let timer = 0;
 const timers = new Set();
@@ -11,10 +11,10 @@ global.document = Object.assign(new FakeElement("document"), {
   createElement: tag => new FakeElement(tag),
 });
 let uuid = 1;
-global.window = {
+global.window = Object.assign(new FakeElement("window"), {
   innerWidth: 380, location: { origin: "https://host.example" },
   crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` },
-};
+});
 vm.runInThisContext(fs.readFileSync(process.argv[2], "utf8"));
 function projection(turn, mode) {
   const corrections = new Map();
@@ -61,6 +61,14 @@ async function fixture(mode, observations) {
       paths: [{ label: "Open Session Prep", message: "Open Session Prep", intent: "session_prep" }],
       disclaimer: "Synthetic", emergency_note: "Call 911 in an emergency.", walkthrough_mode: "local_synthetic",
     });
+    if (url.endsWith("/embed/history-timed")) {
+      const request = JSON.parse(options.body);
+      assert(Object.keys(request).sort().join() === "client_turn_id,mode,schema_version" &&
+        request.schema_version === "1.3.0" && request.mode === "recent" && request.client_turn_id === null,
+        "unexpected timed history request");
+      return response(200, timedHistory({ schema_version: "1.0.0", turns: [],
+        history: { thread_ref: "thread_synthetic", messages: [], next_cursor: null } }));
+    }
     assert(url.endsWith("/session-prep/structured-facts"), "panel did not opt into additive facts route");
     assert(Object.keys(JSON.parse(options.body)).join() === "client_turn_id", "browser selected private authority");
     f.requests.push(options);

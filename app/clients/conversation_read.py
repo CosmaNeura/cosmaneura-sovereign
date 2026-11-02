@@ -236,11 +236,14 @@ class ConversationReadClient(SessionPrepClient):
         """Separate accepted-map reads; never used by read_context/inference."""
         from app.clients.conversation_citation_display_contract import (
             CitationReadRequest, CitationReadResponse, RetainedDisplayRequest, RetainedDisplayResponse,
+            TimedRetainedDisplayRequest, TimedRetainedDisplayResponse,
         )
         if isinstance(request, CitationReadRequest):
             suffix, response_type = "read-with-citations", CitationReadResponse
         elif isinstance(request, RetainedDisplayRequest):
             suffix, response_type = "read-retained", RetainedDisplayResponse
+        elif isinstance(request, TimedRetainedDisplayRequest):
+            suffix, response_type = "read-display-timed", TimedRetainedDisplayResponse
         else:
             raise ConversationReadError(503)
         response = await self._exchange(

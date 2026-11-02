@@ -36,6 +36,7 @@ from app.clients.conversation_read import (
 )
 from app.clients.conversation_citation_display_contract import (
     CitationReadRequest, CitationReadResponse, RetainedDisplayRequest, RetainedDisplayResponse,
+    TimedRetainedDisplayRequest, TimedRetainedDisplayResponse,
 )
 from app.sovereign.orchestrator import INTENT_CAPABILITIES, Sovereign
 
@@ -767,6 +768,14 @@ async def conversation_citations(
 async def conversation_retained_display(
     request: RetainedDisplayRequest, http_request: Request, http_response: Response,
 ) -> RetainedDisplayResponse:
+    return await _citation_display(request, http_request, http_response)
+
+
+@app.post("/embed/history-timed", response_model=TimedRetainedDisplayResponse)
+async def conversation_timed_display(
+    request: TimedRetainedDisplayRequest, http_request: Request, http_response: Response,
+) -> TimedRetainedDisplayResponse:
+    """Read accepted answers with Core's deadline, without extending retention."""
     return await _citation_display(request, http_request, http_response)
 
 

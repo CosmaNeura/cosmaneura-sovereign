@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const vm = require("vm");
-const { FakeElement, assert, find, response } = require("./panel_contract_harness");
+const { FakeElement, assert, find, response, timedHistory } = require("./panel_contract_harness");
 
 // Virtual time and deliberately non-cooperative host/transport promises prove
 // that deadlines release the real panel, with no network or clinical data.
@@ -14,6 +14,7 @@ global.setTimeout = (callback, delay) => {
 };
 global.clearTimeout = id => timers.delete(id);
 Date.now = () => now;
+Object.defineProperty(global, "performance", { configurable: true, value: { now: () => now } });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 async function advance(ms) {
   const target = now + ms;
@@ -28,8 +29,8 @@ global.document = Object.assign(new FakeElement("document"), {
   body: new FakeElement("body"), head: new FakeElement("head"),
   createElement: tag => new FakeElement(tag),
 });
-global.window = { innerWidth: 1200, location: { origin: "https://host.example" },
-  crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` } };
+global.window = Object.assign(new FakeElement("window"), { innerWidth: 1200, location: { origin: "https://host.example" },
+  crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(uuid++).padStart(12, "0")}` } });
 vm.runInThisContext(fs.readFileSync(process.argv[2], "utf8"));
 
 const QUESTION = "What fictional follow-up date was recorded?";
@@ -58,7 +59,13 @@ async function fixture() {
       disclaimer: "Synthetic", walkthrough_mode: "local_synthetic",
     });
     f.requests.push({ url, options });
-    if (url.endsWith("/embed/history")) return response(200, recorded(JSON.parse(options.body).client_turn_id));
+    if (url.endsWith("/embed/history-timed")) {
+      const body = JSON.parse(options.body);
+      return response(200, timedHistory(body.mode === "turn" ? recorded(body.client_turn_id) : {
+        schema_version: "1.0.0", turns: [],
+        history: { thread_ref: "thread_synthetic_deadline", next_cursor: null, messages: [] },
+      }));
+    }
     assert(url.endsWith("/chat"), "unexpected request");
     const id = JSON.parse(options.body).client_turn_id;
     if (f.mode === "fetch-hang") return hold("releaseFetch");
@@ -80,7 +87,7 @@ async function fixture() {
     },
     loadHistory: async () => null, onHumanContact: async () => {},
   });
-  await f.panel.setRecord(f.record); f.panel.open(); await flush();
+  await f.panel.setRecord(f.record); await f.panel.open(); await flush();
   f.input = f.panel.root.querySelector(".cnp-in");
   f.send = f.panel.root.querySelector(".cnp-send");
   f.thread = f.panel.root.querySelector(".cnp-thread");

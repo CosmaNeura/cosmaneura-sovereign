@@ -18,6 +18,8 @@ from app.clients.conversation_citation_display_contract import (
     CitationReadResponse,
     RetainedDisplayRequest,
     RetainedDisplayResponse,
+    TimedRetainedDisplayRequest,
+    TimedRetainedDisplayResponse,
 )
 from app.clients.conversation_read import ConversationReadClient, ConversationReadError
 from tests.test_conversation_read import projection
@@ -256,3 +258,128 @@ def test_http_separate_contract_no_models_or_context_inference(
         )
         denied = client.post(endpoint, headers=hdr, json=body)
         assert denied.status_code == status and "citation_ref" not in denied.text
+
+
+def timed_display():
+    """Synthetic deadline is explicit server authority, not an answer-date estimate."""
+    value = display()
+    value["schema_version"] = "1.3.0"
+    value["observed_at"] = "2026-11-01T12:00:00Z"
+    user, assistant = value["history"]["messages"]
+    user["expires_at"] = None
+    assistant["expires_at"] = "2026-11-01T12:03:00Z"
+    return value
+
+
+def test_timed_opt_in_roundtrip_keeps_source_dates_and_old_contracts_closed():
+    value = timed_display()
+    assert TimedRetainedDisplayResponse.model_validate(value).model_dump(mode="json") == value
+    for old_model in (CitationReadResponse, RetainedDisplayResponse):
+        with pytest.raises(ValidationError):
+            old_model.model_validate(value)
+    for old_version in ("1.0.0", "1.1.0", "1.2.0"):
+        with pytest.raises(ValidationError):
+            TimedRetainedDisplayRequest.model_validate(
+                {"schema_version": old_version, "mode": "recent", "client_turn_id": None}
+            )
+    assert value["history"]["messages"][1]["recorded_at"] == "2026-09-28T12:00:00Z"
+    assert value["history"]["messages"][1]["reviewed_citations"][0]["source_at"] == "2026-10-01T12:00:00Z"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["observed_missing", "expiry_missing", "naive_observed", "offset_observed",
+     "numeric_observed", "user_expiry", "null_assistant", "naive_expiry",
+     "offset_expiry", "expired", "boundary", "future_recorded", "extra", "map_gap"],
+)
+def test_timed_metadata_rejects_unverified_or_unusable_deadlines(mutation):
+    value = timed_display()
+    user, assistant = value["history"]["messages"]
+    if mutation == "observed_missing":
+        del value["observed_at"]
+    elif mutation == "expiry_missing":
+        del assistant["expires_at"]
+    elif mutation == "naive_observed":
+        value["observed_at"] = "2026-11-01T12:00:00"
+    elif mutation == "offset_observed":
+        value["observed_at"] = "2026-11-01T13:00:00+01:00"
+    elif mutation == "numeric_observed":
+        value["observed_at"] = 1793534400
+    elif mutation == "user_expiry":
+        user["expires_at"] = assistant["expires_at"]
+    elif mutation == "null_assistant":
+        assistant["expires_at"] = None
+    elif mutation == "naive_expiry":
+        assistant["expires_at"] = "2026-11-01T12:03:00"
+    elif mutation == "offset_expiry":
+        assistant["expires_at"] = "2026-11-01T13:03:00+01:00"
+    elif mutation == "expired":
+        assistant["expires_at"] = "2026-11-01T11:59:59Z"
+    elif mutation == "boundary":
+        assistant["expires_at"] = value["observed_at"]
+    elif mutation == "future_recorded":
+        assistant["recorded_at"] = "2026-11-01T12:00:01Z"
+    elif mutation == "extra":
+        assistant["estimated_expires_at"] = assistant["expires_at"]
+    elif mutation == "map_gap":
+        assistant["reviewed_citations"][0]["ordinal"] = 3
+    with pytest.raises(ValidationError):
+        TimedRetainedDisplayResponse.model_validate(value)
+
+
+def test_timed_fixed_transport_preserves_exact_mount_trace_and_turn():
+    requests = []
+
+    async def scenario():
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(200, headers=headers(), json=timed_display())
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = ConversationReadClient(
+                platform_base_url="https://platform.example", client=http,
+                workload_token_provider=AsyncMock(return_value="synthetic-workload"),
+            )
+            return await client.read_display(
+                mount_context_token=turn().mount_context_token, trace_id=turn().trace_id,
+                request=TimedRetainedDisplayRequest(
+                    schema_version="1.3.0", mode="turn", client_turn_id=TURN_ID
+                ),
+            )
+
+    assert isinstance(asyncio.run(scenario()), TimedRetainedDisplayResponse)
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url.path == "/service/v1/agent/conversation-turns/read-display-timed"
+    assert request.headers["authorization"] == "Bearer synthetic-workload"
+    assert request.headers["x-cosmaneura-mount-context"] == turn().mount_context_token
+    assert request.headers["x-trace-id"] == turn().trace_id
+    assert "idempotency-key" not in request.headers
+    assert json.loads(request.content) == {
+        "schema_version": "1.3.0", "mode": "turn", "client_turn_id": str(TURN_ID)
+    }
+
+
+def test_timed_http_route_has_existing_auth_bounds_and_no_inference(monkeypatch):
+    service, _, writes = sovereign()
+    service.conversation_read.read_display = AsyncMock(
+        return_value=TimedRetainedDisplayResponse.model_validate(timed_display())
+    )
+    service.mount_resolver.resolve = AsyncMock(side_effect=AssertionError("no inference"))
+    monkeypatch.setattr(main, "_sovereign", service)
+    client = TestClient(main.app)
+    hdr = {"Authorization": "Bearer mount_fictional_example", "X-Cosmaneura-Embed-Version": "1.0"}
+    body = {"schema_version": "1.3.0", "mode": "recent", "client_turn_id": None}
+    result = client.post("/embed/history-timed", headers=hdr, json=body)
+    assert result.status_code == 200 and result.headers["cache-control"] == "no-store"
+    assert result.json() == timed_display()
+    writes.write_user_accepted.assert_not_called()
+    service.router.route.assert_not_called()
+    service.conversation_read.read_context.assert_not_called()
+    assert client.post("/embed/history-timed", headers=hdr, json={**body, "schema_version": "1.2.0"}).status_code == 422
+    assert client.post("/embed/history-timed", json=body).status_code == 426
+    assert client.post("/embed/history-timed", headers={"X-Cosmaneura-Embed-Version": "1.0"}, json=body).status_code == 401
+    for status in (401, 403, 404, 409, 503):
+        service.conversation_read.read_display.side_effect = ConversationReadError(status)
+        denied = client.post("/embed/history-timed", headers=hdr, json=body)
+        assert denied.status_code == status and "expires_at" not in denied.text
