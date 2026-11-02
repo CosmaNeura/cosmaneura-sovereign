@@ -67,9 +67,14 @@ async function main() {
   }
   assert(requests === (input.hydrated ? 0 : 1), "rendering issued extra chat requests");
   const bubbles = panel.root.querySelectorAll(".cnp-b");
-  assert(bubbles.length > 0, "answer did not render");
-  const html = bubbles[bubbles.length - 1].innerHTML;
-  const literalTexts = panel.root.querySelector(".cnp-prep-view").querySelectorAll("*").map(node => node.textContent);
+  const prepView = panel.root.querySelector(".cnp-prep-view");
+  const literalTexts = prepView.querySelectorAll("*").map(node => node.textContent);
+  if (input.preparation) {
+    assert(!prepView.hidden && literalTexts.length > 0, "Session Prep did not render");
+  } else {
+    assert(bubbles.length > 0, "answer did not render");
+  }
+  const html = bubbles.length ? bubbles[bubbles.length - 1].innerHTML : "";
   process.stdout.write(JSON.stringify({ html, literalTexts }));
   panel.destroy();
 }
