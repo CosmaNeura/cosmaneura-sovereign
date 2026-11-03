@@ -51,7 +51,7 @@ function visibility(hidden) {
 async function fixture() {
   const f = {
     mode: "pending", auth: "ready", context: "ready", record: "record_a",
-    requests: [], authCalls: 0, contextCalls: 0, retryAfter: 5,
+    requests: [], requestTimes: [], authCalls: 0, contextCalls: 0, retryAfter: 5,
     release: null,
   };
   function hold() { return new Promise(resolve => { f.release = resolve; }); }
@@ -67,15 +67,17 @@ async function fixture() {
     });
     assert(url.endsWith("/session-prep/structured-facts"), "unexpected request");
     f.requests.push(options);
+    f.requestTimes.push(now);
     if (f.latency) await new Promise(resolve => setTimeout(resolve, f.latency));
-    const mode = f.mode;
+    const mode = f.readyAt !== undefined && now >= f.readyAt ? "ready" : f.mode;
     if (mode === "hang") await hold();
     if (mode === "network") throw new TypeError("synthetic disconnect");
     if (mode === "forbidden") return response(403, {});
+    if (mode === "expired") return response(401, {});
     if (mode === "service") return response(503, { code: "SERVICE_UNAVAILABLE", retryable: true });
     if (mode === "malformed") return response(200, { state: "ready" });
     const content = ["ready", "refreshing", "hang", "body-hang"].includes(mode);
-    const result = response(200, {
+    const payload = {
       client_turn_id: JSON.parse(options.body).client_turn_id,
       state: mode === "hang" || mode === "body-hang" ? "ready" : mode,
       freshness: content ? mode === "refreshing" ? "stale" : "current" : "none",
@@ -90,7 +92,18 @@ async function fixture() {
       reason_code: mode === "pending" ? "generation_pending" :
         mode === "refreshing" ? "refresh_in_progress" :
         mode === "unavailable" ? "context_not_available" : null,
+    };
+    if (f.facts) Object.assign(payload, {
+      schema_version: "1.1.0", facts_state: "ready",
+      structured_facts: {
+        coverage: "bounded_explicit_mentions", source_dates: ["2026-09-24T12:00:00Z"],
+        selection_limited: false, facts_limited: false,
+        facts: [{ kind: "vital", subject: "blood pressure", value: "126/78", state: "measured",
+          setting: "office", note_date: "2026-09-24T12:00:00Z", section: "Vitals",
+          quote: "Recorded blood pressure 126/78.", correction: null }],
+      },
     });
+    const result = response(200, payload);
     if (mode === "body-hang") {
       const read = result.json;
       result.json = async () => { await hold(); return read(); };
@@ -225,17 +238,48 @@ async function main() {
     f.end();
   }
 
+  // Observed build latency was 163 seconds. Dated facts can be read while the
+  // brief finishes, without another click or replaying the initial pending turn.
+  {
+    const f = await fixture(); f.facts = true; f.readyAt = now + 163000;
+    const started = now, auth = f.authCalls, context = f.contextCalls;
+    await f.go.onclick();
+    assert(f.has("Recorded blood pressure 126/78."), "pending watch hid ready dated facts");
+    const factsTable = find(f.view, node => node.tagName === "table");
+    await advance(163000);
+    assert(!f.has("Synthetic completed brief") && f.view.contains(factsTable),
+      "pending checks rewrote facts or invented a completed brief");
+    await advance(2000);
+    assert(now - started === 165000 && f.has("Session Prep ready") && f.has("Synthetic completed brief"),
+      "163-second preparation did not complete automatically");
+    assert(f.requests.length <= 25 && timers.size === 0, "ready watch exceeded its request bound");
+    assert(f.requestTimes.some(time => time - started > 150000), "watch ended before realistic build latency");
+    assert(f.requestTimes.slice(1).every((time, i) => time - f.requestTimes[i] >= 5000),
+      "backoff shortened server pacing");
+    assert(f.requestTimes.slice(1).some((time, i) => time - f.requestTimes[i] >= 15000),
+      "long wait did not ease request frequency");
+    assert(new Set(f.requests.map(request => request.body)).size === f.requests.length,
+      "logical checks replayed an immutable pending receipt");
+    assert(f.authCalls === auth + f.requests.length && f.contextCalls === context + f.requests.length,
+      "long watch reused authority or encounter context");
+    f.end();
+  }
+
   // The server owns pacing; the client cannot loop indefinitely.
   for (const retryAfter of [1, 20, 300]) {
     const f = await fixture();
     f.retryAfter = retryAfter;
     await f.go.onclick();
-    await advance(240000);
-    assert(f.requests.length <= 13, "poll count exceeded budget");
-    if (retryAfter === 1) assert(f.requests.length === 13, "count ceiling not exercised");
-    if (retryAfter === 20) assert(f.requests.length === 8, "time ceiling not exercised");
+    await advance(330000);
+    assert(f.requests.length <= 25, "poll count exceeded budget");
+    assert(f.requestTimes.every(time => time - f.requestTimes[0] + 30000 <= 300000),
+      "poll began without a full request budget inside five minutes");
+    if (retryAfter === 1) assert(f.requests.length === 23, "short server pacing did not exercise bounded backoff");
+    if (retryAfter === 20) assert(f.requests.length === 14, "time ceiling not exercised");
     if (retryAfter === 300) assert(f.requests.length === 1, "long retry interval was shortened");
     assert(timers.size === 0 && f.has("Automatic checking has paused"), "exhaustion left a spinner or timer");
+    assert(f.button("Session Prep pending · automatic checking paused") &&
+      f.has("The last check found the prepared brief pending"), "paused watch still claimed live generation");
     f.mode = "ready";
     await f.button("Check again").onclick();
     assert(f.has("Session Prep ready"), "manual check failed after budget exhaustion");
@@ -246,7 +290,7 @@ async function main() {
   {
     const f = await fixture();
     await f.go.onclick();
-    now += 240000;
+    now += 330000;
     const queued = [...timers.values()][0]; timers.clear();
     queued.callback(); await flush();
     assert(f.requests.length === 1 && timers.size === 0 && f.has("Automatic checking has paused"), "resumed overdue poll");
@@ -309,7 +353,8 @@ async function main() {
     const input = f.panel.root.querySelector(".cnp-in");
     if (writing === "draft") input.value = "An unfinished question";
     else document.activeElement = input;
-    await advance(5000);
+    f.readyAt = now + 163000;
+    await advance(200000);
     assert(f.requests.length === 1 && !input.disabled && f.has("while you’re writing"), "poll interrupted typing");
     input.value = ""; document.activeElement = null;
     f.mode = "ready";
@@ -343,8 +388,8 @@ async function main() {
     const f = await fixture(); f.retryAfter = 20; f.latency = 2400;
     const first = f.go.onclick();
     await flush(); await advance(2400); await first;
-    await advance(240000);
-    assert(f.requests.length === 7 && timers.size === 0, "latency drift exceeded waiting budget");
+    await advance(330000);
+    assert(f.requests.length === 13 && timers.size === 0, "latency drift exceeded waiting budget");
     assert(f.has("Automatic checking has paused") && !f.has("timed out"), "deadline produced a false timeout");
     assert(f.requests.every(request => !request.signal.aborted), "deadline aborted an avoidable final request");
     f.end();
@@ -417,18 +462,20 @@ async function main() {
     }
   }
 
-  for (const failure of ["forbidden", "malformed", "unavailable", "sign-out", "changed-record"]) {
+  for (const failure of ["forbidden", "expired", "malformed", "unavailable", "sign-out", "changed-record"]) {
     const f = await fixture();
     await f.go.onclick();
+    await advance(150000);
+    const requestCount = f.requests.length;
     f.mode = failure === "sign-out" || failure === "changed-record" ? "ready" : failure;
     if (failure === "sign-out") f.auth = "denied";
     if (failure === "changed-record") f.record = "record_b";
-    await advance(5000);
+    await advance(15000);
     assert(timers.size === 0 && !f.has("Synthetic completed brief"), "terminal state retained work/content: " + failure);
-    if (["forbidden", "sign-out", "changed-record"].includes(failure))
+    if (["forbidden", "expired", "sign-out", "changed-record"].includes(failure))
       assert(f.view.hidden, "authority loss did not clear panel");
     if (["sign-out", "changed-record"].includes(failure))
-      assert(f.requests.length === 1, "poll sent after host authority changed");
+      assert(f.requests.length === requestCount, "poll sent after host authority changed");
     f.end();
   }
   process.stdout.write("Session Prep completion, recovery, limits, and cancellation passed.\n");
