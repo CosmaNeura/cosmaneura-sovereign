@@ -256,6 +256,10 @@ class Router:
             r"(?:,? and what follow[- ]up date was scheduled)?",
             rf"what changed with {finding} and what follow[- ]up was recorded",
             r"what follow[- ]up date was (?:scheduled|recorded|documented)",
+            # A bounded historical read imperative must not become a prep-sheet
+            # synthesis when the primary classifier labels it VISIT_PREP.
+            r"(?:show|list|quote) (?:the )?(?:recorded|documented) blood pressures? "
+            r"and medication instructions from both reviewed prior visits",
         )
         return any(re.fullmatch(form + r"[.?]?", text) for form in forms)
 
