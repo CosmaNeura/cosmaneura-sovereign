@@ -588,7 +588,7 @@ def paired():
         "image": "cosmaneuraprodregistry.azurecr.io/cosmaneura/cosmaneura@sha256:"
         + "6" * 64,
         "panel_sha256": hashlib.sha256(
-            (ROOT / "app/panel.js").read_bytes()
+            (ROOT / "app/panel.delivery.js").read_bytes()
         ).hexdigest(),
         "run_id": 30,
         "run_attempt": 1,
@@ -596,7 +596,106 @@ def paired():
     }
 
 
-def test_core_actual_facts_are_pinned_without_beta_claim(monkeypatch, tmp_path):
+def panel_files(monkeypatch, tmp_path):
+    root = tmp_path / "provider"
+    (root / "app").mkdir(parents=True)
+    for name in ("panel.js", "panel.delivery.js", "panel.delivery.json"):
+        (root / "app" / name).write_bytes((ROOT / "app" / name).read_bytes())
+    manifest = json.loads((root / "app/panel.delivery.json").read_bytes())
+    calls = []
+
+    def read_only_git(args, **_kwargs):
+        assert args[:6] == [
+            "git", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", str(root)
+        ]
+        command = args[6:]
+        calls.append(command)
+        reference = manifest["source_commit"] + ":app/panel.js"
+        if command == ["merge-base", "--is-ancestor", manifest["source_commit"], "HEAD"]:
+            return b""
+        if command == ["show", reference]:
+            return (ROOT / "app/panel.js").read_bytes()
+        if command == ["rev-parse", reference]:
+            return manifest["source_blob"].encode() + b"\n"
+        raise promotion.producer.CandidateRefused()
+
+    monkeypatch.setattr(promotion, "ROOT", root)
+    monkeypatch.setattr(promotion.producer, "command", read_only_git)
+    return root, manifest, calls
+
+
+def test_panel_delivery_matches_actual_files_and_read_only_source_history(monkeypatch, tmp_path):
+    _root, manifest, calls = panel_files(monkeypatch, tmp_path)
+    assert promotion.panel_delivery_sha256() == manifest["delivery_sha256"]
+    assert [call[0] for call in calls] == ["merge-base", "show", "rev-parse"]
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing_manifest", "missing_field", "missing_delivery", "malformed_manifest",
+    "duplicate_key", "extra_field", "oversized_manifest",
+    "schema", "source_path", "delivery_path", "compiler", "compiler_version",
+    "compiler_lock", "compiler_package", "options", "digest_shape",
+    "source_hash", "delivery_hash", "source_blob", "foreign_source_commit",
+    "source_bytes", "source_rewritten_matching_hash", "delivery_bytes",
+    "manifest_symlink", "delivery_symlink",
+])
+def test_panel_delivery_missing_malformed_or_stale_evidence_refuses(monkeypatch, tmp_path, mutation):
+    root, original, _calls = panel_files(monkeypatch, tmp_path)
+    manifest = copy.deepcopy(original)
+    path = root / "app/panel.delivery.json"
+    replacements = {
+        "schema": ("schema_version", "2.0.0"),
+        "source_path": ("source_path", "other.js"),
+        "delivery_path": ("delivery_path", "app/panel.js"),
+        "compiler": ("compiler", "other"),
+        "compiler_version": ("compiler_version", "0.25.13"),
+        "compiler_lock": ("compiler_lock_sha256", "0" * 64),
+        "compiler_package": ("compiler_package_sha256", "0" * 64),
+        "options": ("options", {**manifest["options"], "minify": 1}),
+        "digest_shape": ("delivery_sha256", "not-a-digest"),
+        "source_hash": ("source_sha256", "0" * 64),
+        "delivery_hash": ("delivery_sha256", "0" * 64),
+        "source_blob": ("source_blob", "0" * 40),
+        "foreign_source_commit": ("source_commit", "0" * 40),
+    }
+    if mutation in replacements:
+        key, value = replacements[mutation]
+        manifest[key] = value
+        path.write_bytes(promotion.producer.canonical(manifest))
+    elif mutation == "extra_field":
+        path.write_bytes(promotion.producer.canonical({**manifest, "override": True}))
+    elif mutation == "missing_manifest":
+        path.unlink()
+    elif mutation == "missing_field":
+        manifest.pop("source_commit")
+        path.write_bytes(promotion.producer.canonical(manifest))
+    elif mutation == "missing_delivery":
+        (root / "app/panel.delivery.js").unlink()
+    elif mutation == "malformed_manifest":
+        path.write_bytes(b"{")
+    elif mutation == "oversized_manifest":
+        path.write_bytes(b" " * (promotion.producer.MAX_JSON + 1))
+    elif mutation == "duplicate_key":
+        path.write_bytes(b'{"schema_version":"1.0.0",' + path.read_bytes()[1:])
+    elif mutation in {"source_bytes", "delivery_bytes"}:
+        name = "panel.js" if mutation == "source_bytes" else "panel.delivery.js"
+        (root / "app" / name).write_bytes(b"changed bytes")
+    elif mutation == "source_rewritten_matching_hash":
+        source = root / "app/panel.js"
+        source.write_bytes(source.read_bytes() + b"\n// changed source\n")
+        manifest["source_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+        path.write_bytes(promotion.producer.canonical(manifest))
+    else:
+        name = "panel.delivery.json" if mutation == "manifest_symlink" else "panel.delivery.js"
+        link = root / "app" / name
+        link.unlink()
+        link.symlink_to(ROOT / "app" / name)
+    with pytest.raises((ValueError, OSError)):
+        promotion.panel_delivery_sha256()
+
+
+def test_core_actual_facts_admit_compiled_delivery_without_beta_claim(monkeypatch, tmp_path):
+    panel_files(monkeypatch, tmp_path)
     monkeypatch.setattr(promotion, "core_checkout", lambda *_args: None)
     value = {
         "purpose": "fresh-authenticated-core-runtime-binding-only",
@@ -624,6 +723,10 @@ def test_core_actual_facts_are_pinned_without_beta_claim(monkeypatch, tmp_path):
         ("promote_run_id", 31),
         ("observation.panel_https.origin", "https://staging-app.cosmaneura.com"),
         ("observation.panel_https.sha256", "0" * 64),
+        (
+            "observation.panel_https.sha256",
+            hashlib.sha256((ROOT / "app/panel.js").read_bytes()).hexdigest(),
+        ),
     ]:
         prior = copy.deepcopy(value)
         change(value, path, replacement)

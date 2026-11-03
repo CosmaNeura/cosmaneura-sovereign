@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -274,9 +275,73 @@ def core_checkout(path: Path, source: dict[str, str]) -> None:
     )
 
 
+def panel_delivery_sha256() -> str:
+    """Bind the served bytes to the checked-in compiler/source provenance."""
+
+    def read(path: str, maximum: int) -> bytes:
+        with os.fdopen(os.open(ROOT / path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as file:
+            metadata = os.fstat(file.fileno())
+            require(stat.S_ISREG(metadata.st_mode) and 0 < metadata.st_size <= maximum)
+            raw = file.read(maximum + 1)
+            require(len(raw) == metadata.st_size and len(raw) <= maximum)
+            return raw
+
+    manifest = object_value(
+        producer.decode(read("app/panel.delivery.json", producer.MAX_JSON))
+    )
+    fixed = {
+        "schema_version": "1.0.0",
+        "source_path": "app/panel.js",
+        "delivery_path": "app/panel.delivery.js",
+        "compiler": "esbuild",
+        "compiler_version": "0.25.12",
+        "compiler_lock_sha256": "ae312f69d18c0a80b06e28c9cf5f0fa432c483171e6108c719ed958bfbde5c31",
+        "compiler_package_sha256": "b33803c043507c2a4f331a176667ec84c58c9c90fdf229999e5adb4aa1433090",
+    }
+    require(
+        set(manifest) == set(fixed)
+        | {"source_commit", "source_blob", "source_sha256", "delivery_sha256", "options"}
+    )
+    require(all(
+        type(manifest[key]) is str and manifest[key] == value
+        for key, value in fixed.items()
+    ))
+    for key, pattern in (
+        ("source_commit", producer.SHA),
+        ("source_blob", producer.SHA),
+        ("source_sha256", re.compile(r"[0-9a-f]{64}\Z")),
+        ("delivery_sha256", re.compile(r"[0-9a-f]{64}\Z")),
+    ):
+        require(type(manifest[key]) is str and pattern.fullmatch(manifest[key]))
+    require(
+        producer.canonical(manifest["options"]) == producer.canonical({
+            "loader": "js", "minify": True, "target": "es2020", "charset": "utf8",
+            "legalComments": "none", "sourcemap": False,
+        })
+    )
+    source = read("app/panel.js", 2 * 1024 * 1024)
+    delivery = read("app/panel.delivery.js", 2 * 1024 * 1024)
+    require(hashlib.sha256(source).hexdigest() == manifest["source_sha256"])
+    require(hashlib.sha256(delivery).hexdigest() == manifest["delivery_sha256"])
+    git = ["git", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", str(ROOT)]
+    producer.command(
+        [*git, "merge-base", "--is-ancestor", manifest["source_commit"], "HEAD"]
+    )
+    reference = manifest["source_commit"] + ":app/panel.js"
+    require(
+        producer.command([*git, "show", reference], maximum=2 * 1024 * 1024) == source
+    )
+    require(
+        producer.command([*git, "rev-parse", reference]).decode().strip()
+        == manifest["source_blob"]
+    )
+    return manifest["delivery_sha256"]
+
+
 def core_binding(
     path: Path, source: dict[str, str], ids: tuple[int, int, int]
 ) -> dict[str, Any]:
+    delivery_sha256 = panel_delivery_sha256()
     core_checkout(path, source)
     value = object_value(
         producer.decode(
@@ -317,8 +382,7 @@ def core_binding(
     panel = value["observation"]["panel_https"]
     require(
         panel["origin"] == "https://app.cosmaneura.com"
-        and panel["sha256"]
-        == hashlib.sha256((ROOT / "app/panel.js").read_bytes()).hexdigest()
+        and panel["sha256"] == delivery_sha256
     )
     return {
         "source_sha": source["sha"],
