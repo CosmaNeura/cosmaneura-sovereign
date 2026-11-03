@@ -1643,14 +1643,23 @@
       if (!state.prepCycle || state.prepCycle.timer === null) input.focus();
     }
     function schedulePrepCheck(value, cycle) {
-      var delay = value.retry_after_seconds * 1000;
+      // Respect server pacing while easing short waits to 10s, then 15s.
+      var delay = Math.max(value.retry_after_seconds * 1000,
+        Math.min(15000, 5000 * Math.pow(2, Math.floor(cycle.checks / 4))));
       function writing() {
         return document.activeElement === input || input.value.trim().length > 0;
       }
+      function pause() {
+        prepProgress.textContent = "Automatic checking has paused. Check again for the current preparation status.";
+        var label = prepView.querySelector(".cnp-prep-state");
+        if (label) label.textContent = "Session Prep " + value.state + " · automatic checking paused";
+        var waiting = prepView.querySelector(".cnp-prep-wait");
+        if (waiting) waiting.textContent = "The last check found the prepared brief pending. Check again for its current status.";
+      }
       function schedule() {
         if (!currentPrep(cycle)) return; // Reserve a full request budget rather than manufacture a timeout at the end of the waiting window.
-        if (cycle.checks >= 12 || Date.now() + delay + 30000 > cycle.deadline) {
-          prepProgress.textContent = "Automatic checking has paused. You can check again when you’re ready.";
+        if (cycle.checks >= 24 || Date.now() + delay + 30000 > cycle.deadline) {
+          pause();
           return;
         }
         prepProgress.textContent = writing()
@@ -1706,6 +1715,7 @@
       prepView.appendChild(stateLabel);
       if (value.state === "pending" || value.state === "unavailable") {
         var empty = document.createElement("p");
+        if (value.state === "pending") empty.className = "cnp-prep-wait";
         empty.textContent = value.state === "pending"
           ? value.facts_state === "ready" ? "The prepared brief is still being generated. " + (hasObservations ? "Reviewed-source observations are available below." : "Read the reviewed notes while you wait.") : "The prepared brief is still being generated. No clinical content is available yet."
           : value.facts_state === "ready" ? "The prepared brief is unavailable. " + (hasObservations ? "Reviewed-source observations are available below." : "Read the reviewed notes for chart details.") : value.reason_code === "no_eligible_sources"
@@ -1791,7 +1801,7 @@
       retry.onclick = function () {
         if (state.busy || state.prepBusy || state.switching || state.destroyed ||
             !currentPrep(attempt.cycle)) return; // An explicit retry gets a new waiting budget, but keeps its body/turn.
-        attempt.cycle.deadline = Date.now() + 180000;
+        attempt.cycle.deadline = Date.now() + 300000;
         attempt.cycle.checks = 0;
         return runSessionPrepAttempt(attempt);
       };
@@ -1906,7 +1916,7 @@
       clearSessionPrep();
       var cycle = {
         recordId: state.clientId, generation: state.generation,
-        deadline: Date.now() + 180000, checks: 0, timer: null, focusWhenReady: focusWhenReady === true,
+        deadline: Date.now() + 300000, checks: 0, timer: null, focusWhenReady: focusWhenReady === true,
       };
       state.prepCycle = cycle;
       return loadSessionPrep(cycle);
