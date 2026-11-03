@@ -188,7 +188,8 @@ class StandardPresentation(ClosedWireModel):
     ) -> list[SuppressionName]:
         if len(value) != len(set(value)):
             raise ValueError("presentation suppressions must be unique")
-        return value
+        # Core stores this closed field as a set and emits sorted members.
+        return sorted(value)
 
 
 class EmergencyPresentation(ClosedWireModel):
@@ -205,7 +206,7 @@ class EmergencyPresentation(ClosedWireModel):
     ) -> list[SuppressionName]:
         if len(value) != len(set(value)):
             raise ValueError("presentation suppressions must be unique")
-        return value
+        return sorted(value)
 
 
 class SensitiveDisclosurePresentation(ClosedWireModel):
@@ -224,7 +225,7 @@ class SensitiveDisclosurePresentation(ClosedWireModel):
     ) -> list[SuppressionName]:
         if len(value) != 7 or set(value) != set(ALL_PRESENTATION_SUPPRESSIONS):
             raise ValueError("sensitive presentation requires every suppression")
-        return value
+        return sorted(value)
 
 
 ChatPresentation = Annotated[

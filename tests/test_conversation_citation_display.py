@@ -372,14 +372,17 @@ def test_timed_http_route_has_existing_auth_bounds_and_no_inference(monkeypatch)
     body = {"schema_version": "1.3.0", "mode": "recent", "client_turn_id": None}
     result = client.post("/embed/history-timed", headers=hdr, json=body)
     assert result.status_code == 200 and result.headers["cache-control"] == "no-store"
+    assert result.headers["x-cosmaneura-embed-version"] == "1.0"
     assert result.json() == timed_display()
     writes.write_user_accepted.assert_not_called()
     service.router.route.assert_not_called()
     service.conversation_read.read_context.assert_not_called()
     assert client.post("/embed/history-timed", headers=hdr, json={**body, "schema_version": "1.2.0"}).status_code == 422
     assert client.post("/embed/history-timed", json=body).status_code == 426
+    assert client.post("/embed/history-timed", headers={**hdr, "X-Cosmaneura-Embed-Version": "2.0"}, json=body).status_code == 426
     assert client.post("/embed/history-timed", headers={"X-Cosmaneura-Embed-Version": "1.0"}, json=body).status_code == 401
     for status in (401, 403, 404, 409, 503):
         service.conversation_read.read_display.side_effect = ConversationReadError(status)
         denied = client.post("/embed/history-timed", headers=hdr, json=body)
         assert denied.status_code == status and "expires_at" not in denied.text
+        assert denied.headers["x-cosmaneura-embed-version"] == "1.0"

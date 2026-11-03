@@ -291,7 +291,13 @@ async function main() {
       const accepted = recordedResponses.get(requestBody.client_turn_id);
       if (accepted && value.turns[0].state === "completed") {
         value.history.messages[1].content = accepted.answer;
-        value.history.messages[1].presentation = accepted.presentation;
+        // The accepted closed DTO can be serialized with different key order.
+        const p = accepted.presentation, c = p.human_contact;
+        value.history.messages[1].presentation = {
+          human_contact: c === null ? null : { fallback_text: c.fallback_text,
+            action_id: c.action_id, label: c.label },
+          suppress: p.suppress.slice().reverse(), mode: p.mode,
+        };
       }
       if (mode === "mismatch") value.turns[0].client_turn_id = "99999999-9999-4999-8999-999999999999";
       return response(200, timedHistory(value));

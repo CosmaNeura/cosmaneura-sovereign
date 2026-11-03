@@ -171,7 +171,7 @@ async function fixture(env, options = {}) {
       trace_id: "trace_synthetic_timed", retryable: false,
     });
     return response(200, { answer: f.answer, intent: f.chatIntent, client_turn_id: f.turnId,
-      presentation: f.presentation, citations: [], doctrinal_review: null,
+      presentation: f.chatPresentation || f.presentation, citations: [], doctrinal_review: null,
       structured: { output_format: body.metadata.output_format }, safety_notice: null });
   };
   f.panel = window.CosmaNeuraPanel.mount({
@@ -235,6 +235,43 @@ async function verifiedExport(env, f, button, expectedAnswer = f.answer, prefix 
 
 async function main() {
   const env = createEnvironment(process.argv[2]);
+  {
+    // Provider /chat order differs from Core's set-canonical timed history.
+    // Exercise the actual SDK fresh acceptance and exact-turn export paths.
+    const contact = { label: "Contact support", action_id: "contact-support",
+      fallback_text: "Contact your support person." };
+    const f = await fixture(env, { hasTurn: false,
+      chatPresentation: { mode: "standard", suppress: ["intent_badge", "doctrinal_badge"], human_contact: contact },
+      presentation: { human_contact: { fallback_text: contact.fallback_text,
+        action_id: contact.action_id, label: contact.label },
+        suppress: ["doctrinal_badge", "intent_badge"], mode: "standard" } });
+    await f.ask("Fictional factual chart question.");
+    assert(f.has("Fictional-dose-marker") && f.save() &&
+      !f.has("availability could not be verified"), "equivalent closed presentations rejected fresh answer");
+    // Export rechecks a differently ordered DTO, not its retained object.
+    f.presentation = f.chatPresentation;
+    await verifiedExport(env, f, f.save());
+    await f.end();
+  }
+  for (const mutate of [
+    p => { p.mode = "emergency"; },
+    p => { p.suppress = ["intent_badge"]; },
+    p => { p.suppress = ["intent_badge", "intent_badge"]; },
+    p => { p.suppress = ["unknown_suppression"]; },
+    p => { p.unapproved = true; },
+    p => { p.human_contact.label += " changed"; },
+    p => { p.human_contact.action_id += "-changed"; },
+    p => { p.human_contact.fallback_text += " changed"; },
+    p => { p.human_contact.unapproved = true; },
+  ]) {
+    const presentation = { mode: "standard", suppress: ["doctrinal_badge", "intent_badge"],
+      human_contact: { label: "Contact support", action_id: "contact-support", fallback_text: "Contact support." } };
+    const f = await fixture(env, { presentation }), before = env.blobs.length;
+    f.presentation = JSON.parse(JSON.stringify(presentation)); mutate(f.presentation);
+    await f.save().click();
+    assert(env.blobs.length === before, "changed or invalid closed presentation authorized export");
+    await f.end();
+  }
   {
     const f = await fixture(env, { lifetime: 1000 });
     assert(f.reads().some(read => JSON.parse(read.options.body).mode === "recent") && f.save(),
