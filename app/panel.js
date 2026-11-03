@@ -384,6 +384,19 @@
          SUPPRESSION_NAMES.some(function (name) { return !unique.has(name); }))) return null;
     return value;
   }
+  function sameGovernedPresentation(left, right) {
+    left = governedPresentation(left); right = governedPresentation(right);
+    if (!left || !right || left.mode !== right.mode) return false;
+    // Core persists suppressions as a set; wire property and member order
+    // carry no meaning. All closed-schema values must still match exactly.
+    var suppressed = new Set(left.suppress);
+    if (suppressed.size !== right.suppress.length || right.suppress.some(function (name) {
+      return !suppressed.has(name);
+    })) return false;
+    var a = left.human_contact, b = right.human_contact;
+    return a === null ? b === null : b !== null &&
+      a.label === b.label && a.action_id === b.action_id && a.fallback_text === b.fallback_text;
+  }
   function governedHistory(value) {
     if (!closedObject(value, ["thread_ref", "messages", "next_cursor"]) ||
         typeof value.thread_ref !== "string" || !OPAQUE_REF.test(value.thread_ref) ||
@@ -1333,7 +1346,7 @@
                 fresh.turn_ref !== entry.turnRef || fresh.content !== d.answer ||
                 fresh.recorded_at !== acceptedDisplay.recorded_at ||
                 fresh.expires_at !== acceptedDisplay.expires_at ||
-                JSON.stringify(fresh.presentation) !== JSON.stringify(d.presentation) ||
+                !sameGovernedPresentation(fresh.presentation, d.presentation) ||
                 JSON.stringify(fresh.reviewed_citations) !== JSON.stringify(acceptedDisplay.reviewed_citations) ||
                 JSON.stringify(verified.context) !== JSON.stringify(entry.context) ||
                 verified.startedMono + utcClock(fresh.expires_at) - utcClock(verified.value.observed_at) <= monotonicClock())
@@ -2155,7 +2168,7 @@
               attempt.clientTurnId, controller.signal);
             var stored = timedRead.value.history.messages[1];
             if (timedRead.value.turns[0].state === "completed" && stored && stored.content === d.answer &&
-                JSON.stringify(stored.presentation) === JSON.stringify(d.presentation)) accepted = stored;
+                sameGovernedPresentation(stored.presentation, d.presentation)) accepted = stored;
           } catch (error) {
             if (error.authenticationUnavailable) { lockNamedBeta(); return; }
           }
@@ -2172,7 +2185,7 @@
             if (read && read.turns.length === 1 && read.turns[0].client_turn_id === attempt.clientTurnId &&
                 read.turns[0].state === "completed" && read.turns[0].outcome === "completed" &&
                 read.history.messages[1].content === d.answer &&
-                JSON.stringify(read.history.messages[1].presentation) === JSON.stringify(d.presentation))
+                sameGovernedPresentation(read.history.messages[1].presentation, d.presentation))
               accepted = read.history.messages[1];
           } catch (error) {
             if (error.authenticationUnavailable) { lockNamedBeta(); return; }

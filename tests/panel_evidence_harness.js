@@ -46,7 +46,8 @@ async function main() {
     schema_version: "1.0.0",
     history: { thread_ref: "thread_fictional_evidence", next_cursor: null,
       messages: [{ ...common, role: "user", content: "A factual question.", presentation: null },
-        { ...common, role: "assistant", content: result.answer, presentation: result.presentation }] },
+        { ...common, role: "assistant", content: result.answer,
+          presentation: input.history_presentation || result.presentation }] },
     turns: [{ ...common, state: "completed", outcome: "completed" }],
   };
   const panel = window.CosmaNeuraPanel.mount({

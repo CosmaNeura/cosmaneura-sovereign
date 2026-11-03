@@ -56,7 +56,7 @@ _EMBED_VERSION = "1.0"
 _EMBED_VERSION_HEADER = "X-Cosmaneura-Embed-Version"
 _PROTECTED_EMBED_PATHS = frozenset({
     "/welcome", "/chat", "/digest", "/session-prep", "/session-prep/structured-facts", "/embed/history",
-    "/embed/history-with-citations", "/embed/history-retained",
+    "/embed/history-with-citations", "/embed/history-retained", "/embed/history-timed",
 })
 _CORS_ALLOW_METHODS = ("GET", "POST")
 _CORS_ALLOW_HEADERS = (
