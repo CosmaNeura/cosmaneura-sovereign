@@ -17,6 +17,13 @@ import yaml
 from tools import production_provider_promotion as promotion
 
 ROOT = Path(__file__).resolve().parents[1]
+# Captured before the autouse offline fixture replaces subprocess entry points.
+_REAL_SUBPROCESS_RUN = subprocess.run
+_REAL_SUBPROCESS_POPEN = subprocess.Popen
+_REAL_SUBPROCESS_CHECK_OUTPUT = subprocess.check_output
+_REAL_SUBPROCESS_CHECK_CALL = subprocess.check_call
+# Matches the panel.js / panel.delivery.js caps in panel_delivery_sha256().
+PANEL_DELIVERY_BYTES_MAX = 2 * 1024 * 1024
 SPEC = importlib.util.spec_from_file_location(
     "producer_fixture", ROOT / "tests/test_production_provider_candidate.py"
 )
@@ -691,6 +698,221 @@ def test_panel_delivery_missing_malformed_or_stale_evidence_refuses(monkeypatch,
         link.unlink()
         link.symlink_to(ROOT / "app" / name)
     with pytest.raises((ValueError, OSError)):
+        promotion.panel_delivery_sha256()
+
+
+def _allow_local_git(monkeypatch) -> None:
+    """Permit real local git while keeping the offline network blockade."""
+
+    monkeypatch.setattr(subprocess, "run", _REAL_SUBPROCESS_RUN)
+    monkeypatch.setattr(subprocess, "Popen", _REAL_SUBPROCESS_POPEN)
+    monkeypatch.setattr(subprocess, "check_output", _REAL_SUBPROCESS_CHECK_OUTPUT)
+    monkeypatch.setattr(subprocess, "check_call", _REAL_SUBPROCESS_CHECK_CALL)
+
+
+def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    return _REAL_SUBPROCESS_RUN(
+        ["git", "-C", str(repo), *args],
+        check=check,
+        capture_output=True,
+    )
+
+
+def _git_text(repo: Path, *args: str) -> str:
+    return _git(repo, *args).stdout.decode().strip()
+
+
+def _write_panel_manifest(
+    repo: Path,
+    *,
+    source: bytes,
+    delivery: bytes,
+    source_commit: str,
+    source_blob: str,
+) -> dict:
+    manifest = {
+        "schema_version": "1.0.0",
+        "source_path": "app/panel.js",
+        "delivery_path": "app/panel.delivery.js",
+        "compiler": "esbuild",
+        "compiler_version": "0.25.12",
+        "compiler_lock_sha256": (
+            "ae312f69d18c0a80b06e28c9cf5f0fa432c483171e6108c719ed958bfbde5c31"
+        ),
+        "compiler_package_sha256": (
+            "b33803c043507c2a4f331a176667ec84c58c9c90fdf229999e5adb4aa1433090"
+        ),
+        "source_commit": source_commit,
+        "source_blob": source_blob,
+        "source_sha256": hashlib.sha256(source).hexdigest(),
+        "delivery_sha256": hashlib.sha256(delivery).hexdigest(),
+        "options": {
+            "loader": "js",
+            "minify": True,
+            "target": "es2020",
+            "charset": "utf8",
+            "legalComments": "none",
+            "sourcemap": False,
+        },
+    }
+    (repo / "app/panel.delivery.js").write_bytes(delivery)
+    (repo / "app/panel.delivery.json").write_bytes(
+        promotion.producer.canonical(manifest)
+    )
+    return manifest
+
+
+def synthetic_panel_ancestry_repo(tmp_path: Path, scenario: str) -> tuple[Path, dict]:
+    """Build an offline synthetic git repo exercising panel source ancestry.
+
+    The reviewed source commit is a strict ancestor of HEAD on the main line so
+    an inverted ``--is-ancestor`` argument order refuses the accepted case.
+    The non-ancestor case keeps identical ``app/panel.js`` bytes on an orphan
+    commit so removing the ancestry check would incorrectly accept.
+    """
+
+    repo = tmp_path / f"panel-ancestry-{scenario}"
+    repo.mkdir()
+    (repo / "app").mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "config", "user.email", "synthetic@example.invalid")
+    _git(repo, "config", "user.name", "Synthetic Test")
+
+    source = b"synthetic panel source for ancestry guard\n"
+    delivery = b"synthetic panel delivery for ancestry guard\n"
+    (repo / "app/panel.js").write_bytes(source)
+    _git(repo, "add", "app/panel.js")
+    _git(repo, "commit", "--quiet", "-m", "reviewed panel source")
+    source_commit = _git_text(repo, "rev-parse", "HEAD")
+    source_blob = _git_text(repo, "rev-parse", "HEAD:app/panel.js")
+
+    manifest = _write_panel_manifest(
+        repo,
+        source=source,
+        delivery=delivery,
+        source_commit=source_commit,
+        source_blob=source_blob,
+    )
+    _git(repo, "add", "app/panel.delivery.js", "app/panel.delivery.json")
+    _git(repo, "commit", "--quiet", "-m", "panel delivery evidence")
+    assert source_commit != _git_text(repo, "rev-parse", "HEAD")
+    assert _git(repo, "merge-base", "--is-ancestor", source_commit, "HEAD").returncode == 0
+
+    if scenario == "ancestor":
+        return repo, manifest
+
+    main = _git_text(repo, "branch", "--show-current") or "master"
+    if scenario == "not_ancestor":
+        _git(repo, "checkout", "--orphan", "foreign-reviewed")
+        _git(repo, "rm", "-rf", "--cached", ".", check=False)
+        for path in (repo / "app").iterdir():
+            if path.is_file():
+                path.unlink()
+        (repo / "app/panel.js").write_bytes(source)
+        _git(repo, "add", "app/panel.js")
+        _git(repo, "commit", "--quiet", "-m", "orphan reviewed source")
+        orphan = _git_text(repo, "rev-parse", "HEAD")
+        orphan_blob = _git_text(repo, "rev-parse", "HEAD:app/panel.js")
+        _git(repo, "checkout", "-f", main)
+        assert orphan_blob == source_blob
+        assert _git(repo, "merge-base", "--is-ancestor", orphan, "HEAD", check=False).returncode != 0
+        manifest = _write_panel_manifest(
+            repo,
+            source=source,
+            delivery=delivery,
+            source_commit=orphan,
+            source_blob=orphan_blob,
+        )
+        return repo, manifest
+
+    if scenario == "unknown":
+        unknown = "a" * 40
+        assert (
+            _git(
+                repo, "rev-parse", "--verify", f"{unknown}^{{commit}}", check=False
+            ).returncode
+            != 0
+        )
+        assert (
+            _git(
+                repo, "merge-base", "--is-ancestor", unknown, "HEAD", check=False
+            ).returncode
+            != 0
+        )
+        manifest = _write_panel_manifest(
+            repo,
+            source=source,
+            delivery=delivery,
+            source_commit=unknown,
+            source_blob=source_blob,
+        )
+        return repo, manifest
+
+    raise AssertionError(f"unsupported ancestry scenario: {scenario}")
+
+
+@pytest.mark.parametrize(
+    "scenario,accepted",
+    [
+        ("ancestor", True),
+        ("not_ancestor", False),
+        ("unknown", False),
+    ],
+)
+def test_panel_delivery_source_commit_ancestry_guard_mutation_proven(
+    monkeypatch, tmp_path, scenario, accepted
+):
+    """Fail closed unless the reviewed source commit is a reachable ancestor.
+
+    Uses a real local git repo (no network). Removing or inverting the
+    ``merge-base --is-ancestor`` check makes at least one case fail.
+    """
+
+    _allow_local_git(monkeypatch)
+    repo, manifest = synthetic_panel_ancestry_repo(tmp_path, scenario)
+    monkeypatch.setattr(promotion, "ROOT", repo)
+    if accepted:
+        assert promotion.panel_delivery_sha256() == manifest["delivery_sha256"]
+    else:
+        with pytest.raises(promotion.producer.CandidateRefused):
+            promotion.panel_delivery_sha256()
+
+
+def test_panel_delivery_empty_file_refused(monkeypatch, tmp_path):
+    root, _manifest, _calls = panel_files(monkeypatch, tmp_path)
+    (root / "app/panel.delivery.js").write_bytes(b"")
+    with pytest.raises(promotion.producer.CandidateRefused):
+        promotion.panel_delivery_sha256()
+
+
+def test_panel_delivery_file_at_exact_size_limit_accepted(monkeypatch, tmp_path):
+    root, _manifest, _calls = panel_files(monkeypatch, tmp_path)
+    raw = b"x" * PANEL_DELIVERY_BYTES_MAX
+    (root / "app/panel.delivery.js").write_bytes(raw)
+    path = root / "app/panel.delivery.json"
+    manifest = json.loads(path.read_bytes())
+    manifest["delivery_sha256"] = hashlib.sha256(raw).hexdigest()
+    path.write_bytes(promotion.producer.canonical(manifest))
+    assert promotion.panel_delivery_sha256() == manifest["delivery_sha256"]
+
+
+def test_panel_delivery_file_over_size_limit_refused(monkeypatch, tmp_path):
+    root, _manifest, _calls = panel_files(monkeypatch, tmp_path)
+    (root / "app/panel.delivery.js").write_bytes(b"x" * (PANEL_DELIVERY_BYTES_MAX + 1))
+    with pytest.raises(promotion.producer.CandidateRefused):
+        promotion.panel_delivery_sha256()
+
+
+def test_panel_delivery_oversized_but_valid_json_provenance_refused(
+    monkeypatch, tmp_path
+):
+    root, original, _calls = panel_files(monkeypatch, tmp_path)
+    compact = promotion.producer.canonical(original)
+    padded = compact + b" " * (promotion.producer.MAX_JSON + 1 - len(compact))
+    assert len(padded) == promotion.producer.MAX_JSON + 1
+    assert json.loads(padded) == original
+    (root / "app/panel.delivery.json").write_bytes(padded)
+    with pytest.raises(promotion.producer.CandidateRefused):
         promotion.panel_delivery_sha256()
 
 
