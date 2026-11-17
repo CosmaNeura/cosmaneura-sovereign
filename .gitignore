@@ -14,6 +14,7 @@ infra/.terraform/
 infra/deployment.auto.tfvars
 *.tfstate
 *.tfstate.*
+*.tfplan
 audit_log.jsonl
 .pytest_cache/
 .DS_Store
